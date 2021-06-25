@@ -1,0 +1,33 @@
+#! /bin/bash
+
+#  Copyright 2021 Simon Willcocks
+# 
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+# 
+#      http://www.apache.org/licenses/LICENSE-2.0
+# 
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
+# Which kernel memory manager, MMU handler, and boot sequence do you want to use?
+
+# While there's only one option, this will choose them for you!
+if [ "$MM" = "" ]; then
+  MM=memory/*
+fi
+if [ "$MMU" = "" ]; then
+  MMU=MMU/*
+fi
+if [ "$BOOT" = "" ]; then
+  BOOT=boot/*
+fi
+
+arm-linux-gnueabi-gcc-8 -Wall -I . -march=armv7-a+nofp+mp -g -fno-zero-initialized-in-bss kernel.c $BOOT/*.c -I $BOOT $MMU/*.c -I $MMU $MM/*.c -I $MM -nostartfiles -nostdlib -T rom.script -Os -static -o rom.elf &&
+arm-linux-gnueabi-objcopy -R .ignoring -O binary rom.elf rom.bin &&
+ls -l rom.*
+
