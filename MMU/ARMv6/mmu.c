@@ -29,7 +29,7 @@ extern uint32_t translation_tables;
 
 static uint32_t *const L1TT = (&translation_tables);
 static uint32_t *const top_MiB_tt = (&translation_tables) + 4096;
-static uint32_t *const bottom_MiB_tt = (&translation_tables) + 4096 + 1024;
+// static uint32_t *const bottom_MiB_tt = (&translation_tables) + 4096 + 1024;
 
 typedef union {
   struct {
@@ -96,7 +96,8 @@ static void map_work_area( uint32_t *l2tt, uint32_t physical, void *virtual, uin
   uint32_t va = 0xff000 & (uint32_t) virtual;
 
   // Writable by (and visible to) this core only, only in privileged modes.
-  l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 0, .nG = 0 };
+  // XN off, because the vectors are in there.
+  l2tt_entry entry = { .XN = 0, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 0, .nG = 0 };
 
   for (int i = 0; i < (size + 0xfff) >> 12; i++) {
     l2tt[(va >> 12) + i] = entry.raw | (physical + (i << 12));
@@ -160,10 +161,12 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
   // these days. (Any future 64-bit version should, though).
   asm ( "mcr p15, 0, %[ttbr0], c2, c0, 0" : : [ttbr0] "r" (ws->mmu.l1tt_pa) );
   asm ( "mcr p15, 0, %[dacr], c3, c0, 0" : : [dacr] "r" (1) ); // Only using Domain 0, at the moment, allow access.
+
   uint32_t tcr;
-  asm ( "mrc p15, 0, %[tcr], c1, c0, 0" : [tcr] "=r" (tcr) );
-  tcr &= ~(1 << 12); // Turn off I cache, if it's on
-  asm ( "mcr p15, 0, %[tcr], c1, c0, 0" : : [tcr] "r" (tcr) );
+
+  // XP, bit 23, 1 = subpage AP bits disabled.
+  // I, bit 12, 0 = instruction cache off (temporarily, assuming it was on, anyway)
+  MODIFY_CP15_REG( "c1, c0, 0", (1 << 12) | (1 << 23), (1 << 23), tcr );
 
   // Turn on I, D cache, MMU, set SP, and call Kernel_start
   tcr |= (1 << 12) | (1 << 2) | (1 << 0);

@@ -25,6 +25,7 @@ typedef unsigned        bool;
 typedef struct core_workspace core_workspace;
 typedef struct shared_workspace shared_workspace;
 
+#include "processor.h"
 #include "boot.h"
 #include "mmu.h"
 #include "memory_manager.h"
@@ -70,34 +71,3 @@ extern struct shared_workspace {
   struct Kernel_shared_workspace kernel;
   struct Memory_manager_shared_workspace memory;
 } shared;
-
-static void inline claim_lock( uint32_t *lock )
-{
-  uint32_t failed = 1;
-  uint32_t value;
-  uint32_t marker = 1 + workspace.core_number; // 0 means unlocked
-
-  // The failed and lock registers are not allowed to be the same, so
-  // pretend the lock may be written as well as read.
-
-  while (failed) {
-    asm volatile ( "ldrex %[value], [%[lock]]"
-                   : [value] "=&r" (value)
-                   , [lock] "+r" (lock) );
-    if (value == 0) {
-      asm volatile ( "strex %[failed], %[value], [%[lock]]"
-                     : [failed] "=&r" (failed)
-                     , [lock] "+r" (lock)
-                     : [value] "r" (marker) );
-    }
-    else {
-      asm volatile ( "clrex" );
-    }
-  }
-}
-
-static void inline release_lock( uint32_t *lock )
-{
-  *lock = 0;
-  // Probably need a DSB here, at least. Or LDREX to check we're the owner.
-}

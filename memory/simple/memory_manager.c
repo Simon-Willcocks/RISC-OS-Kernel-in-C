@@ -17,7 +17,7 @@
 
 void Kernel_add_free_RAM( uint32_t base_page, uint32_t size_in_pages )
 {
-  claim_lock( &shared.memory.lock );
+  claim_lock( &shared.memory.lock, 1 + workspace.core_number );
 
   int i = 0;
   while (shared.memory.free_blocks[i].size != 0) {
@@ -33,7 +33,7 @@ void Kernel_add_free_RAM( uint32_t base_page, uint32_t size_in_pages )
 uint32_t Kernel_allocate_pages( uint32_t size_in_pages, uint32_t alignment )
 {
   uint32_t result = -1;
-  claim_lock( &shared.memory.lock );
+  claim_lock( &shared.memory.lock, 1 + workspace.core_number );
 
   // FIXME
 
