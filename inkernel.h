@@ -14,6 +14,7 @@
  */
 
 #include "kernel.h"
+#include "swis.h"
 
 typedef struct {
   uint32_t module_start;
@@ -28,6 +29,8 @@ typedef struct {
 
 error_block Error_UnknownSWI;
 static const uint32_t Kernel_Error_UnknownSWI = (uint32_t) &Error_UnknownSWI;
+
+bool do_module_swi( svc_registers *regs, uint32_t svc );
 
 void __attribute__(( naked, noreturn )) Kernel_default_reset();
 void __attribute__(( naked, noreturn )) Kernel_default_undef();

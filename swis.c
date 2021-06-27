@@ -14,47 +14,8 @@
  */
 
 #include "inkernel.h"
-#include "swis.h"
-
-static const uint32_t VF = (1 << 28);
-static const uint32_t Xbit = (1 << 17);
-
-typedef struct __attribute__(( packed )) {
-  uint32_t r[13];
-  uint32_t lr;
-  uint32_t spsr;
-} svc_registers;
 
 error_block Error_UnknownSWI = { 1, "Unknown SWI" };
-
-static swi_handler get_swi_handler( uint32_t swi )
-{
-  swi_handler result = { .module_start = 0, .swi_handler = 0, .private = 0 };
-  return result;
-}
-
-static bool run_legacy_code( svc_registers *regs, uint32_t svc, swi_handler handler )
-{
-  register uint32_t legacy_code asm( "r10" ) = handler.swi_handler;
-  register uint32_t swi_number asm( "r11" ) = svc & 0x3f;
-  register uint32_t private_word_ptr asm( "r12" ) = handler.private;
-  register uint32_t failed;
-  asm ( "  push { %[regs] }"
-      "\n  ldm %[regs], { r0-r9 }"
-      "\n  blx r10"
-      "\n  pop { r10 }"
-      "\n  stm r10, { r0-r9 }"
-      "\n  movvs %[failed], #1"
-      "\n  movvc %[failed], #0"
-      : [failed] "=r" (failed)
-      : [regs] "r" (regs)
-      , "r" (legacy_code)
-      , "r" (swi_number)
-      , "r" (private_word_ptr)
-      : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9" );
-  return failed;
-}
-
 
 static bool do_OS_WriteC( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_WriteS( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
@@ -117,7 +78,9 @@ static bool do_OS_EvaluateExpression( svc_registers *regs ) { regs->r[0] = Kerne
 static bool do_OS_SpriteOp( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ReadPalette( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
-static bool do_OS_ServiceCall( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+// Implemented in modules.c:
+bool do_OS_ServiceCall( svc_registers *regs );
+
 static bool do_OS_ReadVduVariables( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ReadPoint( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_UpCall( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
@@ -412,93 +375,9 @@ static bool Kernel_go_svc( svc_registers *regs, uint32_t svc )
   case OS_ConvertFileSize: return do_OS_ConvertFileSize( regs );
 
   case OS_WriteI ... OS_WriteI+255: { uint32_t r0 = regs->r[0]; regs->r[0] = svc & 0xff; do_OS_WriteC( regs ); regs->r[0] = r0; return true; }
-
-  default: // Find a module that provides the functionality
-    regs->r[0] = 0x12345678;
   };
 
-  swi_handler handler = get_swi_handler( svc );
-  if (run_legacy_code( regs, svc, handler )) {
-    for (;;) asm ( "wfi" );
-  }
-  else {
-    for (;;) asm ( "wfi" );
-  }
-/*
-  register uint32_t swi_number asm( "r11" ) = get_swi_number( regs->lr );
-  if (handler.module_start == 0) {
-    // Unknown or system provider
-    register uint32_t *r0to3and9;
-    register uint32_t error_block asm( "r0" );
-    asm ( "mov %[p], sp" : [p] "=r" (r0to3and9) );
-    error_block = system_swi( r0to3and9 );
-    if (error_block) {
-      asm ( "  mrs r1, SPSR"
-          "\n  orr r1, r1, #(1 << 28)"
-          "\n  msr SPSR, r1"
-          "\n  add sp, sp, #4"
-          "\n  pop { r1-r3, r9-r12, lr }"
-          "\n  orr lr, #(1 << 28)"
-          "\n  movs pc, lr"
-          :
-          : "r" (error_block) );
-      __builtin_unreachable();
-    }
-    else {
-      asm ( "  mrs r1, SPSR"
-          "\n  bic r1, r1, #(1 << 28)"
-          "\n  msr SPSR, r1"
-          "\n  pop { r0-r3, r9-r12, lr }"
-          "\n  movs pc, lr" );
-      __builtin_unreachable();
-    }
-  }
-
-  register uint32_t module_instance asm( "r12" ) = handler.private;
-
-  if (handler.swi_handler == 0) {
-    register error_block *error asm( "r0" ) = Kernel_Error_UnknownSWI;
-    asm ( "  add sp, sp, #4"
-        "\n  pop { r1-r3, r9-r12, lr }"
-        "\n  orr lr, #(1 << 28)"
-        "\n  movs pc, lr"
-        :
-        : "r" (error) );
-    __builtin_unreachable();
-  }
-  if ((swi_number & (1 << 17)) != 0) {
-    swi_number &= 0x3f;
-    asm ( "  mov lr, %[swi_handler]"
-        "\n  pop { r0-r3, r9 }"
-        "\n  blx lr"
-        "\n  pop { r10-r12, lr }"
-        "\n  orrvs lr, #(1 << 28)"
-        "\n  bicvc lr, #(1 << 28)"
-        "\n  movs pc, lr"
-        : 
-        : [swi_handler] "r" (handler.swi_handler)
-        , "r" (swi_number)
-        , "r" (module_instance) );
-    __builtin_unreachable();
-  }
-  else {
-    swi_number &= 0x3f;
-    asm ( "  mov lr, %[swi_handler]"
-        "\n  pop { r0-r3, r9 }"
-        "\n  mov lr, pc"
-        "\n  blx lr"
-        "\n  pop { r10-r12, lr }"
-        "\n  bicvc lr, #(1 << 28)"
-        "\n  movvcs pc, lr"
-        "\n  // Here's where the RISC OS error handling code goes, if X bit not set"
-        "\n  wfi" // QEMU debugging: break helper_wfi
-        : 
-        : [swi_handler] "r" (handler.swi_handler)
-        , "r" (swi_number)
-        , "r" (module_instance) );
-    __builtin_unreachable();
-  }
-*/
+  return do_module_swi( regs, svc );
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_svc()

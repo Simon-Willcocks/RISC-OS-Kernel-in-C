@@ -30,12 +30,15 @@ typedef struct shared_workspace shared_workspace;
 #include "mmu.h"
 #include "memory_manager.h"
 
+typedef struct module module;
+
 struct Kernel_workspace {
   uint32_t undef_stack[128];
   uint32_t abt_stack[128];
   uint32_t svc_stack[128];
   uint32_t irq_stack[128];
   uint32_t fiq_stack[128];
+  module *module_list;
 };
 
 struct Kernel_shared_workspace {
