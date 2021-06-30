@@ -23,13 +23,16 @@ SECTIONS
   shared = 0xffff8000 ;
   translation_tables = 0xfff00000 ;
   devices = 0xfff80000 ;
+  rma_base = 0xf0000000 ;
 
  . = va_base ;
  .text : {
   *(.text.init) ;
   *(.data) ; /* Pre-MMU data, not writable once kernel started. */
   *(.text) ;
-  *(.rodata.*) ;
+  *(.rodata*) ;
+  . = ALIGN( 4096 ) ;
+  *(.modules.data*) ;
   . = ALIGN( 1024 * 1024 ) ;
   rom_size = . - va_base ;
  }

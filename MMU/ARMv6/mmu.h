@@ -40,10 +40,12 @@ physical_memory_block Kernel_physical_address( uint32_t map, uint32_t va );
 uint32_t Kernel_allocate_physical_memory( uint32_t size, uint32_t alignment );
 void __attribute__(( noreturn )) Kernel_start();
 
+static const uint32_t natural_alignment = (1 << 20); // alignment needed to avoid small pages
+
 static inline bool naturally_aligned( uint32_t location )
 {
   // 1MB sections, with this MMU
-  return (((1 << 20)-1) & location) == 0;
+  return ((natural_alignment - 1) & location) == 0;
 }
 
 // An instance of this struct will be in the core workspace, called mmu:
@@ -57,6 +59,8 @@ struct MMU_shared_workspace { // Placeholder
 
 void MMU_new_low_map( void *map );
 void MMU_switch_to_map( void *map );
+
+void MMU_map_at( void *va, uint32_t pa, uint32_t size );
 
 void BOOT_finished_allocating( uint32_t core, volatile startup *startup );
 

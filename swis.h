@@ -66,3 +66,21 @@ enum {
 /* ec */ OS_ConvertFileSize,
 /* 100-1ff */ OS_WriteI = 0x100 };
  
+// OS SWIs implemented other than in swis.c:
+
+// Implemented in os_heap.c:
+bool do_OS_Heap( svc_registers *regs );
+
+// modules.c:
+bool do_OS_Module( svc_registers *regs );
+bool do_OS_ServiceCall( svc_registers *regs );
+
+bool do_OS_CallAVector( svc_registers *regs );
+bool do_OS_Claim( svc_registers *regs );
+bool do_OS_Release( svc_registers *regs );
+bool do_OS_AddToVector( svc_registers *regs );
+bool do_OS_DelinkApplication( svc_registers *regs );
+bool do_OS_RelinkApplication( svc_registers *regs );
+
+// Find a module that provides this SWI
+bool do_module_swi( svc_registers *regs, uint32_t svc );

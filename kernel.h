@@ -32,13 +32,23 @@ typedef struct shared_workspace shared_workspace;
 
 typedef struct module module;
 
+typedef struct vector vector;
+
+struct vector {
+  uint32_t code;
+  uint32_t private_word;
+  vector *next;
+};
+
 struct Kernel_workspace {
   uint32_t undef_stack[128];
   uint32_t abt_stack[128];
   uint32_t svc_stack[128];
   uint32_t irq_stack[128];
   uint32_t fiq_stack[128];
-  module *module_list;
+  module *module_list_head;
+  module *module_list_tail;
+  vector *vectors[0x25];
 };
 
 struct Kernel_shared_workspace {
@@ -74,3 +84,20 @@ extern struct shared_workspace {
   struct Kernel_shared_workspace kernel;
   struct Memory_manager_shared_workspace memory;
 } shared;
+
+void Generate_the_RMA();
+
+
+// microclib
+
+static inline int strcmp( const char *left, const char *right )
+{
+  int result = 0;
+  while (result == 0 && *left != 0 && *right != 0) {
+    result = *left++ - *right++;
+  }
+  return result;
+}
+
+void *memset(void *s, int c, uint32_t n);
+

@@ -68,29 +68,11 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
   workspace.vectors.data_vec      = Kernel_default_data_abort;
   workspace.vectors.irq_vec       = Kernel_default_irq;
 
-  // Initialise privileged mode stack pointers
-  register uint32_t stack asm( "r0" );
+  Initialise_privileged_mode_stack_pointers();
 
-  stack = sizeof( workspace.kernel.undef_stack ) + (uint32_t) &workspace.kernel.undef_stack;
-  asm ( "msr cpsr, #0xdb\n  mov sp, r0" : : "r" (stack) );
-
-  stack = sizeof( workspace.kernel.abt_stack ) + (uint32_t) &workspace.kernel.abt_stack;
-  asm ( "msr cpsr, #0xd7\n  mov sp, r0" : : "r" (stack) );
-
-  stack = sizeof( workspace.kernel.irq_stack ) + (uint32_t) &workspace.kernel.irq_stack;
-  asm ( "msr cpsr, #0xd2\n  mov sp, r0" : : "r" (stack) );
-
-  stack = sizeof( workspace.kernel.fiq_stack ) + (uint32_t) &workspace.kernel.fiq_stack;
-  asm ( "msr cpsr, #0xd1\n  mov sp, r0" : : "r" (stack) );
-
-  // Finally, end up back in svc32, with the stack pointer unchanged:
-  asm ( "msr cpsr, #0xd3" );
-
-  // Count to five (silently)
-  register uint32_t count asm( "r0" );
-  asm ( "svc 0" );
+  Generate_the_RMA();
 
   // Running in virtual memory with a stack and workspace for each core.
-  for (;;) { asm ( "wfi" : : "r" (count) ); }
+  for (;;) { asm ( "wfi" ); }
 }
 

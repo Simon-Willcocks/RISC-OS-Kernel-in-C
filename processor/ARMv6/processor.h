@@ -33,7 +33,9 @@ static inline uint32_t get_swi_number( uint32_t instruction_following_swi )
   return result & 0x00ffffff;
 }
 
-static void inline claim_lock( uint32_t *lock, uint32_t marker /* unique, non-0. 0 means unlocked */ )
+void Initialise_privileged_mode_stack_pointers();
+
+static inline void claim_lock( uint32_t *lock, uint32_t marker /* unique, non-0. 0 means unlocked */ )
 {
   uint32_t failed = 1;
   uint32_t value;
@@ -57,7 +59,7 @@ static void inline claim_lock( uint32_t *lock, uint32_t marker /* unique, non-0.
   }
 }
 
-static void inline release_lock( uint32_t *lock )
+static inline void release_lock( uint32_t *lock )
 {
   *lock = 0;
   // Probably need a DSB here, at least. Or LDREX to check we're the owner.

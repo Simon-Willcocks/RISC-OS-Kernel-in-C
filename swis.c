@@ -17,10 +17,71 @@
 
 error_block Error_UnknownSWI = { 1, "Unknown SWI" };
 
-static bool do_OS_WriteC( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_WriteS( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_Write0( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_NewLine( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+static bool do_OS_WriteC( svc_registers *regs )
+{
+  svc_registers tmp;
+  tmp.r[0] = regs->r[0];
+  tmp.r[9] = 3;
+  
+  bool result = do_OS_CallAVector( &tmp );
+
+  if (!result) {
+    regs->r[0] = tmp.r[0]; // Error code
+  }
+  return result;
+}
+
+static uint32_t word_align( void *p )
+{
+  return (((uint32_t) p) + 3) & ~3;
+}
+
+static bool do_OS_WriteS( svc_registers *regs )
+{
+  const char *s = (void*) regs->lr;
+  uint32_t r0 = regs->r[0];
+  bool result = true;
+
+  while (*s != '\0' && result) {
+    regs->r[0] = *s++;
+    result = do_OS_WriteC( regs );
+  }
+
+  regs->lr = word_align( s );
+  if (result) regs->r[0] = r0;
+
+  return result;
+}
+
+static bool do_OS_Write0( svc_registers *regs )
+{
+  const char *s = (void*) regs->r[0];
+  bool result = true;
+
+  while (*s != '\0' && result) {
+    regs->r[0] = *s++;
+    result = do_OS_WriteC( regs );
+  }
+  if (result) {
+    regs->r[0] = (uint32_t) s+1;
+  }
+
+  return result;
+}
+
+static bool do_OS_NewLine( svc_registers *regs )
+{
+  bool result;
+  regs->r[0] = '\r';
+  result = do_OS_WriteC( regs );
+  if (result) {
+    regs->r[0] = '\n';
+    result = do_OS_WriteC( regs );
+  }
+
+  return result;
+}
+
 
 static bool do_OS_ReadC( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_CLI( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
@@ -53,12 +114,7 @@ static bool do_OS_UpdateMEMC( svc_registers *regs ) { regs->r[0] = Kernel_Error_
 static bool do_OS_SetCallBack( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
 static bool do_OS_Mouse( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_Heap( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_Module( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_Claim( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
-
-static bool do_OS_Release( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ReadUnsigned( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_GenerateEvent( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ReadVarVal( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
@@ -78,14 +134,11 @@ static bool do_OS_EvaluateExpression( svc_registers *regs ) { regs->r[0] = Kerne
 static bool do_OS_SpriteOp( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ReadPalette( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
-// Implemented in modules.c:
-bool do_OS_ServiceCall( svc_registers *regs );
 
 static bool do_OS_ReadVduVariables( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ReadPoint( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_UpCall( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
-static bool do_OS_CallAVector( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ReadModeVariable( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_RemoveCursors( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_RestoreCursors( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
@@ -106,10 +159,38 @@ static bool do_OS_ClaimScreenMemory( svc_registers *regs ) { regs->r[0] = Kernel
 static bool do_OS_ReadMonotonicTime( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_SubstituteArgs( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
-static bool do_OS_PrettyPrint( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+static bool do_OS_PrettyPrint( svc_registers *regs )
+{
+  const char *s = (void*) regs->r[0];
+  const char *dictionary = (void*) regs->r[1];
+  if (dictionary == 0) {
+    static const char internal[] =
+        "Syntax: *\x1b\0"; // FIXME
+    dictionary = internal;
+  }
+
+  uint32_t r0 = regs->r[0];
+  bool result = true;
+
+  while (*s != '\0' && result) {
+    if (*s == '\x1b') {
+      s++;
+      regs->r[0] = (uint32_t) "!!!PrettyPrint needs implementing!!!";
+      result = do_OS_WriteS( regs );
+    }
+    else {
+      regs->r[0] = *s++;
+      result = do_OS_WriteC( regs );
+    }
+  }
+
+  if (result) regs->r[0] = r0;
+
+  return result;
+}
+
 static bool do_OS_Plot( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_WriteN( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_AddToVector( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
 static bool do_OS_WriteEnv( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ReadArgs( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
@@ -117,8 +198,6 @@ static bool do_OS_ReadRAMFsLimits( svc_registers *regs ) { regs->r[0] = Kernel_E
 static bool do_OS_ClaimDeviceVector( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
 static bool do_OS_ReleaseDeviceVector( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_DelinkApplication( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_RelinkApplication( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_HeapSort( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
 static bool do_OS_ExitAndDie( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
@@ -155,49 +234,164 @@ static bool do_OS_Reset( svc_registers *regs ) { regs->r[0] = Kernel_Error_Unkno
 
 static bool do_OS_MMUControl( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
+#ifdef NO_CONVERT_MODULE
+// This is a lot of work for little gain, and could be fixed by a Convert module, which can use existing code.
 static bool do_OS_ConvertStandardDateAndTime( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ConvertDateAndTime( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
-static bool do_OS_ConvertHex1( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertHex2( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertHex4( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertHex6( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+static const char hex[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
 
-static bool do_OS_ConvertHex8( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertCardinal1( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertCardinal2( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertCardinal3( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+static bool buffer_too_small(  svc_registers *regs )
+{
+  static error_block error = { 0x1e4, "Buffer overflow" };
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
 
-static bool do_OS_ConvertCardinal4( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertInteger1( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertInteger2( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertInteger3( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+static bool hex_convert( svc_registers *regs, int digits )
+{
+  uint32_t n = regs->r[0];
 
-static bool do_OS_ConvertInteger4( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertBinary1( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertBinary2( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertBinary3( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+  regs->r[0] = regs->r[1];
 
-static bool do_OS_ConvertBinary4( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertSpacedCardinal1( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertSpacedCardinal2( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertSpacedCardinal3( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+  for (int i = digits; i > 0; i--) {
+    *((char *) regs->r[1]++) = hex[(n >> (4*i))&0xf];
+    regs->r[2] --;
+    if (regs->r[2] == 0) return buffer_too_small( regs );
+  }
+  return true;
+}
 
-static bool do_OS_ConvertSpacedCardinal4( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertSpacedInteger1( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertSpacedInteger2( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ConvertSpacedInteger3( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+static bool do_OS_ConvertHex1( svc_registers *regs )
+{
+  return hex_convert( regs, 1 );
+}
 
-static bool do_OS_ConvertSpacedInteger4( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+static bool do_OS_ConvertHex2( svc_registers *regs )
+{
+  return hex_convert( regs, 2 );
+}
+
+static bool do_OS_ConvertHex4( svc_registers *regs )
+{
+  return hex_convert( regs, 4 );
+}
+
+static bool do_OS_ConvertHex6( svc_registers *regs )
+{
+  return hex_convert( regs, 6 );
+}
+
+static bool do_OS_ConvertHex8( svc_registers *regs )
+{
+  return hex_convert( regs, 8 );
+}
+
+static bool recursive_convert_decimal( svc_registers *regs, uint32_t n )
+{
+  uint32_t d = n / 10;
+  bool result = true;
+
+  if (d > 0)
+    result = recursive_convert_decimal( regs, d );
+
+  if (result) {
+    *((char *) regs->r[1]++) = '0' + n % 10;
+    regs->r[2] --;
+    if (regs->r[2] == 0) result = buffer_too_small( regs );
+  }
+
+  return result;
+}
+
+static bool convert_decimal( svc_registers *regs, uint32_t mask )
+{
+  uint32_t n = regs->r[0] & mask;
+  regs->r[0] = regs->r[1];
+
+  return recursive_convert_decimal( regs, n );
+}
+
+static bool do_OS_ConvertCardinal1( svc_registers *regs )
+{
+  return convert_decimal( regs, 0xff );
+}
+
+static bool do_OS_ConvertCardinal2( svc_registers *regs )
+{
+  return convert_decimal( regs, 0xffff );
+}
+
+static bool do_OS_ConvertCardinal3( svc_registers *regs )
+{
+  return convert_decimal( regs, 0xffffff );
+}
+
+static bool do_OS_ConvertCardinal4( svc_registers *regs )
+{
+  return convert_decimal( regs, 0xffffffff );
+}
+
+static bool convert_signed_decimal( svc_registers *regs, uint32_t sign_bit )
+{
+  uint32_t n = regs->r[0] & (sign_bit - 1);
+
+  if (0 != (regs->r[0] & sign_bit)) {
+    *((char *) regs->r[1]++) = '-';
+    regs->r[2] --;
+    if (regs->r[2] == 0) return buffer_too_small( regs );
+    n = sign_bit - n;
+  }
+
+  return recursive_convert_decimal( regs, n );
+}
+
+static bool do_OS_ConvertInteger1( svc_registers *regs )
+{
+  return convert_decimal( regs, (1 << 7) );
+}
+
+static bool do_OS_ConvertInteger2( svc_registers *regs )
+{
+  return convert_decimal( regs, (1 << 15) );
+}
+
+static bool do_OS_ConvertInteger3( svc_registers *regs )
+{
+  return convert_decimal( regs, (1 << 23) );
+}
+
+static bool do_OS_ConvertInteger4( svc_registers *regs )
+{
+  return convert_decimal( regs, (1ul << 31) );
+}
+
+
+static bool do_OS_ConvertBinary1( svc_registers *regs )
+static bool do_OS_ConvertBinary2( svc_registers *regs )
+static bool do_OS_ConvertBinary3( svc_registers *regs )
+static bool do_OS_ConvertBinary4( svc_registers *regs )
+
+static bool do_OS_ConvertSpacedCardinal1( svc_registers *regs )
+static bool do_OS_ConvertSpacedCardinal2( svc_registers *regs )
+static bool do_OS_ConvertSpacedCardinal3( svc_registers *regs )
+static bool do_OS_ConvertSpacedCardinal4( svc_registers *regs )
+
+static bool do_OS_ConvertSpacedInteger1( svc_registers *regs )
+static bool do_OS_ConvertSpacedInteger2( svc_registers *regs )
+static bool do_OS_ConvertSpacedInteger3( svc_registers *regs )
+static bool do_OS_ConvertSpacedInteger4( svc_registers *regs )
+
 static bool do_OS_ConvertFixedNetStation( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ConvertNetStation( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
 static bool do_OS_ConvertFileSize( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+#endif
 
 static bool Kernel_go_svc( svc_registers *regs, uint32_t svc )
 {
-  switch (svc) {
+  switch (svc & ~Xbit) {
   case OS_WriteC: return do_OS_WriteC( regs );
   case OS_WriteS: return do_OS_WriteS( regs );
   case OS_Write0: return do_OS_Write0( regs );
@@ -334,6 +528,7 @@ static bool Kernel_go_svc( svc_registers *regs, uint32_t svc )
 
   case OS_MMUControl: return do_OS_MMUControl( regs );
 
+#ifdef NO_CONVERT_MODULE
   case OS_ConvertStandardDateAndTime: return do_OS_ConvertStandardDateAndTime( regs );
   case OS_ConvertDateAndTime: return do_OS_ConvertDateAndTime( regs );
 
@@ -373,8 +568,19 @@ static bool Kernel_go_svc( svc_registers *regs, uint32_t svc )
   case OS_ConvertFixedFileSize: return do_OS_ConvertFixedFileSize( regs );
 
   case OS_ConvertFileSize: return do_OS_ConvertFileSize( regs );
+#endif
 
-  case OS_WriteI ... OS_WriteI+255: { uint32_t r0 = regs->r[0]; regs->r[0] = svc & 0xff; do_OS_WriteC( regs ); regs->r[0] = r0; return true; }
+  case OS_WriteI ... OS_WriteI+255:
+    {
+      uint32_t r0 = regs->r[0];
+      bool result;
+      regs->r[0] = svc & 0xff;
+      result = do_OS_WriteC( regs );
+      if (result) {
+        regs->r[0] = r0;
+      }
+      return result;
+    }
   };
 
   return do_module_swi( regs, svc );

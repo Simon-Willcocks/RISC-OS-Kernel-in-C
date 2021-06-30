@@ -13,3 +13,31 @@
  * limitations under the License.
  */
 
+#include "kernel.h"
+
+void Initialise_privileged_mode_stack_pointers()
+{
+  register uint32_t stack asm( "r0" );
+
+  stack = sizeof( workspace.kernel.undef_stack ) + (uint32_t) &workspace.kernel.undef_stack;
+  asm ( "msr cpsr, #0xdb\n  mov sp, r0" : : "r" (stack) );
+
+  stack = sizeof( workspace.kernel.abt_stack ) + (uint32_t) &workspace.kernel.abt_stack;
+  asm ( "msr cpsr, #0xd7\n  mov sp, r0" : : "r" (stack) );
+
+  stack = sizeof( workspace.kernel.irq_stack ) + (uint32_t) &workspace.kernel.irq_stack;
+  asm ( "msr cpsr, #0xd2\n  mov sp, r0" : : "r" (stack) );
+
+  stack = sizeof( workspace.kernel.fiq_stack ) + (uint32_t) &workspace.kernel.fiq_stack;
+  asm ( "msr cpsr, #0xd1\n  mov sp, r0" : : "r" (stack) );
+
+  // Finally, end up back in svc32, with the stack pointer unchanged:
+  asm ( "msr cpsr, #0xd3" );
+}
+
+void *memset(void *s, int c, uint32_t n)
+{
+  uint8_t *p = s;
+  for (int i = 0; i < n; i++) { p[i] = c; }
+  return s;
+}

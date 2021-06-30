@@ -79,9 +79,8 @@ typedef union {
   uint32_t raw;
 } l2tt_entry;
 
-void __attribute__(( noreturn, noinline )) go_kernel()
+static void __attribute__(( noreturn, noinline )) go_kernel()
 {
-  uint32_t *L1TT = &translation_tables;
   for (int i = 0; i < 64; i++) {
     L1TT[i] = 0;
   }
@@ -113,6 +112,21 @@ static void map_shared_work_area( uint32_t *l2tt, uint32_t physical, void *virtu
 
   for (int i = 0; i < (size + 0xfff) >> 12; i++) {
     l2tt[(va >> 12) + i] = entry.raw | (physical + (i << 12));
+  }
+}
+
+void MMU_map_at( void *va, uint32_t pa, uint32_t size )
+{
+  uint32_t virt = (uint32_t) va;
+  if (naturally_aligned( virt ) && naturally_aligned( pa ) && naturally_aligned( size )) {
+    l1tt_section_entry entry = { .raw = pa };
+    entry.type2 = 2;
+    entry.AP = 3;
+    entry.APX = 0; // Read/Write
+    L1TT[virt / natural_alignment] = entry.raw;
+  }
+  else {
+    for (;;) { asm ( "wfi" ); }
   }
 }
 
