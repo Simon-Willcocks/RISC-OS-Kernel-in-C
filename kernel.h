@@ -14,6 +14,7 @@
  */
 
 
+typedef unsigned long long uint64_t;
 typedef unsigned        uint32_t;
 typedef int             int32_t;
 typedef unsigned char   uint8_t;
@@ -25,19 +26,39 @@ typedef unsigned        bool;
 typedef struct core_workspace core_workspace;
 typedef struct shared_workspace shared_workspace;
 
+#include "processor.h"
 #include "boot.h"
 #include "mmu.h"
 #include "memory_manager.h"
 
-struct Kernel_workspace {
-  uint32_t undef_stack[128];
-  uint32_t abt_stack[128];
-  uint32_t svc_stack[128];
-  uint32_t irq_stack[128];
-  uint32_t fiq_stack[128];
+typedef struct module module;
+
+typedef struct vector vector;
+
+struct vector {
+  uint32_t code;
+  uint32_t private_word;
+  vector *next;
 };
 
+struct Kernel_workspace {
+  uint32_t undef_stack[64];
+  uint32_t abt_stack[64];
+  uint32_t svc_stack[128];
+  uint32_t irq_stack[64];
+  uint32_t fiq_stack[64];
+  const char *env;
+  uint64_t start_time;
+  module *module_list_head;
+  module *module_list_tail;
+  vector *vectors[0x25];
+};
+
+typedef struct fs fs;
+
 struct Kernel_shared_workspace {
+  fs *filesystems;
+  uint32_t fscontrol_lock;
 };
 
 extern struct core_workspace {
@@ -71,33 +92,17 @@ extern struct shared_workspace {
   struct Memory_manager_shared_workspace memory;
 } shared;
 
-static void inline claim_lock( uint32_t *lock )
+void Generate_the_RMA();
+
+// microclib
+
+static inline int strcmp( const char *left, const char *right )
 {
-  uint32_t failed = 1;
-  uint32_t value;
-  uint32_t marker = 1 + workspace.core_number; // 0 means unlocked
-
-  // The failed and lock registers are not allowed to be the same, so
-  // pretend the lock may be written as well as read.
-
-  while (failed) {
-    asm volatile ( "ldrex %[value], [%[lock]]"
-                   : [value] "=&r" (value)
-                   , [lock] "+r" (lock) );
-    if (value == 0) {
-      asm volatile ( "strex %[failed], %[value], [%[lock]]"
-                     : [failed] "=&r" (failed)
-                     , [lock] "+r" (lock)
-                     : [value] "r" (marker) );
-    }
-    else {
-      asm volatile ( "clrex" );
-    }
+  int result = 0;
+  while (result == 0 && *left != 0 && *right != 0) {
+    result = *left++ - *right++;
   }
+  return result;
 }
 
-static void inline release_lock( uint32_t *lock )
-{
-  *lock = 0;
-  // Probably need a DSB here, at least. Or LDREX to check we're the owner.
-}
+void *memset(void *s, int c, uint32_t n);

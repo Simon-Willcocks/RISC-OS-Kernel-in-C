@@ -14,9 +14,12 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-# Which kernel memory manager, MMU handler, and boot sequence do you want to use?
+# Which processor, kernel memory manager, MMU handler, and boot sequence do you want to use?
 
 # While there's only one option, this will choose them for you!
+if [ "$PROC" = "" ]; then
+  PROC=processor/*
+fi
 if [ "$MM" = "" ]; then
   MM=memory/*
 fi
@@ -27,7 +30,13 @@ if [ "$BOOT" = "" ]; then
   BOOT=boot/*
 fi
 
-arm-linux-gnueabi-gcc-8 -Wall -I . -march=armv7-a+nofp+mp -g -fno-zero-initialized-in-bss kernel.c $BOOT/*.c -I $BOOT $MMU/*.c -I $MMU $MM/*.c -I $MM -nostartfiles -nostdlib -T rom.script -Os -static -o rom.elf &&
+# Compose list of modules
+# The Modules directory should contain an Install directory from a RISC OS build
+# (It can be at any depth, so wget -r ftp://.../.../MyBuildDirectory will work.)
+for i in $( find Modules/ -type f | grep -v _ | grep -v /RISC_OS/ ); do printf %08x $( stat -c %s $i ) | sed 's/\(..\)\(..\)\(..\)\(..\)/\4 \3 \2 \1/' | xxd -r -e -p - - ; cat $i ; done > AllMods &&
+arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 AllMods AllMods.o --prefix-sections=.modules &&
+
+arm-linux-gnueabi-gcc-8 -Wall -I . -march=armv7-a+nofp+mp -g -fno-zero-initialized-in-bss kernel.c swis.c modules.c swis/*.c $PROC/*.c -I $PROC $BOOT/*.c -I $BOOT $MMU/*.c -I $MMU $MM/*.c -I $MM AllMods.o -nostartfiles -nostdlib -T rom.script -Os -static -o rom.elf &&
 arm-linux-gnueabi-objcopy -R .ignoring -O binary rom.elf rom.bin &&
 ls -l rom.*
 

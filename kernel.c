@@ -26,18 +26,19 @@ Sections of RISC OS:
 Drop support for: 26-bit modes
 */
 
-#include "kernel.h"
+#include "inkernel.h"
 
-void Kernel_default_reset() {}
-void Kernel_default_undef() {}
-void Kernel_default_svc() {}
-void Kernel_default_prefetch() {}
-void Kernel_default_data_abort() {}
-void Kernel_default_irq() {}
-
+void __attribute__(( naked, noreturn )) Kernel_default_reset() { for (;;) { asm ( "wfi" ); } }
+void __attribute__(( naked, noreturn )) Kernel_default_undef() { for (;;) { asm ( "wfi" ); } }
+// Kernel_default_svc in swis.c
+void __attribute__(( naked, noreturn )) Kernel_default_prefetch() { for (;;) { asm ( "wfi" ); } }
+void __attribute__(( naked, noreturn )) Kernel_default_data_abort() { for (;;) { asm ( "wfi" ); } }
+void __attribute__(( naked, noreturn )) Kernel_default_irq() { for (;;) { asm ( "wfi" ); } }
 
 void __attribute__(( noreturn, noinline )) Kernel_start()
 {
+  set_high_vectors();
+
   if (workspace.core_number == 0) {
     // Final use of the pre-mmu sequence's ram_blocks array, now read-only
     for (int i = 0; boot_data.ram_blocks[i].size != 0; i++) {
@@ -47,8 +48,10 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
       Kernel_add_free_RAM( boot_data.less_aligned.base >> 12, boot_data.less_aligned.size >> 12 );
     }
   }
+  // While debugging with qemu, it's helpful to work with a single core...
+  else { for (;;) { asm ( "wfi" ); } }
 
-  int32_t vector_offset = ((uint32_t*) &workspace.vectors.reset_vec - &workspace.vectors.reset) * 4;
+  int32_t vector_offset = ((uint32_t*) &workspace.vectors.reset_vec - &workspace.vectors.reset - 2) * 4;
 
   workspace.vectors.reset         = 0xe59ff000 + vector_offset; // ldr pc, ..._vec
   workspace.vectors.undef         = 0xe59ff000 + vector_offset;
@@ -65,23 +68,9 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
   workspace.vectors.data_vec      = Kernel_default_data_abort;
   workspace.vectors.irq_vec       = Kernel_default_irq;
 
-  // Initialise privileged mode stack pointers
-  register uint32_t stack asm( "r0" );
+  Initialise_privileged_mode_stack_pointers();
 
-  stack = sizeof( workspace.kernel.undef_stack ) + (uint32_t) &workspace.kernel.undef_stack;
-  asm ( "msr cpsr, #0xdb\n  mov sp, r0" : : "r" (stack) );
-
-  stack = sizeof( workspace.kernel.abt_stack ) + (uint32_t) &workspace.kernel.abt_stack;
-  asm ( "msr cpsr, #0xd7\n  mov sp, r0" : : "r" (stack) );
-
-  stack = sizeof( workspace.kernel.irq_stack ) + (uint32_t) &workspace.kernel.irq_stack;
-  asm ( "msr cpsr, #0xd2\n  mov sp, r0" : : "r" (stack) );
-
-  stack = sizeof( workspace.kernel.fiq_stack ) + (uint32_t) &workspace.kernel.fiq_stack;
-  asm ( "msr cpsr, #0xd1\n  mov sp, r0" : : "r" (stack) );
-
-  // Finally, end up back in svc32, with the stack pointer unchanged:
-  asm ( "msr cpsr, #0xd3" );
+  Generate_the_RMA();
 
   // Running in virtual memory with a stack and workspace for each core.
   for (;;) { asm ( "wfi" ); }

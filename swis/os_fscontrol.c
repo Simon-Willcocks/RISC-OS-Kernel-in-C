@@ -13,32 +13,33 @@
  * limitations under the License.
  */
 
+#include "inkernel.h"
 
-ENTRY( _start )
-SECTIONS
+typedef struct fs fs;
+
+struct fs {
+  uint32_t module;
+  uint32_t info;
+  uint32_t r12;
+  fs *next;
+};
+
+bool do_OS_FSControl( svc_registers *regs )
 {
-  /* Virtual addresses */
-  va_base = 0xfc000000 ;
-  workspace = 0xffff0000 ;
-  shared = 0xffff8000 ;
-  translation_tables = 0xfff00000 ;
-  devices = 0xfff80000 ;
-  rma_base = 0xf0000000 ;
-  rma_heap = 0xf0000000 ;
-  sma_lock = 0xf1000000 ;
-  sma_heap = sma_lock + 4 ;
+  claim_lock( &shared.kernel.fscontrol_lock, workspace.core_number+1 );
+  switch (regs->r[0]) {
+  case 12: 
+    {
+      fs *f = (void*) sma_allocate( sizeof( fs ), regs );
+      f->module = regs->r[1];
+      f->info = regs->r[2];
+      f->r12 = regs->r[3];
+      f->next = shared.kernel.filesystems;
+      return true;
+    }
+  default:
+    return false;
+  }
+  release_lock( &shared.kernel.fscontrol_lock );
+}
 
- . = va_base ;
- .text : {
-  *(.text.init) ;
-  *(.data) ; /* Pre-MMU data, not writable once kernel started. */
-  *(.text) ;
-  *(.rodata*) ;
-  . = ALIGN( 4096 ) ;
-  *(.modules.data*) ;
-  . = ALIGN( 1024 * 1024 ) ;
-  rom_size = . - va_base ;
- }
-
- /DISCARD/ : { *(.*) ; }
-} ;

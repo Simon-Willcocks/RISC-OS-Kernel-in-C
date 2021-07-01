@@ -17,14 +17,16 @@
 struct Memory_manager_workspace {
 };
 
+typedef struct {
+  uint32_t base_page:16;
+  uint32_t size:16; // pages
+} free_block;
+
 struct Memory_manager_shared_workspace {
   uint32_t lock;
-  struct {
-    uint32_t base_page:16;
-    uint32_t size:16; // pages
-  } free_blocks[16];
+  free_block free_blocks[16];
 };
 
 
 void Kernel_add_free_RAM( uint32_t base_page, uint32_t size_in_pages );
-uint32_t Kernel_allocate_pages( uint32_t size_in_pages, uint32_t alignment );
+uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment );
