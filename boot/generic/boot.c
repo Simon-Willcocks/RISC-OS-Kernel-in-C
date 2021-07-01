@@ -144,58 +144,6 @@ relocated:
       }
     }
 
-uint32_t volatile *gpio = (uint32_t*) 0x3f200000;
-gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6); // Output, pin 22
-gpio[0x1c/4] = (1 << 22); // Set
-uint32_t volatile *mailbox = (uint32_t*) 0x3f00b880;
-uint32_t width = 1920;
-uint32_t height = 1080;
-uint32_t vwidth = 1920;
-uint32_t vheight = 1080;
-const uint32_t __attribute__(( aligned( 16 ) )) tags[36] =
-{ sizeof( tags ), 0, 0x00028001, 8, 0, 1, 3, 0x00028001, 8, 0, 2, 3, 
-          // Tags: Tag, buffer size, request code, buffer
-          0x00040001, // Allocate buffer
-          8, 0, 2 << 20, 0, // Size, Code, In: Alignment, Out: Base, Size
-          0x00048003, // Set physical (display) width/height
-          8, 0, width, height,
-          0x00048004, // Set virtual (buffer) width/height
-          8, 0, vwidth, vheight,
-          0x00048005, // Set depth
-          4, 0, 32,
-          0x00048006, // Set pixel order
-          4, 0, 0,    // 0 = BGR, 1 = RGB
-0 };
-mailbox[8] = 8 | (uint32_t)tags;
-while ((mailbox[6] & (1 << 30)) != 0) {}
-
-
-uint32_t *s = tags[15] & ~0xc0000000;
-for (int i = 0; i < 1920*1000; i++) { s[i] = 0xffff8888; }
-
-/*
-uint32_t volatile *uart = (uint32_t*) 0x3f201000;
-uart[0x30/4] = 0; // Disable
-uart[0x24/4] = 6; // IBRD
-uart[0x28/4] = 62; // FBRD
-uart[0x30/4] = 0b1100000001; // Enable: TX, RX, no flow control
-uart[0] = 'S';
-
-for (int i = 0; i < 10000000; i++) { asm ( "" ); }
-gpio[0x28/4] = (1 << 22); // Clr
-
-bool on = false;
-for (;;) {
-while (uart[0x18/4] & (1 << 4)) { }
-uart[0] = uart[0] + 1;
-if (on) 
-gpio[0x28/4] = (1 << 22); // Clr
-else
-gpio[0x1c/4] = (1 << 22); // Set
-on = !on;
-}
-*/
-
     wait_for_cores_to_reach( states, max_cores, CORES_RUNNING_AT_NEW_LOCATION );
 
     // Now all cores are at the new location, so the RAM outside the "ROM" area can be used

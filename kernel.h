@@ -14,6 +14,7 @@
  */
 
 
+typedef unsigned long long uint64_t;
 typedef unsigned        uint32_t;
 typedef int             int32_t;
 typedef unsigned char   uint8_t;
@@ -41,17 +42,23 @@ struct vector {
 };
 
 struct Kernel_workspace {
-  uint32_t undef_stack[128];
-  uint32_t abt_stack[128];
+  uint32_t undef_stack[64];
+  uint32_t abt_stack[64];
   uint32_t svc_stack[128];
-  uint32_t irq_stack[128];
-  uint32_t fiq_stack[128];
+  uint32_t irq_stack[64];
+  uint32_t fiq_stack[64];
+  const char *env;
+  uint64_t start_time;
   module *module_list_head;
   module *module_list_tail;
   vector *vectors[0x25];
 };
 
+typedef struct fs fs;
+
 struct Kernel_shared_workspace {
+  fs *filesystems;
+  uint32_t fscontrol_lock;
 };
 
 extern struct core_workspace {
@@ -87,7 +94,6 @@ extern struct shared_workspace {
 
 void Generate_the_RMA();
 
-
 // microclib
 
 static inline int strcmp( const char *left, const char *right )
@@ -100,4 +106,3 @@ static inline int strcmp( const char *left, const char *right )
 }
 
 void *memset(void *s, int c, uint32_t n);
-

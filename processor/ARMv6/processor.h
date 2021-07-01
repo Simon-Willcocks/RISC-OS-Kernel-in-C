@@ -33,6 +33,11 @@ static inline uint32_t get_swi_number( uint32_t instruction_following_swi )
   return result & 0x00ffffff;
 }
 
+static inline void clear_VF()
+{
+  asm ( "msr cpsr_f, #0" );
+}
+
 void Initialise_privileged_mode_stack_pointers();
 
 static inline void claim_lock( uint32_t *lock, uint32_t marker /* unique, non-0. 0 means unlocked */ )

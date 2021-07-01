@@ -16,12 +16,13 @@
 #include "inkernel.h"
 
 extern uint32_t rma_base; // Loader generated
+extern uint32_t rma_heap; // Loader generated
+extern uint32_t sma_lock; // Loader generated
+extern uint32_t sma_heap; // Loader generated
 
 // ROM Modules, with the length in a word before the code:
 extern uint32_t _binary_AllMods_start;
 extern uint32_t _binary_AllMods_end;
-
-static uint32_t const rma_base_ptr = (uint32_t) &rma_base;
 
 typedef struct {
   uint32_t offset_to_start;
@@ -43,30 +44,6 @@ struct module {
   uint32_t instance;
   module *next;  // Simple singly-linked list
 };
-
-static inline uint32_t rma_allocate( uint32_t size, svc_registers *regs )
-{
-  uint32_t r0 = regs->r[0];
-  uint32_t r1 = regs->r[1];
-  uint32_t r2 = regs->r[2];
-  uint32_t r3 = regs->r[3];
-  uint32_t result = 0;
-
-  regs->r[0] = 2;
-  regs->r[1] = rma_base_ptr;
-  regs->r[3] = size;
-
-  if (do_OS_Heap( regs )) {
-    result = regs->r[2];
-    regs->r[0] = r0; // Don't overwrite error word
-  }
-
-  regs->r[1] = r1;
-  regs->r[2] = r2;
-  regs->r[3] = r3;
-
-  return result;
-}
 
 static uint32_t start_code( module_header *header )
 {
@@ -120,6 +97,7 @@ static bool run_service_call_handler_code( svc_registers *regs, module *m )
       :
       : [regs] "r" (regs)
       , "r" (non_kernel_code)
+      , "r" (private_word)
       : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8" 
       : failed );
 
@@ -171,6 +149,7 @@ static bool run_vector_code( svc_registers *regs, vector *v )
       :
       : [regs] "r" (regs)
       , "r" (non_kernel_code)
+      , "r" (private_word)
       : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"
       : failed );
 
@@ -203,6 +182,9 @@ static const char *help_string( module_header *header )
 bool do_module_swi( svc_registers *regs, uint32_t svc )
 {
   uint32_t chunk = svc & ~Xbit & ~0x3f;
+
+  clear_VF();
+
   module *m = workspace.kernel.module_list_head;
   while (m != 0 && m->header->swi_chunk != chunk) {
     m = m->next;
@@ -268,7 +250,7 @@ static bool do_Module_DescribeRMA( svc_registers *regs )
 {
   uint32_t r1 = regs->r[1];
   regs->r[0] = 1;
-  regs->r[1] = rma_base_ptr;
+  regs->r[1] = (uint32_t) &rma_heap;
   bool result = do_OS_Heap( regs );
   if (result) {
     regs->r[0] = 5;
@@ -281,7 +263,7 @@ static bool do_Module_Claim( svc_registers *regs )
 {
   uint32_t r1 = regs->r[1];
   regs->r[0] = 2;
-  regs->r[1] = rma_base_ptr;
+  regs->r[1] = (uint32_t) &rma_heap;
   bool result = do_OS_Heap( regs );
   if (result) {
     regs->r[0] = 6;
@@ -438,8 +420,8 @@ static bool do_Module_EnumerateROMModules( svc_registers *regs )
   module_header *header = (void*) (rom_module+1);
   regs->r[1] = n + 1;
   regs->r[2] = -1;
-  regs->r[3] = title_string( header );
-  regs->r[4] = module_state( header );
+  regs->r[3] = (uint32_t) title_string( header );
+  regs->r[4] = (uint32_t) module_state( header );
   regs->r[5] = 0; // Chunk number
 
   return true;
@@ -464,8 +446,8 @@ static bool do_Module_EnumerateROMModulesWithVersion( svc_registers *regs )
   module_header *header = (void*) (rom_module+1);
   regs->r[1] = n + 1;
   regs->r[2] = -1;
-  regs->r[3] = title_string( header );
-  regs->r[4] = module_state( header );
+  regs->r[3] = (uint32_t) title_string( header );
+  regs->r[4] = (uint32_t) module_state( header );
   regs->r[5] = 0; // Chunk number
 
   return true;
@@ -523,11 +505,86 @@ bool do_OS_CallAVector( svc_registers *regs )
   return result;
 }
 
-bool do_OS_Claim( svc_registers *regs ){}
-bool do_OS_Release( svc_registers *regs ){}
-bool do_OS_AddToVector( svc_registers *regs ){}
-bool do_OS_DelinkApplication( svc_registers *regs ){}
-bool do_OS_RelinkApplication( svc_registers *regs ){}
+bool do_OS_Claim( svc_registers *regs )
+{
+  regs->r[0] = Kernel_Error_UnknownSWI;
+  return false;
+}
+bool do_OS_Release( svc_registers *regs )
+{
+  regs->r[0] = Kernel_Error_UnknownSWI;
+  return false;
+}
+bool do_OS_AddToVector( svc_registers *regs )
+{
+  regs->r[0] = Kernel_Error_UnknownSWI;
+  return false;
+}
+bool do_OS_DelinkApplication( svc_registers *regs )
+{
+  regs->r[0] = Kernel_Error_UnknownSWI;
+  return false;
+}
+bool do_OS_RelinkApplication( svc_registers *regs )
+{
+  regs->r[0] = Kernel_Error_UnknownSWI;
+  return false;
+}
+
+bool do_OS_GetEnv( svc_registers *regs )
+{
+  regs->r[0] = workspace.kernel.env;
+  regs->r[1] = 0;
+  regs->r[2] = &workspace.kernel.start_time;
+}
+
+void Generate_the_SMA()
+{
+  // Create a Shared Module Area, and initialise a heap in it.
+  // This is for multi-processing aware software, and changes to its structure
+  // (allocating, freeing, etc.) will be protected by a lock at the base address.
+
+  uint32_t SMA = Kernel_allocate_pages( natural_alignment, natural_alignment );
+  uint32_t initial_sma_size = natural_alignment;
+
+  MMU_map_at( &sma_heap, SMA, initial_sma_size );
+
+  svc_registers regs = { .r[0] = 0, .r[1] = (uint32_t) &sma_heap, .r[3] = initial_sma_size };
+
+  if (!do_OS_Heap( &regs )) {
+    for (;;) { asm ( "wfi" ); }
+  }
+}
+
+void init_module( const char *name )
+{
+  uint32_t *rom_modules = &_binary_AllMods_start;
+  uint32_t *rom_modules_end = &_binary_AllMods_end;
+  uint32_t *rom_module = rom_modules;
+
+  workspace.kernel.env = name;
+  workspace.kernel.start_time = 0x0101010101ull;
+
+  // UtilityModule isn't a real module
+  // PCI calls XOS_Hardware (and XOS_Heap 8)
+  // BASIC? - starts two other modules...
+  // Obey.
+  // The intention is to initialise a HAL module, which can kick off a centisecond
+  // upcall and initialise the hardware, including checking for pressed buttons on
+  // a keyboard or similar.
+
+  while (rom_module < rom_modules_end) {
+    module_header *header = (void*) (rom_module+1);
+    register const char *title = title_string( header );
+    if (0 == strcmp( title, name )) {
+      register uint32_t code asm( "r0" ) = 10;
+      register module_header *module asm( "r1" ) = header;
+
+      asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) );
+    }
+    rom_module += 1 + (*rom_module)/4; // One word of length
+  }
+}
 
 void Generate_the_RMA()
 {
@@ -536,39 +593,19 @@ void Generate_the_RMA()
   uint32_t RMA = Kernel_allocate_pages( natural_alignment, natural_alignment );
   uint32_t initial_rma_size = natural_alignment;
 
-  MMU_map_at( &rma_base, RMA, initial_rma_size );
+  MMU_map_at( &rma_heap, RMA, initial_rma_size );
 
-  svc_registers regs = { .r[0] = 0, .r[1] = rma_base_ptr, .r[3] = initial_rma_size };
+  svc_registers regs = { .r[0] = 0, .r[1] = (uint32_t) &rma_heap, .r[3] = initial_rma_size };
 
   if (!do_OS_Heap( &regs )) {
     for (;;) { asm ( "wfi" ); }
   }
 
-  // As an experiment, run through the ROM Module names
+  // This is obviously becoming the boot sequence, to be refactored when something's happening...
+  // Current confusion: Why does ResourceFS need to know the screen mode?
 
-  {
-    uint32_t *rom_modules = &_binary_AllMods_start;
-    uint32_t *rom_modules_end = &_binary_AllMods_end;
-    uint32_t *rom_module = rom_modules;
-
-    // UtilityModule isn't a real module
-    // PCI calls XOS_Hardware (and XOS_Heap 8)
-    // BASIC? - starts two other modules...
-    // Obey.
-    // The intention is to initialise a HAL module, which can kick off a centisecond
-    // upcall and initialise the hardware, including checking for pressed buttons on
-    // a keyboard or similar.
-
-    while (rom_module < rom_modules_end) {
-      module_header *header = (void*) (rom_module+1);
-      register const char *title = title_string( header );
-      if (0 == strcmp( title, "Obey" )) {
-        register uint32_t code asm( "r0" ) = 10;
-        register module_header *module asm( "r1" ) = header;
-
-        asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) );
-      }
-      rom_module += 1 + (*rom_module)/4; // One word of length
-    }
-  }
+  init_module( "Obey" );
+  init_module( "FileCore" );
+  init_module( "FileSwitch" );
+  init_module( "ResourceFS" );
 }
