@@ -41,3 +41,11 @@ void *memset(void *s, int c, uint32_t n)
   for (int i = 0; i < n; i++) { p[i] = c; }
   return s;
 }
+
+void *memcpy(void *d, const void *s, uint32_t n)
+{
+  uint8_t *dest = d;
+  const uint8_t *src = s;
+  for (int i = 0; i < n; i++) { dest[i] = src[i]; }
+  return d;
+}

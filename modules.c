@@ -15,14 +15,11 @@
 
 #include "inkernel.h"
 
-extern uint32_t rma_base; // Loader generated
-extern uint32_t rma_heap; // Loader generated
-extern uint32_t sma_lock; // Loader generated
-extern uint32_t sma_heap; // Loader generated
-
-// ROM Modules, with the length in a word before the code:
+// Linker generated:
 extern uint32_t _binary_AllMods_start;
 extern uint32_t _binary_AllMods_end;
+extern uint32_t rma_base;
+extern uint32_t rma_heap;
 
 typedef struct {
   uint32_t offset_to_start;
@@ -44,6 +41,13 @@ struct module {
   uint32_t instance;
   module *next;  // Simple singly-linked list
 };
+
+static bool error_nomem( svc_registers *regs )
+{
+    static error_block nomem = { 0x101, "The area of memory reserved for relocatable modules is full" };
+    regs->r[0] = (uint32_t) &nomem;
+    return false;
+}
 
 static uint32_t start_code( module_header *header )
 {
@@ -301,7 +305,7 @@ static bool do_Module_InsertFromMemory( svc_registers *regs )
   module *instance = (void*) rma_allocate( sizeof( module ), regs );
 
   if (instance == 0) {
-    for (;;) { asm ( "wfi" ); }
+    return error_nomem( regs );
   }
 
   instance->header = new_mod;
@@ -507,9 +511,42 @@ bool do_OS_CallAVector( svc_registers *regs )
 
 bool do_OS_Claim( svc_registers *regs )
 {
-  regs->r[0] = Kernel_Error_UnknownSWI;
-  return false;
+  if (regs->r[0] > number_of( workspace.kernel.vectors )) {
+    regs->r[0] = Kernel_Error_UnknownSWI;
+    return false;
+  }
+
+  vector **p = &workspace.kernel.vectors[regs->r[0]];
+  vector *v = *p;
+
+  while (v != 0) {
+    if (v->code == regs->r[1] && v->private_word == regs->r[2]) {
+      // Duplicate to be removed, except we'll just move it up to the head instead,
+      // without having to allocate new space.
+      *p = v->next; // Removed from list
+      v->next = workspace.kernel.vectors[regs->r[0]];
+      workspace.kernel.vectors[regs->r[0]] = v; // Added at head;
+      return true;
+    }
+
+    p = &v->next;
+    v = v->next;
+  }
+
+  vector *new = rma_allocate( sizeof( vector ), regs );
+  if (new == 0) {
+    return error_nomem( regs );
+  }
+
+  new->code = regs->r[1];
+  new->private_word = regs->r[2];
+  new->next = workspace.kernel.vectors[regs->r[0]];
+
+  workspace.kernel.vectors[regs->r[0]] = new;
+
+  return true;
 }
+
 bool do_OS_Release( svc_registers *regs )
 {
   regs->r[0] = Kernel_Error_UnknownSWI;
@@ -536,24 +573,7 @@ bool do_OS_GetEnv( svc_registers *regs )
   regs->r[0] = workspace.kernel.env;
   regs->r[1] = 0;
   regs->r[2] = &workspace.kernel.start_time;
-}
-
-void Generate_the_SMA()
-{
-  // Create a Shared Module Area, and initialise a heap in it.
-  // This is for multi-processing aware software, and changes to its structure
-  // (allocating, freeing, etc.) will be protected by a lock at the base address.
-
-  uint32_t SMA = Kernel_allocate_pages( natural_alignment, natural_alignment );
-  uint32_t initial_sma_size = natural_alignment;
-
-  MMU_map_at( &sma_heap, SMA, initial_sma_size );
-
-  svc_registers regs = { .r[0] = 0, .r[1] = (uint32_t) &sma_heap, .r[3] = initial_sma_size };
-
-  if (!do_OS_Heap( &regs )) {
-    for (;;) { asm ( "wfi" ); }
-  }
+  return true;
 }
 
 void init_module( const char *name )
@@ -586,26 +606,31 @@ void init_module( const char *name )
   }
 }
 
-void Generate_the_RMA()
+void Boot()
 {
-  // Create a Relocatable Module Area, and initialise a heap in it.
-
-  uint32_t RMA = Kernel_allocate_pages( natural_alignment, natural_alignment );
-  uint32_t initial_rma_size = natural_alignment;
-
-  MMU_map_at( &rma_heap, RMA, initial_rma_size );
-
-  svc_registers regs = { .r[0] = 0, .r[1] = (uint32_t) &rma_heap, .r[3] = initial_rma_size };
-
-  if (!do_OS_Heap( &regs )) {
-    for (;;) { asm ( "wfi" ); }
-  }
-
   // This is obviously becoming the boot sequence, to be refactored when something's happening...
-  // Current confusion: Why does ResourceFS need to know the screen mode?
 
-  init_module( "Obey" );
   init_module( "FileCore" );
   init_module( "FileSwitch" );
   init_module( "ResourceFS" );
+
+  init_module( "DrawMod" );
+  init_module( "DrawFile" );
+
+  extern int _binary_DrawFile_start;
+  extern int _binary_DrawFile_size;
+
+  typedef struct {} matrix;
+  typedef struct {} clipping_rect;
+
+  register uint32_t r0 asm( "r0" ) = 0;
+  register void *r1 asm( "r1" ) = &_binary_DrawFile_start;
+  register uint32_t r2 asm( "r2" ) = (uint32_t) &_binary_DrawFile_size;
+  register matrix *r3 asm( "r3" ) = 0;
+  register clipping_rect *r4 asm( "r4" ) = 0;
+  asm ( "svc 0x45540" : : "r" (r0), "r" (r1), "r" (r2), "r" (r3), "r" (r4) );
+
+  // Should have entered a RISC OS Application by now...
+  for (;;) { asm ( "wfi" ); }
 }
+

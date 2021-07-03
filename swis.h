@@ -86,14 +86,18 @@ bool do_OS_GetEnv( svc_registers *regs );
 // swis/os_fscontrol.c
 bool do_OS_FSControl( svc_registers *regs );
 
+// memory/
+
+bool do_OS_ChangeDynamicArea( svc_registers *regs );
+bool do_OS_ReadDynamicArea( svc_registers *regs );
+bool do_OS_DynamicArea( svc_registers *regs );
+
 // Find a module that provides this SWI
 bool do_module_swi( svc_registers *regs, uint32_t svc );
 
 
 extern uint32_t rma_base; // Loader generated
 extern uint32_t rma_heap; // Loader generated
-extern uint32_t sma_lock; // Loader generated
-extern uint32_t sma_heap; // Loader generated
 
 static inline uint32_t rma_allocate( uint32_t size, svc_registers *regs )
 {
@@ -107,10 +111,14 @@ static inline uint32_t rma_allocate( uint32_t size, svc_registers *regs )
   regs->r[1] = (uint32_t) &rma_heap;
   regs->r[3] = size;
 
+  claim_lock( &shared.memory.lock );
+
   if (do_OS_Heap( regs )) {
     result = regs->r[2];
     regs->r[0] = r0; // Don't overwrite error word
   }
+
+  release_lock( &shared.memory.lock );
 
   regs->r[1] = r1;
   regs->r[2] = r2;
@@ -118,29 +126,4 @@ static inline uint32_t rma_allocate( uint32_t size, svc_registers *regs )
 
   return result;
 }
-
-static inline uint32_t sma_allocate( uint32_t size, svc_registers *regs )
-{
-  uint32_t r0 = regs->r[0];
-  uint32_t r1 = regs->r[1];
-  uint32_t r2 = regs->r[2];
-  uint32_t r3 = regs->r[3];
-  uint32_t result = 0;
-
-  regs->r[0] = 2;
-  regs->r[1] = (uint32_t) &sma_heap;
-  regs->r[3] = size;
-
-  if (do_OS_Heap( regs )) {
-    result = regs->r[2];
-    regs->r[0] = r0; // Don't overwrite error word
-  }
-
-  regs->r[1] = r1;
-  regs->r[2] = r2;
-  regs->r[3] = r3;
-
-  return result;
-}
-
 

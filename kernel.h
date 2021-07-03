@@ -23,6 +23,8 @@ typedef unsigned        bool;
 #define true  (0 == 0)
 #define false (0 != 0)
 
+#define number_of( arr ) (sizeof( arr ) / sizeof( arr[0] ))
+
 typedef struct core_workspace core_workspace;
 typedef struct shared_workspace shared_workspace;
 
@@ -90,9 +92,9 @@ extern struct shared_workspace {
   struct MMU_shared_workspace mmu;
   struct Kernel_shared_workspace kernel;
   struct Memory_manager_shared_workspace memory;
-} shared;
+} volatile shared;
 
-void Generate_the_RMA();
+void __attribute__(( noreturn )) Boot();
 
 // microclib
 

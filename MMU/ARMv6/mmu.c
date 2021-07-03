@@ -108,7 +108,10 @@ static void map_shared_work_area( uint32_t *l2tt, uint32_t physical, void *virtu
   uint32_t va = 0xff000 & (uint32_t) virtual;
 
   // Writable by (and visible to) this core only, only in privileged modes.
-  l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
+  // l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
+  // The above values don't seem to work with ldrex
+  // Shared write-back, no allocate on write (whatever that means)
+  l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 1, .C = 1, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
 
   for (int i = 0; i < (size + 0xfff) >> 12; i++) {
     l2tt[(va >> 12) + i] = entry.raw | (physical + (i << 12));
@@ -119,15 +122,27 @@ void MMU_map_at( void *va, uint32_t pa, uint32_t size )
 {
   uint32_t virt = (uint32_t) va;
   if (naturally_aligned( virt ) && naturally_aligned( pa ) && naturally_aligned( size )) {
-    l1tt_section_entry entry = { .raw = pa };
-    entry.type2 = 2;
-    entry.AP = 3;
-    entry.APX = 0; // Read/Write
-    L1TT[virt / natural_alignment] = entry.raw;
+    while (size > 0) {
+      l1tt_section_entry entry = { .raw = pa };
+      entry.type2 = 2;
+      entry.AP = 3;
+      entry.APX = 0; // Read/Write
+      L1TT[virt / natural_alignment] = entry.raw;
+      size -= natural_alignment;
+      virt += natural_alignment;
+      pa += natural_alignment;
+    }
+  }
+  else if (size == 4096 && (uint32_t) va >= 0xfff00000) {
+    l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 0, .nG = 0 };
+    entry.page_base = (pa >> 12);
+    top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
   }
   else {
     for (;;) { asm ( "wfi" ); }
   }
+
+  asm ( "dsb sy" ); // TODO: replace with descriptive routine from processor
 }
 
 void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volatile startup *startup )
@@ -169,7 +184,7 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
   map_work_area( ws->mmu.l2tt_pa, (uint32_t) ws->mmu.l1tt_pa, L1TT, 4096 * 4 );
   map_work_area( ws->mmu.l2tt_pa, (uint32_t) ws->mmu.l2tt_pa, top_MiB_tt, 4096 );
 
-  map_shared_work_area( ws->mmu.l2tt_pa, startup->shared_memory, &shared, sizeof( shared ) );
+  map_shared_work_area( ws->mmu.l2tt_pa, startup->shared_memory, (void*) &shared, sizeof( shared ) );
 
   // This version doesn't use TTBR1; there's enough memory in everything,
   // these days. (Any future 64-bit version should, though).
@@ -178,19 +193,22 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
 
   uint32_t tcr;
 
-  // XP, bit 23, 1 = subpage AP bits disabled.
-  // I, bit 12, 0 = instruction cache off (temporarily, assuming it was on, anyway)
-  MODIFY_CP15_REG( "c1, c0, 0", (1 << 12) | (1 << 23), (1 << 23), tcr );
+  asm ( "  mrc p15, 0, %[tcr], c1, c0, 0" : [tcr] "=r" (tcr) );
 
-  // Turn on I, D cache, MMU, set SP, and call Kernel_start
-  tcr |= (1 << 12) | (1 << 2) | (1 << 0);
+  tcr |=  (1 << 23); // XP, bit 23, 1 = subpage AP bits disabled.
+  tcr &= ~(1 << 29); // Access Bit not used
+  tcr |=  (1 << 13); // High vectors; there were problems with setting this bit independently, so do it here
+  tcr |=  (1 << 12); // Instruction cache
+  tcr |=  (1 <<  2); // Data cache
+  tcr |=  (1 <<  0); // MMU Enable
 
-  asm ( "  mcr p15, 0, %[tcr], c1, c0, 0" 
+  asm ( "  dsb sy"
+      "\n  mcr p15, 0, %[tcr], c1, c0, 0" 
       "\n  mov sp, %[stack]"
       "\n  bx %[kernel]"
       :
       : [tcr] "r" (tcr)
-      , [kernel] "r" (go_kernel)
+      , [kernel] "r" (go_kernel) // Virtual (high memory) address
       , [stack] "r" (sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack) );
 
   __builtin_unreachable();

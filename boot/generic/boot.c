@@ -15,6 +15,8 @@
 
 #include "kernel.h"
 
+void *memcpy( void *, void *, uint32_t );
+
 startup boot_data = { 0 };
 
 // Simple synchronisation routines to be used before the MMU is
@@ -169,7 +171,7 @@ relocated:
   __builtin_unreachable();
 }
 
-static void *memcpy(void *dest, const void *src, size_t n)
+static void copy(void *dest, const void *src, size_t n)
 {
   uint32_t *d = dest;
   const uint32_t *s = src;
@@ -178,8 +180,6 @@ static void *memcpy(void *dest, const void *src, size_t n)
   for (n = n / sizeof( uint32_t ); n > 0; n--) {
     *d++ = *s++;
   }
-
-  return dest; // Standard behaviour, ignored.
 }
 
 
@@ -226,7 +226,7 @@ static uint32_t __attribute__(( noinline )) relocate_as_necessary( uint32_t star
   // the whole lot to the new location ready to be jumped to.
 
   if (startup->final_location != start) {
-    memcpy( (void*) startup->final_location, (const void*) start, size_of_rom );
+    copy( (void*) startup->final_location, (const void*) start, size_of_rom );
   }
 
   return startup->final_location - start;

@@ -26,20 +26,26 @@ struct fs {
 
 bool do_OS_FSControl( svc_registers *regs )
 {
-  claim_lock( &shared.kernel.fscontrol_lock, workspace.core_number+1 );
+  claim_lock( &shared.kernel.fscontrol_lock );
   switch (regs->r[0]) {
   case 12: 
     {
-      fs *f = (void*) sma_allocate( sizeof( fs ), regs );
+      fs *f = (void*) rma_allocate( sizeof( fs ), regs );
       f->module = regs->r[1];
       f->info = regs->r[2];
       f->r12 = regs->r[3];
       f->next = shared.kernel.filesystems;
-      return true;
+      goto success;
     }
   default:
-    return false;
+    goto failed;
   }
+success:
   release_lock( &shared.kernel.fscontrol_lock );
+  return true;
+
+failed:
+  release_lock( &shared.kernel.fscontrol_lock );
+  return false;
 }
 

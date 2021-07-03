@@ -36,7 +36,7 @@ fi
 for i in $( find Modules/ -type f | grep -v _ | grep -v /RISC_OS/ ); do printf %08x $( stat -c %s $i ) | sed 's/\(..\)\(..\)\(..\)\(..\)/\4 \3 \2 \1/' | xxd -r -e -p - - ; cat $i ; done > AllMods &&
 arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 AllMods AllMods.o --prefix-sections=.modules &&
 
-arm-linux-gnueabi-gcc-8 -Wall -I . -march=armv7-a+nofp+mp -g -fno-zero-initialized-in-bss kernel.c swis.c modules.c swis/*.c $PROC/*.c -I $PROC $BOOT/*.c -I $BOOT $MMU/*.c -I $MMU $MM/*.c -I $MM AllMods.o -nostartfiles -nostdlib -T rom.script -Os -static -o rom.elf &&
+arm-linux-gnueabi-gcc-8 -Wall -I . -march=armv7-a+nofp+mp -g -fno-zero-initialized-in-bss kernel.c swis.c modules.c DrawFile.o swis/*.c $PROC/*.c -I $PROC $BOOT/*.c -I $BOOT $MMU/*.c -I $MMU $MM/*.c -I $MM AllMods.o -nostartfiles -nostdlib -T rom.script -Os -static -o rom.elf &&
 arm-linux-gnueabi-objcopy -R .ignoring -O binary rom.elf rom.bin &&
 ls -l rom.*
 

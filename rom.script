@@ -25,8 +25,8 @@ SECTIONS
   devices = 0xfff80000 ;
   rma_base = 0xf0000000 ;
   rma_heap = 0xf0000000 ;
-  sma_lock = 0xf1000000 ;
-  sma_heap = sma_lock + 4 ;
+  frame_buffer = 0xef000000 ;
+  system_heap = 0xffe00000 ;
 
  . = va_base ;
  .text : {

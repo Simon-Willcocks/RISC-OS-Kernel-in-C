@@ -124,7 +124,6 @@ static bool do_OS_GSRead( svc_registers *regs ) { regs->r[0] = Kernel_Error_Unkn
 static bool do_OS_GSTrans( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
 static bool do_OS_BinaryToDecimal( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ChangeDynamicArea( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_GenerateError( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
 static bool do_OS_ReadEscapeState( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
@@ -211,17 +210,37 @@ static bool do_OS_SerialOp( svc_registers *regs ) { regs->r[0] = Kernel_Error_Un
 
 static bool do_OS_ReadSysInfo( svc_registers *regs )
 {
-// Probably just ChkKernelVersion
-{ regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+  static error_block error = { 0x333, "ReadSysInfo unknown code" };
+
+  // Probably just ChkKernelVersion (code 1)
+
   switch (regs->r[0]) {
+  case 6:
+    {
+      if (regs->r[1] == 0) {
+        // Single value, number in r2, result to r2
+        switch (regs->r[2]) {
+        case 0x45: // Address of IRQsema, not implemented
+          {
+            static uint32_t zero = 0;
+            regs->r[2] = (uint32_t) &zero;
+            // Probably used more than this, but DrawMod uses it to check it's not being asked to render a file from
+            // an interrupt handler!
+          }
+        }
+      }
+    }
+  default: { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
   }
+
+  regs->r[0] = (uint32_t) &error;
+  return false;
 }
 
 static bool do_OS_Confirm( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ChangedBox( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_CRC( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
-static bool do_OS_ReadDynamicArea( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_PrintChar( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ChangeRedirection( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_RemoveCallBack( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
@@ -232,7 +251,6 @@ static bool do_OS_SetColour( svc_registers *regs ) { regs->r[0] = Kernel_Error_U
 static bool do_OS_Pointer( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ScreenMode( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
-static bool do_OS_DynamicArea( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_Memory( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ClaimProcessorVector( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_Reset( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }

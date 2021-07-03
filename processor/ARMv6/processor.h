@@ -40,32 +40,38 @@ static inline void clear_VF()
 
 void Initialise_privileged_mode_stack_pointers();
 
-static inline void claim_lock( uint32_t *lock, uint32_t marker /* unique, non-0. 0 means unlocked */ )
+// There's no possibility of a RISC OS thread of execution to hand over to another running
+// on the same core, so there's no call for a particularly flexible lock system.
+
+// This code conforms to the section 7.2 of PRD03-GENC-007826: Acquiring and Releasing a Lock
+static inline void claim_lock( uint32_t volatile *lock )
 {
   uint32_t failed = 1;
   uint32_t value;
 
-  // The failed and lock registers are not allowed to be the same, so
-  // pretend the lock may be written as well as read.
-
   while (failed) {
     asm volatile ( "ldrex %[value], [%[lock]]"
                    : [value] "=&r" (value)
-                   , [lock] "+r" (lock) );
+                   : [lock] "r" (lock) );
     if (value == 0) {
+      // The failed and lock registers are not allowed to be the same, so
+      // pretend to gcc that the lock may be written as well as read.
+
       asm volatile ( "strex %[failed], %[value], [%[lock]]"
                      : [failed] "=&r" (failed)
                      , [lock] "+r" (lock)
-                     : [value] "r" (marker) );
+                     : [value] "r" (1) );
     }
     else {
-      asm volatile ( "clrex" );
+      asm ( "clrex" );
     }
   }
+  asm ( "dmb sy" );
 }
 
-static inline void release_lock( uint32_t *lock )
+static inline void release_lock( uint32_t volatile *lock )
 {
+  // Ensure that any changes made while holding the lock are visible before the lock is seen to have been released
+  asm ( "dmb sy" );
   *lock = 0;
-  // Probably need a DSB here, at least. Or LDREX to check we're the owner.
 }
