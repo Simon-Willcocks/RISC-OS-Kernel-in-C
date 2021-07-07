@@ -34,13 +34,14 @@ typedef struct shared_workspace shared_workspace;
 #include "memory_manager.h"
 
 typedef struct module module;
+typedef struct callback vector;
+typedef struct callback transient_callback;
+typedef struct variable variable;
 
-typedef struct vector vector;
-
-struct vector {
+struct callback {
   uint32_t code;
   uint32_t private_word;
-  vector *next;
+  struct callback *next;
 };
 
 struct Kernel_workspace {
@@ -53,7 +54,11 @@ struct Kernel_workspace {
   uint64_t start_time;
   module *module_list_head;
   module *module_list_tail;
+  uint32_t DomainId;
   vector *vectors[0x25];
+  variable *variables; // Should be shared?
+  transient_callback *transient_callbacks;
+  transient_callback *transient_callbacks_pool; // I cannot tell a lie, this is because there's no HeapFree implementation, yet, but it's probably also an efficient approach.
 };
 
 typedef struct fs fs;
@@ -108,3 +113,4 @@ static inline int strcmp( const char *left, const char *right )
 }
 
 void *memset(void *s, int c, uint32_t n);
+void *memcpy(void *d, const void *s, uint32_t n);

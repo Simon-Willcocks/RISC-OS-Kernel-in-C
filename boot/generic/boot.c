@@ -15,8 +15,6 @@
 
 #include "kernel.h"
 
-void *memcpy( void *, void *, uint32_t );
-
 startup boot_data = { 0 };
 
 // Simple synchronisation routines to be used before the MMU is
@@ -53,7 +51,7 @@ static inline void wait_for_cores_to_reach( volatile uint32_t *states, int max_c
 }
 
 // Minimum RAM, to start with. More can be added to pool later, if available.
-static const uint32_t top_of_ram = 64 << 20;
+static const uint32_t top_of_ram = 128 << 20;
 extern int rom_size;
 static const uint32_t size_of_rom = (uint32_t) &rom_size; // 5 << 20;
 
@@ -73,6 +71,7 @@ void __attribute__(( naked, section( ".text.init" ), noinline )) _start()
   asm ( "adr %[loc], _start" : [loc] "=r" (start) ); // Guaranteed PC relative
 
   locate_rom_and_enter_kernel( start );
+  asm ( ".align 12" ); // GPU writes over the loaded code...
 }
 
 void __attribute__(( naked )) locate_rom_and_enter_kernel( uint32_t start )
@@ -87,7 +86,9 @@ void __attribute__(( naked )) locate_rom_and_enter_kernel( uint32_t start )
   if (core_number == 0) {
     asm volatile( "mov sp, %[stack]" : : [stack] "r" (states) );
 
-    max_cores = number_of_cores();
+    // Identify the kind of processor we're working with.
+    // The overall system (onna chip) will be established later.
+    max_cores = pre_mmu_identify_processor();
     for (uint32_t i = 0; i < max_cores; i++) {
       states[i] = 0;
     }
@@ -281,6 +282,9 @@ void __attribute__(( noreturn, noinline )) pre_mmu_with_stacks( core_workspace *
   // concurrency problems, establish an MMU, and use proper synchronisation primitives.
 
   // The pointers passed to this routine are to absolute physical memory.
+
+  // Before doing any MMU stuff, establish that all cores are part of an SMP system
+  set_smp_mode();
 
   if (ws->core_number == 0) {
     for (int i = 1; i < max_cores; i++) {

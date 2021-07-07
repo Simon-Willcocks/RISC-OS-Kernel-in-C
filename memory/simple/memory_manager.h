@@ -40,3 +40,6 @@ void Initialise_system_DAs();
 
 void Kernel_add_free_RAM( uint32_t base_page, uint32_t size_in_pages );
 uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment );
+
+void __attribute__(( naked, noreturn )) Kernel_default_prefetch();
+void __attribute__(( naked, noreturn )) Kernel_default_data_abort();

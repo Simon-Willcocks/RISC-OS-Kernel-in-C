@@ -31,6 +31,7 @@ SECTIONS
  . = va_base ;
  .text : {
   *(.text.init) ;
+  . = ALIGN( 1024 ) ; /* Space for GPU to overwrite */
   *(.data) ; /* Pre-MMU data, not writable once kernel started. */
   *(.text) ;
   *(.rodata*) ;

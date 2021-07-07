@@ -31,8 +31,7 @@ Drop support for: 26-bit modes
 void __attribute__(( naked, noreturn )) Kernel_default_reset() { for (;;) { asm ( "wfi" ); } }
 void __attribute__(( naked, noreturn )) Kernel_default_undef() { for (;;) { asm ( "wfi" ); } }
 // Kernel_default_svc in swis.c
-void __attribute__(( naked, noreturn )) Kernel_default_prefetch() { for (;;) { asm ( "wfi" ); } }
-void __attribute__(( naked, noreturn )) Kernel_default_data_abort() { for (;;) { asm ( "wfi" ); } }
+// Kernel_default_prefetch, Kernel_default_data_abort in memory_manager.c
 void __attribute__(( naked, noreturn )) Kernel_default_irq() { for (;;) { asm ( "wfi" ); } }
 
 void __attribute__(( noreturn, noinline )) Kernel_start()
@@ -47,6 +46,7 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
       Kernel_add_free_RAM( boot_data.less_aligned.base >> 12, boot_data.less_aligned.size >> 12 );
     }
   }
+  else { for (;;) { asm ( "wfi" ); } }
 
   int32_t vector_offset = ((uint32_t*) &workspace.vectors.reset_vec - &workspace.vectors.reset - 2) * 4;
 
@@ -68,6 +68,7 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
   Initialise_privileged_mode_stack_pointers();
 
   Initialise_system_DAs();
+
   Boot();
 
   for (;;) { asm( "wfi" ); }

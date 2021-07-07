@@ -116,9 +116,7 @@ static bool do_OS_Mouse( svc_registers *regs ) { regs->r[0] = Kernel_Error_Unkno
 
 static bool do_OS_ReadUnsigned( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_GenerateEvent( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_ReadVarVal( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
-static bool do_OS_SetVarVal( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_GSInit( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_GSRead( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_GSTrans( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
@@ -202,11 +200,68 @@ static bool do_OS_ReadMemMapInfo( svc_registers *regs ) { regs->r[0] = Kernel_Er
 static bool do_OS_ReadMemMapEntries( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_SetMemMapEntries( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
-static bool do_OS_AddCallBack( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+static bool do_OS_AddCallBack( svc_registers *regs )
+{
+  transient_callback *callback = workspace.kernel.transient_callbacks_pool;
+  if (callback == 0) {
+    callback = rma_allocate( sizeof( transient_callback ), regs );
+  }
+  else {
+    workspace.kernel.transient_callbacks_pool = callback->next;
+  }
+  // Most recently requested gets called first, I don't know if that's right or not.
+  callback->next = workspace.kernel.transient_callbacks;
+  workspace.kernel.transient_callbacks = callback;
+  callback->code = regs->r[0];
+  callback->private_word = regs->r[1];
+  return true;
+}
+
+
 static bool do_OS_ReadDefaultHandler( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_SetECFOrigin( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_SerialOp( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 
+typedef struct {
+  uint32_t mode_selector_flags;
+  uint32_t xres;
+  uint32_t yres;
+  uint32_t log2bpp;
+  uint32_t frame_rate;
+  struct {
+    uint32_t variable;
+    uint32_t value;
+  } mode_variables[];
+} mode_selector_block;
+
+static const mode_selector_block only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 32, .frame_rate = 60, { { -1, 0 } } };
+
+static bool read_kernel_value( svc_registers *regs )
+{
+  static error_block error = { 0x333, "ReadSysInfo 6 unknown code" };
+
+  if (regs->r[1] == 0) {
+    // Single value, number in r2, result to r2
+    switch (regs->r[2]) {
+    case 0x45: // Address of IRQsema, not implemented
+      {
+        static uint32_t zero = 0;
+        regs->r[2] = (uint32_t) &zero;
+        // Probably used more than this, but DrawMod uses it to check it's not being asked to render a file from
+        // an interrupt handler!
+        return true;
+      }
+    case 0x46: // Address of DomainId
+      {
+        regs->r[2] = (uint32_t) &workspace.kernel.DomainId;
+        return true;
+      }
+    }
+  }
+
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
 
 static bool do_OS_ReadSysInfo( svc_registers *regs )
 {
@@ -215,21 +270,15 @@ static bool do_OS_ReadSysInfo( svc_registers *regs )
   // Probably just ChkKernelVersion (code 1)
 
   switch (regs->r[0]) {
-  case 6:
+  case 1:
     {
-      if (regs->r[1] == 0) {
-        // Single value, number in r2, result to r2
-        switch (regs->r[2]) {
-        case 0x45: // Address of IRQsema, not implemented
-          {
-            static uint32_t zero = 0;
-            regs->r[2] = (uint32_t) &zero;
-            // Probably used more than this, but DrawMod uses it to check it's not being asked to render a file from
-            // an interrupt handler!
-          }
-        }
-      }
+      regs->r[0] = (uint32_t) &only_one_mode;
+      regs->r[1] = 7;
+      regs->r[2] = 0;
+      return true;
     }
+  case 6: return read_kernel_value( regs );
+
   default: { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
   }
 
@@ -243,7 +292,21 @@ static bool do_OS_CRC( svc_registers *regs ) { regs->r[0] = Kernel_Error_Unknown
 
 static bool do_OS_PrintChar( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
 static bool do_OS_ChangeRedirection( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
-static bool do_OS_RemoveCallBack( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }
+static bool do_OS_RemoveCallBack( svc_registers *regs )
+{
+  // This is not at all reentrant, and I'm not sure how you could make it so...
+  transient_callback **cp = &workspace.kernel.transient_callbacks;
+  while (*cp != 0 && ((*cp)->code != regs->r[0] || (*cp)->private_word != regs->r[1])) {
+    cp = &(*cp)->next;
+  }
+  if ((*cp) != 0) {
+    transient_callback *callback = (*cp);
+    *cp = callback->next;
+    callback->next = workspace.kernel.transient_callbacks_pool;
+    workspace.kernel.transient_callbacks_pool = callback;
+  }
+  return true;
+}
 
 
 static bool do_OS_FindMemMapEntries( svc_registers *regs ) { regs->r[0] = Kernel_Error_UnknownSWI; return false; }

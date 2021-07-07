@@ -15,71 +15,10 @@
 
 #include "inkernel.h"
 
-// Very, very simple implementation: one block of contiguous physical memory for each DA.
-// It will break very quickly, but hopefully demonstrate the principle.
+///// DEBUG code only.
 
-struct DynamicArea {
-  int32_t  number:12;
-  uint32_t permissions:3;
-  bool shared:1; // Visible to all cores at the same location (e.g. Screen)
-  uint32_t reserved:16;
-
-  uint32_t virtual_page;
-  uint32_t start_page;
-  uint32_t pages;
-  DynamicArea *next;
-};
-
-void Initialise_system_DAs()
+static inline void initialise_frame_buffer()
 {
-  // This isn't set in stone, but first go:
-
-  // System Heap (per core, initially zero sized, I don't know what uses it)
-  // RMA (shared, but not protected)
-  // Screen (shared, not protected)
-  // Sprite Area (per core)
-
-  // Create a Relocatable Module Area, and initialise a heap in it.
-
-  uint32_t initial_rma_size = natural_alignment;
-  svc_registers regs;
-
-  claim_lock( &shared.memory.dynamic_areas_lock );
-
-  if (shared.memory.dynamic_areas == 0) {
-    // First core here (need not be core zero)
-
-    shared.memory.rma_memory = -1;
-
-    // But there may not be any memory to allocate, yet...
-    while (-1 == shared.memory.rma_memory) {
-      shared.memory.rma_memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
-    }
-
-    MMU_map_at( &rma_heap, shared.memory.rma_memory, initial_rma_size );
-
-    regs.r[0] = 0;
-    regs.r[1] = (uint32_t) &rma_heap;
-    regs.r[3] = initial_rma_size;
-
-    if (!do_OS_Heap( &regs )) {
-      for (;;) { asm ( "wfi" ); }
-    }
-    // RMA heap initialised, can call rma_allocate
-
-    { // RMA
-      DynamicArea *da = (void*) rma_allocate( sizeof( DynamicArea ), &regs );
-      if (da == 0) goto nomem;
-      da->number = 1;
-      da->permissions = 7; // rwx
-      da->shared = 1;
-      da->virtual_page = ((uint32_t) &rma_base) >> 12;
-      da->start_page = shared.memory.rma_memory >> 12;
-      da->pages = initial_rma_size >> 12;
-      da->next = shared.memory.dynamic_areas;
-      shared.memory.dynamic_areas = da;
-    }
-
 // I want to get the screen available early in the programming process, it will properly be done in a module
 uint32_t volatile * const gpio = (void*) 0xfff40000;
 uint32_t volatile * const mbox = (void*) 0xfff41000;
@@ -124,11 +63,96 @@ uint32_t s = (tags[5] & ~0xc0000000);
 
 shared.memory.TEMPORARY_screen = s;
 asm ( "dsb sy" );
+}
 
+static void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint32_t c )
+{
+  extern uint32_t frame_buffer;
+  uint32_t *screen = &frame_buffer;
+
+  for (uint32_t y = top; y < top + h; y++) {
+    uint32_t *p = &screen[y * 1920 + left];
+    for (int x = 0; x < w; x++) { *p++ = c; }
+  }
+}
+
+///// End DEBUG code
+
+
+
+
+// Very, very simple implementation: one block of contiguous physical memory for each DA.
+// It will break very quickly, but hopefully demonstrate the principle.
+
+struct DynamicArea {
+  int32_t  number:12;
+  uint32_t permissions:3;
+  bool shared:1; // Visible to all cores at the same location (e.g. Screen)
+  uint32_t reserved:16;
+
+  uint32_t virtual_page;
+  uint32_t start_page;
+  uint32_t pages;
+  DynamicArea *next;
+};
+
+void Initialise_system_DAs()
+{
+  // This isn't set in stone, but first go:
+
+  // System Heap (per core, initially zero sized, I don't know what uses it)
+  // RMA (shared, but not protected)
+  // Screen (shared, not protected)
+  // Sprite Area (per core)
+
+  // Create a Relocatable Module Area, and initialise a heap in it.
+
+  uint32_t initial_rma_size = natural_alignment;
+  svc_registers regs;
+
+  claim_lock( &shared.memory.dynamic_areas_lock );
+
+  if (shared.memory.dynamic_areas == 0) {
+    // First core here (need not be core zero)
+
+    uint32_t RMA = -1;
+
+    // But there may not be any memory to allocate, yet...
+    while (-1 == RMA) {
+      RMA = Kernel_allocate_pages( natural_alignment, natural_alignment );
+    }
+
+    MMU_map_at( &rma_heap, RMA, initial_rma_size );
+
+    shared.memory.rma_memory = RMA;
+
+    regs.r[0] = 0;
+    regs.r[1] = (uint32_t) &rma_heap;
+    regs.r[3] = initial_rma_size;
+
+    if (!do_OS_Heap( &regs )) {
+      for (;;) { asm ( "wfi" ); }
+    }
+    // RMA heap initialised, can call rma_allocate
+
+    { // RMA
+      DynamicArea *da = rma_allocate( sizeof( DynamicArea ), &regs );
+      if (da == 0) goto nomem;
+      da->number = 1;
+      da->permissions = 7; // rwx
+      da->shared = 1;
+      da->virtual_page = ((uint32_t) &rma_base) >> 12;
+      da->start_page = shared.memory.rma_memory >> 12;
+      da->pages = initial_rma_size >> 12;
+      da->next = shared.memory.dynamic_areas;
+      shared.memory.dynamic_areas = da;
+    }
+
+    initialise_frame_buffer();
     { // Screen (currently a hack FIXME)
       extern uint32_t frame_buffer;
 
-      DynamicArea *da = (void*) rma_allocate( sizeof( DynamicArea ), &regs );
+      DynamicArea *da = rma_allocate( sizeof( DynamicArea ), &regs );
       if (da == 0) goto nomem;
       da->number = 2;
       da->permissions = 6; // rw-
@@ -139,52 +163,52 @@ asm ( "dsb sy" );
       da->next = shared.memory.dynamic_areas;
       shared.memory.dynamic_areas = da;
 
-      MMU_map_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
+      MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
 
-{ uint32_t *s = &frame_buffer;
-for (int i = 0; i < 1920*1000; i++) { s[i] = 0xffff0000 + (0xffff >> (4 *workspace.core_number)) ; } }
+      fill_rect( 0, 0, 1000, (100 + 100 * workspace.core_number), 0xffff0000 + (0xfffff >> (4 *workspace.core_number)) );
     }
   }
   else {
     // Map the shared areas into core's virtual memory map
-    MMU_map_at( &rma_heap, shared.memory.rma_memory, initial_rma_size );
-
+    MMU_map_shared_at( &rma_heap, shared.memory.rma_memory, initial_rma_size );
 
     DynamicArea *da = shared.memory.dynamic_areas;
     while (da != 0) {
-      MMU_map_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
+      MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
       da = da->next;
     }
   }
 
   release_lock( &shared.memory.dynamic_areas_lock );
 
-{
-extern uint32_t frame_buffer;
-uint32_t *screen = &frame_buffer;
-for (int y = 10; y < 1020; y++) {
-for (int i = 0; i < 64; i++) {
-  screen[(100 * (workspace.core_number + 1) + i) + y * 1920] = 0xff000000 | (0xfff << (3 * workspace.core_number));
-}
-}
-  // for (;;) { asm ( "wfi" ); }
-}
+  fill_rect( (100 + 100 * workspace.core_number), 10, 64, 100, 0xff00ff00 );
 
   // Now the non-shared DAs, can be done in parallel
 
-  { // System heap
+  { // System heap, one per core (I think)
     extern uint32_t system_heap;
 
-    DynamicArea *da = (void*) rma_allocate( sizeof( DynamicArea ), &regs );
+    DynamicArea *da = rma_allocate( sizeof( DynamicArea ), &regs );
     if (da == 0) goto nomem;
     da->number = 0;
     da->permissions = 6; // rw-
     da->shared = 0;
     da->virtual_page = ((uint32_t) &system_heap) >> 12;
-    da->start_page = 0;
-    da->pages = 0;
+    da->pages = 256;
+    da->start_page = Kernel_allocate_pages( da->pages << 12, da->pages << 12 ) >> 12;
+
     da->next = workspace.memory.dynamic_areas;
     workspace.memory.dynamic_areas = da;
+
+    MMU_map_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
+
+    regs.r[0] = 0;
+    regs.r[1] = da->virtual_page << 12;
+    regs.r[3] = da->pages << 12;
+
+    if (!do_OS_Heap( &regs )) {
+      for (;;) { asm ( "wfi" ); }
+    }
   }
   return;
 
@@ -201,9 +225,38 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs )
 
 bool do_OS_ReadDynamicArea( svc_registers *regs )
 {
-  static error_block error = { 0x998, "Cannot read size of DAs" };
-  regs->r[0] = (uint32_t) &error;
-  return false;
+  DynamicArea *da = workspace.memory.dynamic_areas;
+  while (da != 0 && da->number != regs->r[0]) {
+    da = da->next;
+  }
+  if (da == 0) {
+    da = shared.memory.dynamic_areas;
+    while (da != 0 && da->number != regs->r[0]) {
+      da = da->next;
+    }
+  }
+  if (da != 0) {
+    regs->r[0] = da->virtual_page << 12;
+    regs->r[1] = da->pages << 12;
+    return true;
+  }
+  // FIXME Bit 7
+
+  switch (regs->r[0]) {
+  case 6:
+    {
+      regs->r[0] = 0x80000000;
+      regs->r[1] = 0;
+      return true;
+    }
+  default:
+    {
+    static error_block error = { 0x999, "Unknown DA" };
+    regs->r[0] = (uint32_t) &error;
+    return false;
+    }
+  }
+  return true;
 }
 
 bool do_OS_DynamicArea( svc_registers *regs )
@@ -306,3 +359,16 @@ uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment )
   release_lock( &shared.memory.lock );
   return result;
 }
+
+void __attribute__(( naked, noreturn )) Kernel_default_prefetch()
+{
+  fill_rect( 20 + (100 * (workspace.core_number + 1)), 10, 64, 64, 0xff555555 );
+  for (;;) { asm ( "wfi" ); }
+}
+
+void __attribute__(( naked, noreturn )) Kernel_default_data_abort()
+{
+  fill_rect( 20 + (100 * (workspace.core_number + 1)), 10, 32, 96, 0xff770077 );
+  for (;;) { asm ( "wfi" ); }
+}
+

@@ -92,6 +92,16 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs );
 bool do_OS_ReadDynamicArea( svc_registers *regs );
 bool do_OS_DynamicArea( svc_registers *regs );
 
+// swis/varvals.c
+enum { VarType_String = 0,
+       VarType_Number,
+       VarType_Macro,
+       VarType_Expanded,
+       VarType_LiteralString,
+       VarType_Code = 16 } VarTypes;
+bool do_OS_ReadVarVal( svc_registers *regs );
+bool do_OS_SetVarVal( svc_registers *regs );
+
 // Find a module that provides this SWI
 bool do_module_swi( svc_registers *regs, uint32_t svc );
 
@@ -99,13 +109,13 @@ bool do_module_swi( svc_registers *regs, uint32_t svc );
 extern uint32_t rma_base; // Loader generated
 extern uint32_t rma_heap; // Loader generated
 
-static inline uint32_t rma_allocate( uint32_t size, svc_registers *regs )
+static inline void *rma_allocate( uint32_t size, svc_registers *regs )
 {
   uint32_t r0 = regs->r[0];
   uint32_t r1 = regs->r[1];
   uint32_t r2 = regs->r[2];
   uint32_t r3 = regs->r[3];
-  uint32_t result = 0;
+  void *result = 0;
 
   regs->r[0] = 2;
   regs->r[1] = (uint32_t) &rma_heap;
@@ -114,7 +124,7 @@ static inline uint32_t rma_allocate( uint32_t size, svc_registers *regs )
   claim_lock( &shared.memory.lock );
 
   if (do_OS_Heap( regs )) {
-    result = regs->r[2];
+    result = (void*) regs->r[2];
     regs->r[0] = r0; // Don't overwrite error word
   }
 

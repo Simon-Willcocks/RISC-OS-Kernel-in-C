@@ -145,6 +145,34 @@ void MMU_map_at( void *va, uint32_t pa, uint32_t size )
   asm ( "dsb sy" ); // TODO: replace with descriptive routine from processor
 }
 
+void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
+{
+  uint32_t virt = (uint32_t) va;
+  if (naturally_aligned( virt ) && naturally_aligned( pa ) && naturally_aligned( size )) {
+    while (size > 0) {
+      l1tt_section_entry entry = { .raw = pa };
+      entry.type2 = 2;
+      entry.AP = 3;
+      entry.S = 1;
+      entry.APX = 0; // Read/Write
+      L1TT[virt / natural_alignment] = entry.raw;
+      size -= natural_alignment;
+      virt += natural_alignment;
+      pa += natural_alignment;
+    }
+  }
+  else if (size == 4096 && (uint32_t) va >= 0xfff00000) {
+    l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
+    entry.page_base = (pa >> 12);
+    top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
+  }
+  else {
+    for (;;) { asm ( "wfi" ); }
+  }
+
+  asm ( "dsb sy" ); // TODO: replace with descriptive routine from processor
+}
+
 void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volatile startup *startup )
 {
   ws->mmu.l1tt_pa = (void*) pre_mmu_allocate_physical_memory( 16384, 16384, startup );

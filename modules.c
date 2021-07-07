@@ -42,19 +42,19 @@ struct module {
   module *next;  // Simple singly-linked list
 };
 
-static bool error_nomem( svc_registers *regs )
+static inline bool error_nomem( svc_registers *regs )
 {
     static error_block nomem = { 0x101, "The area of memory reserved for relocatable modules is full" };
     regs->r[0] = (uint32_t) &nomem;
     return false;
 }
 
-static uint32_t start_code( module_header *header )
+static inline uint32_t start_code( module_header *header )
 {
   return header->offset_to_start + (uint32_t) header;
 }
 
-static bool run_initialisation_code( const char *env, module *m )
+static inline bool run_initialisation_code( const char *env, module *m )
 {
   register uint32_t non_kernel_code asm( "r14" ) = m->header->offset_to_initialisation + (uint32_t) m->header;
   register uint32_t private_word asm( "r12" ) = (uint32_t) &m->private_word;
@@ -81,7 +81,7 @@ failed:
   return false;
 }
 
-static uint32_t finalisation_code( module_header *header )
+static inline uint32_t finalisation_code( module_header *header )
 {
   return header->offset_to_finalisation + (uint32_t) header;
 }
@@ -163,22 +163,22 @@ failed:
   return false;
 }
 
-static uint32_t swi_decoding_table_code( module_header *header )
+static inline uint32_t swi_decoding_table_code( module_header *header )
 {
   return header->offset_to_swi_decoding_table + (uint32_t) header;
 }
 
-static uint32_t swi_decoding_code( module_header *header )
+static inline uint32_t swi_decoding_code( module_header *header )
 {
   return header->offset_to_swi_decoding_code + (uint32_t) header;
 }
 
-static const char *title_string( module_header *header )
+static inline const char *title_string( module_header *header )
 {
   return (const char *) header->offset_to_title_string + (uint32_t) header;
 }
 
-static const char *help_string( module_header *header )
+static inline const char *help_string( module_header *header )
 {
   return (const char *) header->offset_to_help_string + (uint32_t) header;
 }
@@ -302,7 +302,7 @@ static bool do_Module_InsertFromMemory( svc_registers *regs )
 {
   module_header *new_mod = (void*) regs->r[1];
 
-  module *instance = (void*) rma_allocate( sizeof( module ), regs );
+  module *instance = rma_allocate( sizeof( module ), regs );
 
   if (instance == 0) {
     return error_nomem( regs );
@@ -570,9 +570,9 @@ bool do_OS_RelinkApplication( svc_registers *regs )
 
 bool do_OS_GetEnv( svc_registers *regs )
 {
-  regs->r[0] = workspace.kernel.env;
+  regs->r[0] = (uint32_t) workspace.kernel.env;
   regs->r[1] = 0;
-  regs->r[2] = &workspace.kernel.start_time;
+  regs->r[2] = (uint32_t) &workspace.kernel.start_time;
   return true;
 }
 
@@ -612,6 +612,7 @@ void Boot()
 
   init_module( "FileCore" );
   init_module( "FileSwitch" );
+  init_module( "MessageTrans" );
   init_module( "ResourceFS" );
 
   init_module( "DrawMod" );
