@@ -13,6 +13,37 @@
  * limitations under the License.
  */
 
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+typedef unsigned        bool;
+#define true  (0 == 0)
+#define false (0 != 0)
+
+#define number_of( arr ) (sizeof( arr ) / sizeof( arr[0] ))
+
+typedef struct core_workspace core_workspace;
+typedef struct shared_workspace shared_workspace;
+
+typedef struct variable variable;
+
+struct Kernel_workspace {
+  variable *variables; // Should be shared?
+};
+
+struct Kernel_shared_workspace {
+};
+
+extern struct core_workspace {
+  uint32_t core_number;
+  struct Kernel_workspace kernel;
+} workspace;
+
+extern struct shared_workspace {
+  struct Kernel_shared_workspace kernel;
+} volatile shared;
+
 static const uint32_t NF = (1 << 31);
 static const uint32_t ZF = (1 << 30);
 static const uint32_t CF = (1 << 29);
@@ -88,26 +119,10 @@ bool do_OS_RelinkApplication( svc_registers *regs );
 bool do_OS_GetEnv( svc_registers *regs );
 
 // Vectored SWIs (do nothing but call the appropriate vectors)
-bool do_OS_GenerateError( svc_registers *regs );
-bool do_OS_WriteC( svc_registers *regs );
-bool do_OS_ReadC( svc_registers *regs );
-bool do_OS_CLI( svc_registers *regs );
-bool do_OS_Byte( svc_registers *regs );
-bool do_OS_Word( svc_registers *regs );
-bool do_OS_File( svc_registers *regs );
-bool do_OS_Args( svc_registers *regs );
-bool do_OS_BGet( svc_registers *regs );
-bool do_OS_BPut( svc_registers *regs );
-bool do_OS_GBPB( svc_registers *regs );
 bool do_OS_Find( svc_registers *regs );
-bool do_OS_ReadLine( svc_registers *regs );
+
+// swis/os_fscontrol.c
 bool do_OS_FSControl( svc_registers *regs );
-bool do_OS_GenerateEvent( svc_registers *regs );
-bool do_OS_Mouse( svc_registers *regs );
-bool do_OS_UpCall( svc_registers *regs );
-bool do_OS_ChangeEnvironment( svc_registers *regs );
-bool do_OS_SpriteOp( svc_registers *regs );
-bool do_OS_SerialOp( svc_registers *regs );
 
 // memory/
 
@@ -131,44 +146,13 @@ enum { VarType_String = 0,
        VarType_Macro,
        VarType_Expanded,
        VarType_LiteralString,
-       VarType_Code = 16 };
-
+       VarType_Code = 16 } VarTypes;
 bool do_OS_ReadVarVal( svc_registers *regs );
 bool do_OS_SetVarVal( svc_registers *regs );
 
-// Find a module that provides this SWI
-bool do_module_swi( svc_registers *regs, uint32_t svc );
+void *rma_allocate( uint32_t size, svc_registers *regs );
 
-bool Kernel_Error_UnknownSWI( svc_registers *regs );
-
-extern uint32_t rma_base; // Loader generated
-extern uint32_t rma_heap; // Loader generated
-
-static inline void *rma_allocate( uint32_t size, svc_registers *regs )
-{
-  uint32_t r0 = regs->r[0];
-  uint32_t r1 = regs->r[1];
-  uint32_t r2 = regs->r[2];
-  uint32_t r3 = regs->r[3];
-  void *result = 0;
-
-  regs->r[0] = 2;
-  regs->r[1] = (uint32_t) &rma_heap;
-  regs->r[3] = size;
-
-  claim_lock( &shared.memory.lock );
-
-  if (do_OS_Heap( regs )) {
-    result = (void*) regs->r[2];
-    regs->r[0] = r0; // Don't overwrite error word
-  }
-
-  release_lock( &shared.memory.lock );
-
-  regs->r[1] = r1;
-  regs->r[2] = r2;
-  regs->r[3] = r3;
-
-  return result;
-}
-
+typedef struct {
+  uint32_t code;
+  char text[];
+} error_block;

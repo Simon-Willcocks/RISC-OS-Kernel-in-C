@@ -23,8 +23,8 @@ SECTIONS
   shared = 0xffff8000 ;
   translation_tables = 0xfff00000 ;
   devices = 0xfff80000 ;
-  rma_base = 0xf0000000 ;
-  rma_heap = 0xf0000000 ;
+  rma_base = 0x20000000 ;
+  rma_heap = 0x20000000 ;
   frame_buffer = 0xef000000 ;
   system_heap = 0xffe00000 ;
 

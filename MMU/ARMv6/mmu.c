@@ -29,7 +29,7 @@ extern uint32_t translation_tables;
 
 static uint32_t *const L1TT = (&translation_tables);
 static uint32_t *const top_MiB_tt = (&translation_tables) + 4096;
-// static uint32_t *const bottom_MiB_tt = (&translation_tables) + 4096 + 1024;
+static uint32_t *const bottom_MiB_tt = (&translation_tables) + 4096 + 256; // Offsets in words, not bytes!
 
 typedef union {
   struct {
@@ -85,6 +85,10 @@ static void __attribute__(( noreturn, noinline )) go_kernel()
     L1TT[i] = 0;
   }
 
+  l1tt_table_entry MiB = { .type1 = 1, .NS = 0, .Domain = 0 };
+
+  L1TT[0] = MiB.raw | (1024 + (uint32_t) workspace.mmu.l2tt_pa);   // bottom_MiB_tt
+
   Kernel_start();
 }
 
@@ -133,10 +137,18 @@ void MMU_map_at( void *va, uint32_t pa, uint32_t size )
       pa += natural_alignment;
     }
   }
-  else if (size == 4096 && (uint32_t) va >= 0xfff00000) {
+  else if (size == 4096) {
     l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 0, .nG = 0 };
     entry.page_base = (pa >> 12);
-    top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
+    if ((uint32_t) va >= 0xfff00000) {
+      top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
+    }
+    else if ((uint32_t) va < (1 << 20)) {
+      bottom_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
+    }
+    else {
+      for (;;) { asm ( "wfi" ); }
+    }
   }
   else {
     for (;;) { asm ( "wfi" ); }
@@ -161,10 +173,18 @@ void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
       pa += natural_alignment;
     }
   }
-  else if (size == 4096 && (uint32_t) va >= 0xfff00000) {
+  else if (size == 4096) {
     l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
     entry.page_base = (pa >> 12);
-    top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
+    if ((uint32_t) va >= 0xfff00000) {
+      top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
+    }
+    else if ((uint32_t) va < (1 << 20)) {
+      bottom_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
+    }
+    else {
+      for (;;) { asm ( "wfi" ); }
+    }
   }
   else {
     for (;;) { asm ( "wfi" ); }
@@ -204,9 +224,9 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
     ws->mmu.l1tt_pa[(physical + i) >> 20] = rom_sections.raw | ((physical + i) & 0xfff00000);
   }
 
-  l1tt_table_entry top_MiB = { .type1 = 1, .NS = 0, .Domain = 0 };
+  l1tt_table_entry MiB = { .type1 = 1, .NS = 0, .Domain = 0 };
 
-  ws->mmu.l1tt_pa[0xfff] = top_MiB.raw | (uint32_t) ws->mmu.l2tt_pa;
+  ws->mmu.l1tt_pa[0xfff] = MiB.raw | (uint32_t) ws->mmu.l2tt_pa;        // top_MiB_tt
 
   map_work_area( ws->mmu.l2tt_pa, (uint32_t) ws, &workspace, sizeof( workspace ) );
   map_work_area( ws->mmu.l2tt_pa, (uint32_t) ws->mmu.l1tt_pa, L1TT, 4096 * 4 );
