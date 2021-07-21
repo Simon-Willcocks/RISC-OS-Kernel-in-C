@@ -166,6 +166,9 @@ void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
       entry.type2 = 2;
       entry.AP = 3;
       entry.S = 1;
+      entry.TEX = 0b101;
+      entry.C = 0;
+      entry.B = 1;
       entry.APX = 0; // Read/Write
       L1TT[virt / natural_alignment] = entry.raw;
       size -= natural_alignment;

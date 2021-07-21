@@ -13,7 +13,6 @@
  * limitations under the License.
  */
 
-
 typedef unsigned long long uint64_t;
 typedef unsigned        uint32_t;
 typedef int             int32_t;
@@ -24,6 +23,9 @@ typedef unsigned        bool;
 #define false (0 != 0)
 
 #define number_of( arr ) (sizeof( arr ) / sizeof( arr[0] ))
+
+// For initial debug
+#include "trivial_display.h"
 
 typedef struct core_workspace core_workspace;
 typedef struct shared_workspace shared_workspace;
@@ -138,5 +140,16 @@ static inline int strcmp( const char *left, const char *right )
   return result;
 }
 
+static inline char *strcpy( char *dest, const char *src )
+{
+  char *result = dest;
+  while (*src != '\0') {
+    *dest++ = *src++;
+  }
+  *dest = *src;
+  return result;
+}
+
 void *memset(void *s, int c, uint32_t n);
 void *memcpy(void *d, const void *s, uint32_t n);
+

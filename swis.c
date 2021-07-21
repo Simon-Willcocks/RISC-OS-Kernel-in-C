@@ -303,7 +303,7 @@ static bool comparison_routine_says_less( uint32_t v1, uint32_t v2, uint32_t wor
   register uint32_t r1 asm( "r1" ) = v2;
   register uint32_t r12 asm( "r12" ) = workspace;
   asm goto ( "blx %[routine]"
-         "\n  blt less"
+         "\n  blt %l[less]"
          : : "r" (r0), "r" (r1), "r" (r12), [routine] "r" (routine)
          : "r2", "r3"
          : less );
@@ -346,7 +346,13 @@ static bool do_OS_HeapSort( svc_registers *regs )
 }
 
 static bool do_OS_ExitAndDie( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ReadMemMapInfo( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadMemMapInfo( svc_registers *regs )
+{
+  regs->r[0] = 4096;
+  regs->r[1] = 64 << 20; // FIXME Lying, but why is this being used?
+  return true;
+}
+
 static bool do_OS_ReadMemMapEntries( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SetMemMapEntries( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 

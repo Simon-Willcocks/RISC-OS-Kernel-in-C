@@ -30,6 +30,8 @@ struct Memory_manager_shared_workspace {
   free_block free_blocks[16]; // This is the real free memory, not what we tell the applications!
   DynamicArea *dynamic_areas;
   uint32_t rma_memory;  // Required before you can access the RMA dynamic areas
+  uint32_t last_da_address;
+  uint32_t user_da_number;
 
 
   // For an early display, probably using the DrawMod...

@@ -27,7 +27,8 @@ typedef struct {
 
 extern processor_fns processor;
 
-// Returns number of cores, the function pointers don't work before the MMU is enabled.
+// Fills in processor_fns structure, which will become read only by the time the MMU is enabled
+// and the function pointers will be valid. Returns the number of cores.
 uint32_t pre_mmu_identify_processor();
 
 #define PROCESSOR_PROC( name ) static inline void name() { processor.name(); }
@@ -46,6 +47,20 @@ static inline uint32_t get_swi_number( uint32_t instruction_following_swi )
 static inline void clear_VF()
 {
   asm ( "msr cpsr_f, #0" );
+}
+
+static inline uint32_t fault_address()
+{
+  uint32_t result;
+  asm ( "mrc p15, 0, %[dfar], c6, c6, 0" : [dfar] "=r" (result ) );
+  return result;
+}
+
+static inline uint32_t fault_type()
+{
+  uint32_t result;
+  asm ( "mrc p15, 0, %[dfsr], c5, c0, 0" : [dfsr] "=r" (result ) );
+  return result;
 }
 
 void Initialise_privileged_mode_stack_pointers();
@@ -98,4 +113,8 @@ static inline void flush_location( void *va )
   // DCCMVAC
   asm ( "mcr p15, 0, %[va], cr7, cr10, 1" : : [va] "r" (va) );
 }
+
+// level = 1 -> Level 1 DCache
+// level = 2 -> Level 2 DCache
+void clean_cache( uint32_t level );
 
