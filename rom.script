@@ -23,14 +23,15 @@ SECTIONS
   shared = 0xffff8000 ;
   translation_tables = 0xfff00000 ;
   devices = 0xfff80000 ;
-  rma_base = 0xf0000000 ;
-  rma_heap = 0xf0000000 ;
-  sma_lock = 0xf1000000 ;
-  sma_heap = sma_lock + 4 ;
+  rma_base = 0x20000000 ;
+  rma_heap = 0x20000000 ;
+  frame_buffer = 0xef000000 ;
+  system_heap = 0xffe00000 ;
 
  . = va_base ;
  .text : {
   *(.text.init) ;
+  . = ALIGN( 1024 ) ; /* Space for GPU to overwrite */
   *(.data) ; /* Pre-MMU data, not writable once kernel started. */
   *(.text) ;
   *(.rodata*) ;

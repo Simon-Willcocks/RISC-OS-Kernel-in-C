@@ -31,16 +31,14 @@ Drop support for: 26-bit modes
 void __attribute__(( naked, noreturn )) Kernel_default_reset() { for (;;) { asm ( "wfi" ); } }
 void __attribute__(( naked, noreturn )) Kernel_default_undef() { for (;;) { asm ( "wfi" ); } }
 // Kernel_default_svc in swis.c
-void __attribute__(( naked, noreturn )) Kernel_default_prefetch() { for (;;) { asm ( "wfi" ); } }
-void __attribute__(( naked, noreturn )) Kernel_default_data_abort() { for (;;) { asm ( "wfi" ); } }
+// Kernel_default_prefetch, Kernel_default_data_abort in memory_manager.c
 void __attribute__(( naked, noreturn )) Kernel_default_irq() { for (;;) { asm ( "wfi" ); } }
 
 void __attribute__(( noreturn, noinline )) Kernel_start()
 {
-  set_high_vectors();
-
   if (workspace.core_number == 0) {
     // Final use of the pre-mmu sequence's ram_blocks array, now read-only
+
     for (int i = 0; boot_data.ram_blocks[i].size != 0; i++) {
       Kernel_add_free_RAM( boot_data.ram_blocks[i].base >> 12, boot_data.ram_blocks[i].size >> 12 );
     }
@@ -48,8 +46,7 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
       Kernel_add_free_RAM( boot_data.less_aligned.base >> 12, boot_data.less_aligned.size >> 12 );
     }
   }
-  // While debugging with qemu, it's helpful to work with a single core...
-  else { for (;;) { asm ( "wfi" ); } }
+  //else { for (;;) { asm ( "wfi" ); } } // Uncomment when debugging to reduce distractions
 
   int32_t vector_offset = ((uint32_t*) &workspace.vectors.reset_vec - &workspace.vectors.reset - 2) * 4;
 
@@ -70,9 +67,9 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
 
   Initialise_privileged_mode_stack_pointers();
 
-  Generate_the_RMA();
+  Initialise_system_DAs();
 
-  // Running in virtual memory with a stack and workspace for each core.
-  for (;;) { asm ( "wfi" ); }
+  Boot();
+
+  for (;;) { asm( "wfi" ); }
 }
-

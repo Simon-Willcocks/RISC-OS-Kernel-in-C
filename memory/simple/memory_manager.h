@@ -13,8 +13,10 @@
  * limitations under the License.
  */
 
+typedef struct DynamicArea DynamicArea;
 
 struct Memory_manager_workspace {
+  DynamicArea *dynamic_areas;
 };
 
 typedef struct {
@@ -24,9 +26,22 @@ typedef struct {
 
 struct Memory_manager_shared_workspace {
   uint32_t lock;
-  free_block free_blocks[16];
+  uint32_t dynamic_areas_lock;
+  free_block free_blocks[16]; // This is the real free memory, not what we tell the applications!
+  DynamicArea *dynamic_areas;
+  uint32_t rma_memory;  // Required before you can access the RMA dynamic areas
+  uint32_t last_da_address;
+  uint32_t user_da_number;
+
+
+  // For an early display, probably using the DrawMod...
+  uint32_t TEMPORARY_screen;
 };
 
+void Initialise_system_DAs();
 
 void Kernel_add_free_RAM( uint32_t base_page, uint32_t size_in_pages );
 uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment );
+
+void __attribute__(( naked, noreturn )) Kernel_default_prefetch();
+void __attribute__(( naked, noreturn )) Kernel_default_data_abort();

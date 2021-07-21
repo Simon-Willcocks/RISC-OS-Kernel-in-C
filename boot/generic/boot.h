@@ -20,14 +20,6 @@ inline uint32_t __attribute__(( always_inline )) get_core_number()
   return ((result & 0xc0000000) != 0x80000000) ? 0 : (result & 15);
 }
 
-inline uint32_t __attribute__(( always_inline )) number_of_cores()
-{
-  uint32_t result;
-  // L2CTLR, ARM DDI 0500G Cortex-A53, generally usable?
-  asm ( "MRC p15, 1, %[result], c9, c0, 2" : [result] "=r" (result) );
-  return ((result >> 24) & 3) + 1;
-}
-
 typedef struct {
   uint32_t base;
   uint32_t size;
