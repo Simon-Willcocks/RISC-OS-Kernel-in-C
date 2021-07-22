@@ -131,6 +131,9 @@ void MMU_map_at( void *va, uint32_t pa, uint32_t size )
       entry.type2 = 2;
       entry.AP = 3;
       entry.APX = 0; // Read/Write
+      entry.TEX = 0b101;
+      entry.C = 0;
+      entry.B = 1;
       L1TT[virt / natural_alignment] = entry.raw;
       size -= natural_alignment;
       virt += natural_alignment;
@@ -196,6 +199,77 @@ void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
   asm ( "dsb sy" ); // TODO: replace with descriptive routine from processor
 }
 
+void MMU_map_device_at( void *va, uint32_t pa, uint32_t size )
+{
+  uint32_t virt = (uint32_t) va;
+  if (naturally_aligned( virt ) && naturally_aligned( pa ) && naturally_aligned( size )) {
+    while (size > 0) {
+      l1tt_section_entry entry = { .raw = pa };
+      entry.type2 = 2;
+      entry.AP = 3;
+      entry.APX = 0; // Read/Write
+      L1TT[virt / natural_alignment] = entry.raw;
+      size -= natural_alignment;
+      virt += natural_alignment;
+      pa += natural_alignment;
+    }
+  }
+  else if (size == 4096) {
+    l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 0, .nG = 0 };
+    entry.page_base = (pa >> 12);
+    if ((uint32_t) va >= 0xfff00000) {
+      top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
+    }
+    else if ((uint32_t) va < (1 << 20)) {
+      bottom_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
+    }
+    else {
+      for (;;) { asm ( "wfi" ); }
+    }
+  }
+  else {
+    for (;;) { asm ( "wfi" ); }
+  }
+
+  asm ( "dsb sy" ); // TODO: replace with descriptive routine from processor
+}
+
+void MMU_map_device_shared_at( void *va, uint32_t pa, uint32_t size )
+{
+  uint32_t virt = (uint32_t) va;
+  if (naturally_aligned( virt ) && naturally_aligned( pa ) && naturally_aligned( size )) {
+    while (size > 0) {
+      l1tt_section_entry entry = { .raw = pa };
+      entry.type2 = 2;
+      entry.AP = 3;
+      entry.S = 1;
+      entry.APX = 0; // Read/Write
+      L1TT[virt / natural_alignment] = entry.raw;
+      size -= natural_alignment;
+      virt += natural_alignment;
+      pa += natural_alignment;
+    }
+  }
+  else if (size == 4096) {
+    l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
+    entry.page_base = (pa >> 12);
+    if ((uint32_t) va >= 0xfff00000) {
+      top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
+    }
+    else if ((uint32_t) va < (1 << 20)) {
+      bottom_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
+    }
+    else {
+      for (;;) { asm ( "wfi" ); }
+    }
+  }
+  else {
+    for (;;) { asm ( "wfi" ); }
+  }
+
+  asm ( "dsb sy" ); // TODO: replace with descriptive routine from processor
+}
+
 void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volatile startup *startup )
 {
   ws->mmu.l1tt_pa = (void*) pre_mmu_allocate_physical_memory( 16384, 16384, startup );
@@ -218,7 +292,12 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
   physical = start - (((uint32_t) MMU_enter) - physical);
 
   // FIXME: permissions, caches, etc.
-  l1tt_section_entry rom_sections = { .type2 = 2, .B = 0, .C = 0, .XN = 0, .Domain = 0, .P = 0, .AP = 3, .TEX = 0, .APX = 1, .S = 0, .nG = 0 };
+  l1tt_section_entry rom_sections = { .type2 = 2,
+      .TEX = 0b111, .B = 1, .C = 1, 
+      .XN = 0, .Domain = 0, .P = 0, 
+      .AP = 7,                  // Read-only, at any privilege level (SCTLR.AFE = 0)
+      .APX = 1,
+      .S = 1, .nG = 0 }; // Shared, global (read-only, so no problems with caches)
 
   for (int i = 0; i < (uint32_t) &rom_size; i+= (1 << 20)) {
     ws->mmu.l1tt_pa[(start + i) >> 20] = rom_sections.raw | ((physical + i) & 0xfff00000);
@@ -242,23 +321,24 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
   asm ( "mcr p15, 0, %[ttbr0], c2, c0, 0" : : [ttbr0] "r" (ws->mmu.l1tt_pa) );
   asm ( "mcr p15, 0, %[dacr], c3, c0, 0" : : [dacr] "r" (1) ); // Only using Domain 0, at the moment, allow access.
 
-  uint32_t tcr;
+  uint32_t sctlr;
 
-  asm ( "  mrc p15, 0, %[tcr], c1, c0, 0" : [tcr] "=r" (tcr) );
+  asm ( "  mrc p15, 0, %[sctlr], c1, c0, 0" : [sctlr] "=r" (sctlr) );
 
-  tcr |=  (1 << 23); // XP, bit 23, 1 = subpage AP bits disabled.
-  tcr &= ~(1 << 29); // Access Bit not used
-  tcr |=  (1 << 13); // High vectors; there were problems with setting this bit independently, so do it here
-  tcr |=  (1 << 12); // Instruction cache
-  tcr |=  (1 <<  2); // Data cache
-  tcr |=  (1 <<  0); // MMU Enable
+  // FIXME Should probably enable the Access Flag
+  sctlr |=  (1 << 23); // XP, bit 23, 1 = subpage AP bits disabled.
+  sctlr &= ~(1 << 29); // Access Bit not used
+  sctlr |=  (1 << 13); // High vectors; there were problems with setting this bit independently, so do it here
+  sctlr |=  (1 << 12); // Instruction cache
+  sctlr |=  (1 <<  2); // Data cache
+  sctlr |=  (1 <<  0); // MMU Enable
 
   asm ( "  dsb sy"
-      "\n  mcr p15, 0, %[tcr], c1, c0, 0" 
+      "\n  mcr p15, 0, %[sctlr], c1, c0, 0" 
       "\n  mov sp, %[stack]"
       "\n  bx %[kernel]"
       :
-      : [tcr] "r" (tcr)
+      : [sctlr] "r" (sctlr)
       , [kernel] "r" (go_kernel) // Virtual (high memory) address
       , [stack] "r" (sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack) );
 
