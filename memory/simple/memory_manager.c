@@ -33,8 +33,8 @@ static inline void initialise_frame_buffer()
 // I want to get the screen available early in the programming process, it will properly be done in a module
 uint32_t volatile * const gpio = (void*) 0xfff40000;
 uint32_t volatile * const mbox = (void*) 0xfff41000;
-MMU_map_at( (void*) gpio, 0x3f200000, 4096 );
-MMU_map_at( (void*) mbox, 0x3f00b000, 4096 );
+MMU_map_device_shared_at( (void*) gpio, 0x3f200000, 4096 );
+MMU_map_device_at( (void*) mbox, 0x3f00b000, 4096 );
 
 gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6); // Output, pin 22
       gpio[0x28/4] = (1 << 22); // Clr
@@ -535,15 +535,13 @@ void __attribute__(( naked, noreturn )) Kernel_default_data_abort()
   asm ( "mov r0, sp" : "=r" (regs) );
   for (int i = 13; i >= 0; i--) {
     //show_word( 900 + 100 * workspace.core_number, 100 + 10 * i, regs[i], Blue );
-    show_word( 900, 100 + 10 * i, regs[i], Green );
+    show_word( 900 + 100 * workspace.core_number, 300 + 10 * i, regs[i], Green );
   }
   clean_cache_to_PoC();
   fill_rect( 20 + (100 * (workspace.core_number + 1)), 10, 32, 96, 0xff000077 );
-  for (int y = 130; y < 500; y+= 20) {
-  show_word( 100 + 100 * workspace.core_number, y, fault_type(), Red );
-  show_word( 100 + 100 * workspace.core_number, y+10, fault_address(), Green );
-  }
-  clean_cache_to_PoC();
+  show_word( 100 + 100 * workspace.core_number, 200, fault_type(), Red );
+  show_word( 100 + 100 * workspace.core_number, 210, fault_address(), Green );
+  //clean_cache_to_PoC();
   for (;;) { asm ( "wfi" ); }
 }
 

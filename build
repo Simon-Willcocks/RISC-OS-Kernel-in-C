@@ -44,7 +44,7 @@ function resourcefiles { if [ $# == 1 ]; then number $( stat -c %s $1 ) ; cat $1
 for i in $( find Modules/ -type f | grep -v _ | grep -v /RISC_OS/ ); do number $( stat -c %s $i ) ; cat $i ; done > AllMods &&
 arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 AllMods AllMods.o --prefix-sections=.modules &&
 
-find Files/ -newer ResourceFiles.o -exec rm -rf rfs/ Files.rfs ResourceFiles.o \;
+if [ -f ResourceFiles.o ]; then find Files/ -newer ResourceFiles.o -exec rm -rf rfs/ Files.rfs ResourceFiles.o \; ; fi
 if [ ! -d rfs ]; then
 mkdir -p rfs/Files &&
 for i in Files/*

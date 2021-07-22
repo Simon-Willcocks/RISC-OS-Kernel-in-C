@@ -169,10 +169,10 @@ void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
       entry.type2 = 2;
       entry.AP = 3;
       entry.S = 1;
-      entry.TEX = 0b101;
-      entry.C = 0;
-      entry.B = 1;
       entry.APX = 0; // Read/Write
+      entry.TEX = 0b110; // Write through
+      entry.C = 1;
+      entry.B = 0;
       L1TT[virt / natural_alignment] = entry.raw;
       size -= natural_alignment;
       virt += natural_alignment;
@@ -295,9 +295,8 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
   l1tt_section_entry rom_sections = { .type2 = 2,
       .TEX = 0b111, .B = 1, .C = 1, 
       .XN = 0, .Domain = 0, .P = 0, 
-      .AP = 7,                  // Read-only, at any privilege level (SCTLR.AFE = 0)
-      .APX = 1,
-      .S = 1, .nG = 0 }; // Shared, global (read-only, so no problems with caches)
+      .AP = 3, .APX = 1,        // Read-only, at any privilege level (SCTLR.AFE = 0)
+      .S = 1, .nG = 0 };        // Shared, global (read-only, so no problems with caches)
 
   for (int i = 0; i < (uint32_t) &rom_size; i+= (1 << 20)) {
     ws->mmu.l1tt_pa[(start + i) >> 20] = rom_sections.raw | ((physical + i) & 0xfff00000);
@@ -328,6 +327,7 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
   // FIXME Should probably enable the Access Flag
   sctlr |=  (1 << 23); // XP, bit 23, 1 = subpage AP bits disabled.
   sctlr &= ~(1 << 29); // Access Bit not used
+  sctlr &= ~(1 << 28); // No TEX remap (VMSAv6 functionality)
   sctlr |=  (1 << 13); // High vectors; there were problems with setting this bit independently, so do it here
   sctlr |=  (1 << 12); // Instruction cache
   sctlr |=  (1 <<  2); // Data cache

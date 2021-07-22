@@ -73,15 +73,15 @@ uint32_t Cortex_A7_number_of_cores()
   return ((result >> 24) & 3) + 1;
 }
 
+// This variable is forced into the .text section so that we can get its relative address.
 processor_fns __attribute__(( section( ".text" ) )) processor;
 
-processor_fns __attribute__(( section( ".text" ) )) cortex_a7_fns = {
-  .number_of_cores = Cortex_A7_number_of_cores
-};
-
-processor_fns __attribute__(( section( ".text" ) )) cortex_a53_fns = {
-  .number_of_cores = Cortex_A7_number_of_cores
-};
+static inline processor_fns *unrelocated_pointer()
+{
+  processor_fns *unrelocated_processor;
+  asm ( "adr %[code], processor" : [code] "=r" (unrelocated_processor) );
+  return unrelocated_processor;
+}
 
 static inline void set_processor( processor_fns *fns )
 {
@@ -93,6 +93,97 @@ static inline void set_processor( processor_fns *fns )
   *unrelocated_processor = *unrelocated_fns;
 }
 
+static void clean_cache_32( int level ) // 0 to 6
+{
+  asm ( "dsb sy" );
+  // Select cache level
+  asm ( "mcr p15, 2, %[level], c0, c0, 0" : : [level] "r" (level << 1) ); // CSSELR Cache Size Selection Register.
+  asm ( "isb" );        // sync the change to the CCSIDR (from HAL_BCM2835/hdr/BCM2835)
+
+  uint32_t line_size = processor.caches.v7.cache[level].line_size;
+  uint32_t ways = processor.caches.v7.cache[level].ways;
+  uint32_t sets = processor.caches.v7.cache[level].sets;
+
+  int wayshift; // Number of bits to shift the way index by
+  asm ( "clz %[ws], %[assoc]" : [ws] "=r" (wayshift) : [assoc] "r" (ways) );
+
+show_word( 100 + 100 * workspace.core_number, 100 + 50 * level, line_size, White );
+show_word( 100 + 100 * workspace.core_number, 110 + 50 * level, ways, White );
+
+  for (int way = 0; way < ways; way++) {
+    uint32_t setway = (way << wayshift) | (level << 1);
+    for (int set = 0; set < sets; set++) {
+      //asm ( "mcr p15, 0, %[sw], c7, c14, 2" : : [sw] "r" (setway | (set << line_size)) ); // DCCISW
+      asm ( "mcr p15, 0, %[sw], c7, c14, 2" : : [sw] "r" (setway | (set << line_size)) ); // DCCISW
+    }
+  }
+show_word( 100 + 100 * workspace.core_number, 120 + 50 * level, sets, White );
+show_word( 100 + 100 * workspace.core_number, 130 + 50 * level, wayshift, White );
+
+  asm ( "dsb sy" );
+}
+
+static unsigned cache_type( uint32_t clidr, int level )
+{
+  return (clidr >> (3 * level)) & 7;
+}
+
+static void try_everything()
+{
+  for (int level = 0; level < 7 && cache_type( processor.caches.v7.clidr.raw, level ) != 0; level++) {
+    clean_cache_32( level );
+  }
+}
+
+static void do_nothing()
+{
+}
+
+static void clear_all()
+{
+  // asm ( "mcr p15, 0, %[zero], c7, c7, 0" : : [zero] "r" (0) ); // invalidate
+  asm ( "mcr p15, 0, %[zero], c7, c14, 0" : : [zero] "r" (0) ); // 
+}
+
+static void investigate_cache( processor_fns *fixed )
+{
+/* Does not work.
+  fixed->clean_cache_to_PoU = clear_all;
+  fixed->clean_cache_to_PoC = clear_all;
+  return;
+*/ 
+
+  uint32_t clidr;
+/* Does not work (Pi3)
+  asm ( "mcr p15, 1, %[clidr], c0, c0, 1" : [clidr] "=r" (clidr) ); // Cache Level ID Register
+*/
+  // Two levels of cache that can be cleared by set/way
+  clidr = (2 << 24) | (3 << 3) | (3 << 0);
+
+  fixed->caches.v7.clidr.raw = clidr;
+
+  if (fixed->caches.v7.clidr.LoC == 0) {
+    fixed->clean_cache_to_PoU = do_nothing;
+    fixed->clean_cache_to_PoC = do_nothing;
+    return;
+  }
+
+  // Only one implementation, at present.
+  fixed->clean_cache_to_PoU = try_everything;
+  fixed->clean_cache_to_PoC = try_everything;
+
+  // Information for the routines
+  for (int level = 0; level < 7 && 0 != cache_type( clidr, level ); level++) {
+    asm ( "mcr p15, 2, %[level], c0, c0, 0" : : [level] "r" (level << 1) ); // Cache Size Selection Register.
+    asm ( "dsb" );
+    uint32_t ccsidr;
+    asm ( "mrc p15, 1, %[size], c0, c0, 0" : [size] "=r" (ccsidr) );
+    fixed->caches.v7.cache[level].ways = ((ccsidr >> 3) & 0x3ff);
+    fixed->caches.v7.cache[level].sets = (ccsidr >> 13) & 0x7fff;
+    fixed->caches.v7.cache[level].line_size = (ccsidr & 7) + 4;
+  }
+}
+
 uint32_t pre_mmu_identify_processor()
 {
   // This should be the only place where the processor type gets looked at.
@@ -100,17 +191,21 @@ uint32_t pre_mmu_identify_processor()
   // The pointers will be fixed in read-only memory when the MMU is enabled.
 
   uint32_t main_id;
+  processor_fns *fixed = unrelocated_pointer();
 
-  asm ( "MRC p15, 0, %[id], c0, c0, 0" : [id] "=r" (main_id) );
+  asm ( "mrc p15, 0, %[id], c0, c0, 0" : [id] "=r" (main_id) );
+
+  investigate_cache( fixed );
+  fixed->number_of_cores = Cortex_A7_number_of_cores;
 
   switch (main_id) {
-  case 0x410fc070 ... 0x410fc07f: set_processor( &cortex_a7_fns ); return Cortex_A7_number_of_cores(); // A7
-  case 0x410fd030 ... 0x410fd03f: set_processor( &cortex_a53_fns ); return Cortex_A7_number_of_cores(); // A53
-  case 0x410fd080 ... 0x410fd08f: set_processor( &cortex_a53_fns ); return Cortex_A7_number_of_cores(); // A72
+  case 0x410fc070 ... 0x410fc07f: break; // A7
+  case 0x410fd030 ... 0x410fd03f: break; // A53
+  case 0x410fd080 ... 0x410fd08f: break; // A72
   default: for (;;) { asm( "wfi" ); }
   }
 
-  return 1;
+  return Cortex_A7_number_of_cores();
 }
 
 void *memset(void *s, int c, uint32_t n)
@@ -128,99 +223,3 @@ void *memcpy(void *d, const void *s, uint32_t n)
   return d;
 }
 
-void clean_cache( uint32_t level )
-/*
-{
-  // Taken direct from ARM DAI 0527A 4.3.1 Cleaning and invalidating the caches
-  asm (
-  "\nMOV R0, %[level]"
-  "\nMCR P15, 2, R0, C0, C0, 0"
-  "\nMRC P15, 1, R4, C0, C0, 0"
-  "\nAND R1, R4, #0x7 "
-  "\nADD R1, R1, #0x4 "
-  "\nLDR R3, =0x7FFF "
-  "\nAND R2, R3, R4, LSR #13 "
-  "\nLDR R3, =0x3FF "
-  "\nAND R3, R3, R4, LSR #3"
-  "\nCLZ R4, R3"
-  "\nMOV R5, #0"
-  "\n"
-  "\nway_loop:"
-  "\nMOV R6, #0"
-  "\n"
-  "\nset_loop:"
-  "\n"
-  "\nORR R7, R0, R5, LSL R4"
-  "\nORR R7, R7, R6, LSL R1"
-  "\nMCR P15, 0, R7, C7, C6, 2"
-  "\nADD R6, R6, #1"
-  "\nCMP R6, R2"
-  "\nBLE set_loop"
-  "\nADD R5, R5, #1"
-  "\nCMP R5, R3"
-  "\nBLE way_loop"
-  : : [level] "ir" ((level - 1) << 1)
-  : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7" );
-}
-{
-  // Assuming FEAT_CCIDX
-  // This is a function that should be filled in by the pre_mmu_identify_processor routine
-  level = (level - 1) << 1;
-  asm ( "dsb sy" );
-  asm ( "mcr p15, 2, %[level], c0, c0, 0" : : [level] "r" (level) ); // CSSELR Cache Size Selection Register.
-  uint32_t ccsidr;
-  uint32_t ccsidr2;
-  asm ( "mrc p15, 1, %[size], c0, c0, 0" : [size] "=r" (ccsidr) );
-  asm ( "mrc p15, 1, %[size], c0, c0, 2" : [size] "=r" (ccsidr2) );
-
-  uint32_t line_size = (ccsidr & 7) + 4;
-  uint32_t ways = (ccsidr >> 3) & ((1 << 20)-1);
-  uint32_t sets = (ccsidr2 >> 0) & ((1 << 23)-1);
-
-  int wayshift; // Number of bits to shift the way index by
-  asm ( "clz %[ws], %[assoc]" : [ws] "=r" (wayshift) : [assoc] "r" (ways) );
-
-show_word( 100 + 100 * workspace.core_number, 150, line_size, White );
-show_word( 100 + 100 * workspace.core_number, 160, ways, White );
-show_word( 100 + 100 * workspace.core_number, 170, sets, White );
-show_word( 100 + 100 * workspace.core_number, 180, wayshift, White );
-
-  for (int way = 0; way < ways; way++) {
-    uint32_t setway = (way << wayshift) | level;
-    for (int set = 0; set < sets; set++) {
-      asm ( "mcr p15, 0, %[sw], c7, c14, 2" : : [sw] "r" (setway | (set << line_size)) ); // DCCISW
-    }
-  }
-  asm ( "dsb sy" );
-}
-
-*/
-{
-  // Assuming NOT FEAT_CCIDX
-  // This is a function that should be filled in by the pre_mmu_identify_processor routine
-  level = (level - 1) << 1;
-  asm ( "dsb sy" );
-  asm ( "mcr p15, 2, %[level], c0, c0, 0" : : [level] "r" (level) ); // CSSELR Cache Size Selection Register.
-  uint32_t ccsidr;
-  asm ( "mrc p15, 1, %[size], c0, c0, 0" : [size] "=r" (ccsidr) );
-
-  uint32_t line_size = (ccsidr & 7) + 4;
-  uint32_t ways = ((ccsidr >> 3) & 0x3ff);
-  uint32_t sets = (ccsidr >> 13) & 0x7fff;
-
-  int wayshift; // Number of bits to shift the way index by
-  asm ( "clz %[ws], %[assoc]" : [ws] "=r" (wayshift) : [assoc] "r" (ways) );
-
-show_word( 100 + 100 * workspace.core_number, 150, line_size, White );
-show_word( 100 + 100 * workspace.core_number, 160, ways, White );
-show_word( 100 + 100 * workspace.core_number, 170, sets, White );
-show_word( 100 + 100 * workspace.core_number, 180, wayshift, White );
-
-  for (int way = 0; way < ways; way++) {
-    uint32_t setway = (way << wayshift) | level;
-    for (int set = 0; set < sets; set++) {
-      asm ( "mcr p15, 0, %[sw], c7, c14, 2" : : [sw] "r" (setway | (set << line_size)) ); // DCCISW
-    }
-  }
-  asm ( "dsb sy" );
-}

@@ -23,6 +23,37 @@
 
 typedef struct {
   uint32_t (*number_of_cores)();
+  void (*clean_cache_to_PoU)(); // All aspects of the PE will see the same
+  void (*clean_cache_to_PoC)(); // All memory users will see the same
+
+
+  // Private
+  // Add structures to the union to support different processor types
+  union {
+    struct {
+      union {
+        uint32_t raw;
+        struct {
+          uint32_t CType1:3;
+          uint32_t CType2:3;
+          uint32_t CType3:3;
+          uint32_t CType4:3;
+          uint32_t CType5:3;
+          uint32_t CType6:3;
+          uint32_t CType7:3;
+          uint32_t LoUIS:3;
+          uint32_t LoC:3;
+          uint32_t LoUU:3;
+          uint32_t ICB:2;
+        };
+      } clidr;
+      struct {
+        int ways;
+        int sets;
+        int line_size;
+      } cache[7];
+    } v7;
+  } caches;
 } processor_fns;
 
 extern processor_fns processor;
@@ -35,6 +66,9 @@ uint32_t pre_mmu_identify_processor();
 #define PROCESSOR_FN( name ) static inline uint32_t name() { return processor.name(); }
 
 PROCESSOR_FN( number_of_cores )
+PROCESSOR_PROC( clean_cache_to_PoU )
+PROCESSOR_PROC( clean_cache_to_PoC )
+
 void set_smp_mode();
 
 static inline uint32_t get_swi_number( uint32_t instruction_following_swi )
@@ -113,8 +147,4 @@ static inline void flush_location( void *va )
   // DCCMVAC
   asm ( "mcr p15, 0, %[va], cr7, cr10, 1" : : [va] "r" (va) );
 }
-
-// level = 1 -> Level 1 DCache
-// level = 2 -> Level 2 DCache
-void clean_cache( uint32_t level );
 

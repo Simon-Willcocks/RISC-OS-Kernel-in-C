@@ -117,6 +117,8 @@ static bool run_swi_handler_code( svc_registers *regs, uint32_t svc, module *m )
   register uint32_t private_word asm( "r12" ) = (uint32_t) &m->private_word;
   register uint32_t svc_index asm( "r11" ) = svc & 0x3f;
 
+  clear_VF();
+
   asm goto (
         "  push { %[regs] }"
       "\n  ldm %[regs], { r0-r9 }"
@@ -208,8 +210,6 @@ bool do_module_swi( svc_registers *regs, uint32_t svc )
 {
   uint32_t chunk = svc & ~Xbit & ~0x3f;
 
-  clear_VF();
-
   module *m = workspace.kernel.module_list_head;
   while (m != 0 && m->header->swi_chunk != chunk) {
     m = m->next;
@@ -217,6 +217,7 @@ bool do_module_swi( svc_registers *regs, uint32_t svc )
   if (m == 0) {
     return Kernel_Error_UnknownSWI( regs );
   }
+
   return run_swi_handler_code( regs, svc, m );
 }
 
@@ -818,11 +819,6 @@ bool do_OS_SerialOp( svc_registers *regs )
   return run_vector( 36, regs );
 }
 
-static void clear_cache_at( void *p )
-{
-  // asm( "mcr p15, 0, %[va], c7, c14, 0" : : [va] "r" (p) );
-}
-
 void __attribute__(( naked )) fast_horisontal_line_draw( uint32_t left, uint32_t y, uint32_t right, uint32_t action )
 {
   asm ( "push { r0-r12, lr }" );
@@ -839,7 +835,6 @@ void __attribute__(( naked )) fast_horisontal_line_draw( uint32_t left, uint32_t
     uint32_t c = workspace.vdu.vduvars[153 - 128];
     while (p <= r) {
       *p = c;
-      clear_cache_at( p );
       p++;
     }
     }
@@ -849,7 +844,6 @@ void __attribute__(( naked )) fast_horisontal_line_draw( uint32_t left, uint32_t
     uint32_t c = workspace.vdu.vduvars[154 - 128];
     while (p <= r) {
       *p = c;
-      clear_cache_at( p );
       p++;
     }
     }
@@ -967,6 +961,17 @@ static uint32_t draw_sin( int deg )
 static uint32_t draw_cos( int deg )
 {
   return draw_sin( deg + 90 );
+}
+
+static void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint32_t c )
+{
+  extern uint32_t frame_buffer;
+  uint32_t *screen = &frame_buffer;
+
+  for (uint32_t y = top; y < top + h; y++) {
+    uint32_t *p = &screen[y * 1920 + left];
+    for (int x = 0; x < w; x++) { *p++ = c; }
+  }
 }
 
 void Boot()
@@ -1370,6 +1375,10 @@ static uint32_t path3[] = {
  0x00000008, 0x00004100, 0x0000d000,
  0x00000005, 0x00000000 };
 
+  uint32_t sctlr;
+  asm ( "  mrc p15, 0, %[sctlr], c1, c0, 0" : [sctlr] "=r" (sctlr) );
+  show_word( 10, 30, sctlr, Yellow );
+
 #define numberof( a ) (sizeof( a ) / sizeof( a[0] ))
 
   uint32_t matrix[6] = { 0, 0, 0, 0, (400 << 8) + workspace.core_number * (560 << 8), 400 << 8 };
@@ -1379,7 +1388,8 @@ static uint32_t path3[] = {
   bool odd = 0 != (workspace.core_number & 1);
   // Re-start after 45 degree turn (octagonal cog)
   int angle = odd ? 0 : 22; // Starting angle
-  int step = 1;
+  int step = 3;
+
   for (;;) {
     matrix[0] =  draw_cos( angle );
     matrix[1] =  draw_sin( angle );
@@ -1393,15 +1403,15 @@ static uint32_t path3[] = {
     workspace.vdu.vduvars[154 - 128] = 0xff004c00; // BG, Dark green
     Draw_Fill( path3, matrix );
 
-clean_cache( 1 );
-clean_cache( 2 );
-    for (int i = 0; i < 0x800000; i++) { asm ( "" ); }
+//clean_cache_to_PoC();
+
+    for (int i = 0; i < 0x8000000; i++) { asm ( "" ); }
 
     workspace.vdu.vduvars[154 - 128] = 0xff000000; // Black
     Draw_Fill( path1, matrix );
     Draw_Fill( path2, matrix );
     Draw_Fill( path3, matrix );
-   
+
     if (odd) {
       angle -= step;
       if (angle < 0) angle += 45;
