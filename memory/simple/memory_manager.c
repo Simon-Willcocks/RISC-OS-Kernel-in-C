@@ -126,7 +126,7 @@ void Initialise_system_DAs()
   uint32_t initial_rma_size = natural_alignment;
   svc_registers regs;
 
-  claim_lock( &shared.memory.dynamic_areas_lock );
+  claim_lock( &shared.memory.dynamic_areas_lock ); 
 
   if (shared.memory.dynamic_areas == 0) {
     // First core here (need not be core zero)
@@ -138,7 +138,7 @@ void Initialise_system_DAs()
       RMA = Kernel_allocate_pages( natural_alignment, natural_alignment );
     }
 
-    MMU_map_at( &rma_heap, RMA, initial_rma_size );
+    MMU_map_shared_at( &rma_heap, RMA, initial_rma_size );
 
     shared.memory.rma_memory = RMA;
 
@@ -198,6 +198,7 @@ void Initialise_system_DAs()
       shared.memory.dynamic_areas = da;
 
       MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
+show_word( 10, 10, workspace.core_number, Yellow );
     }
   }
   else {
@@ -516,20 +517,33 @@ uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment )
 
 void __attribute__(( naked, noreturn )) Kernel_default_prefetch()
 {
+  asm ( "push { r0-r12,lr }" );
+  register uint32_t *regs asm ( "r0" );
+  asm ( "mov r0, sp" : "=r" (regs) );
+  for (int i = 13; i >= 0; i--) {
+    show_word( 900 + 100 * workspace.core_number, 100 + 10 * i, regs[i], Blue );
+  }
+  clean_cache_to_PoC();
   fill_rect( 20 + (100 * (workspace.core_number + 1)), 10, 64, 64, 0xff555555 );
   for (;;) { asm ( "wfi" ); }
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_data_abort()
 {
-  fill_rect( 20 + (100 * (workspace.core_number + 1)), 10, 32, 96, 0xff770077 );
-  for (int y = 130; y < 1000; y+= 20) {
+  asm ( "push { r0-r12,lr }" );
+  register uint32_t *regs asm ( "r0" );
+  asm ( "mov r0, sp" : "=r" (regs) );
+  for (int i = 13; i >= 0; i--) {
+    //show_word( 900 + 100 * workspace.core_number, 100 + 10 * i, regs[i], Blue );
+    show_word( 900, 100 + 10 * i, regs[i], Green );
+  }
+  clean_cache_to_PoC();
+  fill_rect( 20 + (100 * (workspace.core_number + 1)), 10, 32, 96, 0xff000077 );
+  for (int y = 130; y < 500; y+= 20) {
   show_word( 100 + 100 * workspace.core_number, y, fault_type(), Red );
   show_word( 100 + 100 * workspace.core_number, y+10, fault_address(), Green );
   }
-  clean_cache( 1 );
-  clean_cache( 2 );
-  clean_cache( 1 );
+  clean_cache_to_PoC();
   for (;;) { asm ( "wfi" ); }
 }
 
