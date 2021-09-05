@@ -205,6 +205,7 @@ void MMU_map_device_at( void *va, uint32_t pa, uint32_t size )
   if (naturally_aligned( virt ) && naturally_aligned( pa ) && naturally_aligned( size )) {
     while (size > 0) {
       l1tt_section_entry entry = { .raw = pa };
+      entry.XN = 1;
       entry.type2 = 2;
       entry.AP = 3;
       entry.APX = 0; // Read/Write
@@ -234,12 +235,14 @@ void MMU_map_device_at( void *va, uint32_t pa, uint32_t size )
   asm ( "dsb sy" ); // TODO: replace with descriptive routine from processor
 }
 
+Quick note: ensure devices are XN, otherwise they might be read speculatively as instructions.
 void MMU_map_device_shared_at( void *va, uint32_t pa, uint32_t size )
 {
   uint32_t virt = (uint32_t) va;
   if (naturally_aligned( virt ) && naturally_aligned( pa ) && naturally_aligned( size )) {
     while (size > 0) {
       l1tt_section_entry entry = { .raw = pa };
+      entry.XN = 1;
       entry.type2 = 2;
       entry.AP = 3;
       entry.S = 1;
