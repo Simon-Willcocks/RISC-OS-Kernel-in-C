@@ -62,6 +62,8 @@ void MMU_switch_to_map( void *map );
 
 void MMU_map_at( void *va, uint32_t pa, uint32_t size );
 void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size );
+void MMU_map_device_at( void *va, uint32_t pa, uint32_t size );
+void MMU_map_device_shared_at( void *va, uint32_t pa, uint32_t size );
 
 void BOOT_finished_allocating( uint32_t core, volatile startup *startup );
 

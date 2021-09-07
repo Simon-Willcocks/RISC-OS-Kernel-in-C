@@ -717,7 +717,8 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
   asm ( "pop { r0-r11, pc }" );
 }
 
-static vector default_os_byte_v = { .next = 0, .code = (uint32_t) default_os_byte, .private_word = 0 };
+static vector default_ByteV = { .next = 0, .code = (uint32_t) default_os_byte, .private_word = 0 };
+static vector default_WrchV = { .next = 0, .code = (uint32_t) default_os_writec, .private_word = 0 };
 
 bool do_OS_GenerateError( svc_registers *regs )
 {
@@ -976,7 +977,8 @@ static void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint
 
 void Boot()
 {
-  workspace.kernel.vectors[6] = &default_os_byte_v;
+  workspace.kernel.vectors[6] = &default_ByteV;
+  workspace.kernel.vectors[3] = &default_WrchV;
 
   SetInitialVduVars();
 

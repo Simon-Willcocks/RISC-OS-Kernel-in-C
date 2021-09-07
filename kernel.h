@@ -16,6 +16,7 @@
 typedef unsigned long long uint64_t;
 typedef unsigned        uint32_t;
 typedef int             int32_t;
+typedef short           int16_t;
 typedef unsigned char   uint8_t;
 typedef unsigned        size_t;
 typedef unsigned        bool;
@@ -76,6 +77,10 @@ struct VDU_workspace {
     uint32_t right;
     uint32_t top;
   } ChangedBox;
+  struct {
+    int16_t x;
+    int16_t y;
+  } plot_points[3];
   uint32_t modevars[13];
   uint32_t vduvars[44];
   uint32_t textwindow[2];

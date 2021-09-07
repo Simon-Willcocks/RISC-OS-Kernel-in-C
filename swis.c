@@ -288,8 +288,6 @@ static bool do_OS_PrettyPrint( svc_registers *regs )
   return result;
 }
 
-static bool do_OS_Plot( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-
 static bool do_OS_WriteEnv( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadArgs( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadRAMFsLimits( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }

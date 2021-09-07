@@ -235,7 +235,6 @@ void MMU_map_device_at( void *va, uint32_t pa, uint32_t size )
   asm ( "dsb sy" ); // TODO: replace with descriptive routine from processor
 }
 
-Quick note: ensure devices are XN, otherwise they might be read speculatively as instructions.
 void MMU_map_device_shared_at( void *va, uint32_t pa, uint32_t size )
 {
   uint32_t virt = (uint32_t) va;

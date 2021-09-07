@@ -116,6 +116,8 @@ bool do_OS_ReadDynamicArea( svc_registers *regs );
 bool do_OS_DynamicArea( svc_registers *regs );
 
 // swis/vdu.c
+void __attribute__(( naked )) default_os_writec( uint32_t r0, uint32_t r1, uint32_t r2 );
+
 void SetInitialVduVars();
 bool do_OS_ChangedBox( svc_registers *regs );
 bool do_OS_ReadVduVariables( svc_registers *regs );
@@ -124,6 +126,8 @@ bool do_OS_ReadModeVariable( svc_registers *regs );
 bool do_OS_RemoveCursors( svc_registers *regs );
 bool do_OS_RestoreCursors( svc_registers *regs );
 
+// swis/plot.c
+bool do_OS_Plot( svc_registers *regs );
 
 // swis/varvals.c
 enum { VarType_String = 0,
