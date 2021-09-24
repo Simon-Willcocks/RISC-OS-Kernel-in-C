@@ -1405,8 +1405,6 @@ static uint32_t path3[] = {
     workspace.vdu.vduvars[154 - 128] = 0xff004c00; // BG, Dark green
     Draw_Fill( path3, matrix );
 
-//clean_cache_to_PoC();
-
     for (int i = 0; i < 0x8000000; i++) { asm ( "" ); }
 
     workspace.vdu.vduvars[154 - 128] = 0xff000000; // Black

@@ -57,5 +57,6 @@ fi &&
 
 arm-linux-gnueabi-gcc-8 -Wall -I . -march=armv7-a+nofp+mp -g -fno-zero-initialized-in-bss kernel.c swis.c modules.c DrawFile.o swis/*.c $PROC/*.c -I $PROC $BOOT/*.c -I $BOOT $MMU/*.c -I $MMU $MM/*.c -I $MM AllMods.o ResourceFiles.o -nostartfiles -nostdlib -T rom.script -Os -static -o rom.elf &&
 arm-linux-gnueabi-objcopy -R .ignoring -O binary rom.elf rom.bin &&
+arm-linux-gnueabi-objdump --disassemble-all rom.elf > rom.dump &&
 ls -l rom.*
 

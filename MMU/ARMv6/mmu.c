@@ -100,7 +100,11 @@ static void map_work_area( uint32_t *l2tt, uint32_t physical, void *virtual, uin
 
   // Writable by (and visible to) this core only, only in privileged modes.
   // XN off, because the vectors are in there.
-  l2tt_entry entry = { .XN = 0, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 0, .nG = 0 };
+
+  // Outer and Inner Write-Back, Read-Allocate Write-Allocate does not work. ?? 
+  // This should match the TTBR0 settings
+  l2tt_entry entry = { .XN = 0, .small_page = 1, .TEX = 0b101, .C = 0, .B = 1, .AP = 1, .APX = 0, .S = 0, .nG = 1 };
+
 
   for (int i = 0; i < (size + 0xfff) >> 12; i++) {
     l2tt[(va >> 12) + i] = entry.raw | (physical + (i << 12));
@@ -115,7 +119,8 @@ static void map_shared_work_area( uint32_t *l2tt, uint32_t physical, void *virtu
   // l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
   // The above values don't seem to work with ldrex
   // Shared write-back, no allocate on write (whatever that means)
-  l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 1, .C = 1, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
+  l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 1, .C = 1, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 1 };
+
 
   for (int i = 0; i < (size + 0xfff) >> 12; i++) {
     l2tt[(va >> 12) + i] = entry.raw | (physical + (i << 12));
@@ -134,6 +139,7 @@ void MMU_map_at( void *va, uint32_t pa, uint32_t size )
       entry.TEX = 0b101;
       entry.C = 0;
       entry.B = 1;
+
       L1TT[virt / natural_alignment] = entry.raw;
       size -= natural_alignment;
       virt += natural_alignment;
@@ -142,6 +148,7 @@ void MMU_map_at( void *va, uint32_t pa, uint32_t size )
   }
   else if (size == 4096) {
     l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 0, .nG = 0 };
+
     entry.page_base = (pa >> 12);
     if ((uint32_t) va >= 0xfff00000) {
       top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
@@ -173,6 +180,7 @@ void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
       entry.TEX = 0b110; // Write through
       entry.C = 1;
       entry.B = 0;
+
       L1TT[virt / natural_alignment] = entry.raw;
       size -= natural_alignment;
       virt += natural_alignment;
@@ -181,6 +189,7 @@ void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
   }
   else if (size == 4096) {
     l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
+
     entry.page_base = (pa >> 12);
     if ((uint32_t) va >= 0xfff00000) {
       top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
@@ -217,6 +226,7 @@ void MMU_map_device_at( void *va, uint32_t pa, uint32_t size )
   }
   else if (size == 4096) {
     l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 0, .nG = 0 };
+
     entry.page_base = (pa >> 12);
     if ((uint32_t) va >= 0xfff00000) {
       top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
@@ -254,6 +264,7 @@ void MMU_map_device_shared_at( void *va, uint32_t pa, uint32_t size )
   }
   else if (size == 4096) {
     l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
+
     entry.page_base = (pa >> 12);
     if ((uint32_t) va >= 0xfff00000) {
       top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
@@ -295,9 +306,9 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
 
   // FIXME: permissions, caches, etc.
   l1tt_section_entry rom_sections = { .type2 = 2,
-      .TEX = 0b111, .B = 1, .C = 1, 
+      .TEX = 0b101, .B = 1, .C = 0,     // Match existing kernel, for now
       .XN = 0, .Domain = 0, .P = 0, 
-      .AP = 3, .APX = 1,        // Read-only, at any privilege level (SCTLR.AFE = 0)
+      .AP = 2, .APX = 1,        // Read-only, at any privilege level (SCTLR.AFE = 0)
       .S = 1, .nG = 0 };        // Shared, global (read-only, so no problems with caches)
 
   for (int i = 0; i < (uint32_t) &rom_size; i+= (1 << 20)) {
@@ -317,9 +328,13 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
 
   map_shared_work_area( ws->mmu.l2tt_pa, startup->shared_memory, (void*) &shared, sizeof( shared ) );
 
+  asm ( "  dsb sy" );
+
   // This version doesn't use TTBR1; there's enough memory in everything,
   // these days. (Any future 64-bit version should, though).
-  asm ( "mcr p15, 0, %[ttbr0], c2, c0, 0" : : [ttbr0] "r" (ws->mmu.l1tt_pa) );
+  asm ( "mcr p15, 0, %[ttbcr], c2, c0, 2" : : [ttbcr] "r" (0) );
+  // 0x48 -> Inner and Outer write-back, write-allocate cacheable, not shared (per core tables)
+  asm ( "mcr p15, 0, %[ttbr0], c2, c0, 0" : : [ttbr0] "r" (0x48 | (uint32_t) ws->mmu.l1tt_pa) );
   asm ( "mcr p15, 0, %[dacr], c3, c0, 0" : : [dacr] "r" (1) ); // Only using Domain 0, at the moment, allow access.
 
   uint32_t sctlr;
@@ -332,7 +347,7 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
   sctlr &= ~(1 << 28); // No TEX remap (VMSAv6 functionality)
   sctlr |=  (1 << 13); // High vectors; there were problems with setting this bit independently, so do it here
   sctlr |=  (1 << 12); // Instruction cache
-  sctlr |=  (1 <<  2); // Data cache
+  sctlr |=  (1 <<  2); // Data cache - N.B. You cannot turn off cache here (for testing), locks will not work
   sctlr |=  (1 <<  0); // MMU Enable
 
   asm ( "  dsb sy"

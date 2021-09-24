@@ -139,6 +139,7 @@ void Initialise_system_DAs()
     }
 
     MMU_map_shared_at( &rma_heap, RMA, initial_rma_size );
+    asm ( "dsb sy" );
 
     shared.memory.rma_memory = RMA;
 
@@ -200,16 +201,21 @@ void Initialise_system_DAs()
       MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
 show_word( 10, 10, workspace.core_number, Yellow );
     }
+    fill_rect( (90 + 100 * workspace.core_number), 10, 84, 100, 0xff0000ff );
+
+    asm ( "dsb sy" );
   }
   else {
     // Map the shared areas into core's virtual memory map
     MMU_map_shared_at( &rma_heap, shared.memory.rma_memory, initial_rma_size );
+    asm ( "dsb sy" );
 
     DynamicArea *da = shared.memory.dynamic_areas;
     while (da != 0) {
       MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
       da = da->next;
     }
+    asm ( "dsb sy" );
   }
 
   release_lock( &shared.memory.dynamic_areas_lock );
@@ -246,6 +252,7 @@ show_word( 10, 10, workspace.core_number, Yellow );
   return;
 
 nomem:
+  fill_rect( (100 + 100 * workspace.core_number), 10, 64, 100, 0xffff0000 );
   for (;;) { asm ( "wfi" ); }
 }
 
@@ -525,6 +532,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_prefetch()
   }
   clean_cache_to_PoC();
   fill_rect( 20 + (100 * (workspace.core_number + 1)), 10, 64, 64, 0xff555555 );
+  clean_cache_to_PoC();
   for (;;) { asm ( "wfi" ); }
 }
 
@@ -534,14 +542,20 @@ void __attribute__(( naked, noreturn )) Kernel_default_data_abort()
   register uint32_t *regs asm ( "r0" );
   asm ( "mov r0, sp" : "=r" (regs) );
   for (int i = 13; i >= 0; i--) {
-    //show_word( 900 + 100 * workspace.core_number, 100 + 10 * i, regs[i], Blue );
-    show_word( 900 + 100 * workspace.core_number, 300 + 10 * i, regs[i], Green );
+    show_word( 900 + 100 * workspace.core_number, 400 + 10 * i, regs[i], Green );
   }
   clean_cache_to_PoC();
   fill_rect( 20 + (100 * (workspace.core_number + 1)), 10, 32, 96, 0xff000077 );
-  show_word( 100 + 100 * workspace.core_number, 200, fault_type(), Red );
-  show_word( 100 + 100 * workspace.core_number, 210, fault_address(), Green );
-  //clean_cache_to_PoC();
+  show_word( 900 + 100 * workspace.core_number, 200, fault_type(), Red );
+  show_word( 900 + 100 * workspace.core_number, 210, fault_address(), Green );
+  show_word( 900 + 100 * workspace.core_number, 220, fault_type(), Red );
+  show_word( 900 + 100 * workspace.core_number, 230, fault_address(), Green );
+  show_word( 900 + 100 * workspace.core_number, 240, fault_type(), Red );
+  show_word( 900 + 100 * workspace.core_number, 250, fault_address(), Green );
+  for (int i = 0x77; i > 0; i--) {
+  fill_rect( 20 + (100 * (workspace.core_number + 1)), 10, 32, i, 0xff000000 | i );
+  }
+  clean_cache_to_PoC();
   for (;;) { asm ( "wfi" ); }
 }
 
