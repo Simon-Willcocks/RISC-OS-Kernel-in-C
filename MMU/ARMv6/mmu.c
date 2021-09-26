@@ -81,15 +81,35 @@ typedef union {
 
 static void __attribute__(( noreturn, noinline )) go_kernel()
 {
+  // Break before make
+  about_to_remap_memory();
   for (int i = 0; i < 64; i++) {
     L1TT[i] = 0;
   }
+  memory_remapped();
 
   l1tt_table_entry MiB = { .type1 = 1, .NS = 0, .Domain = 0 };
 
+  about_to_remap_memory();
   L1TT[0] = MiB.raw | (1024 + (uint32_t) workspace.mmu.l2tt_pa);   // bottom_MiB_tt
+  memory_remapped();
 
   Kernel_start();
+}
+
+// Map a privileged read-write page into the top 1MiB of virtual memory
+// Might be better with pages instead of addresses
+static void map_translation_table( uint32_t *l2tt, uint32_t physical, void *virtual, uint32_t size )
+{
+  uint32_t va = 0xff000 & (uint32_t) virtual;
+
+  // Writable by (and visible to) this core only, only in privileged modes.
+  // This must match the TTBR0 settings
+  l2tt_entry entry = { .XN = 1, .small_page = 1, .TEX = 0b101, .C = 0, .B = 1, .AP = 1, .APX = 0, .S = 0, .nG = 1 };
+
+  for (int i = 0; i < (size + 0xfff) >> 12; i++) {
+    l2tt[(va >> 12) + i] = entry.raw | (physical + (i << 12));
+  }
 }
 
 // Map a privileged read-write page into the top 1MiB of virtual memory
@@ -99,15 +119,14 @@ static void map_work_area( uint32_t *l2tt, uint32_t physical, void *virtual, uin
   uint32_t va = 0xff000 & (uint32_t) virtual;
 
   // Writable by (and visible to) this core only, only in privileged modes.
-  // XN off, because the vectors are in there.
+  // XN off for first page, because the vectors are in there, possibly FIQ code, as well.
 
-  // Outer and Inner Write-Back, Read-Allocate Write-Allocate does not work. ?? 
-  // This should match the TTBR0 settings
+  // Outer and Inner Write-Back, Read-Allocate Write-Allocate
   l2tt_entry entry = { .XN = 0, .small_page = 1, .TEX = 0b101, .C = 0, .B = 1, .AP = 1, .APX = 0, .S = 0, .nG = 1 };
-
 
   for (int i = 0; i < (size + 0xfff) >> 12; i++) {
     l2tt[(va >> 12) + i] = entry.raw | (physical + (i << 12));
+    entry.XN = 1;
   }
 }
 
@@ -150,6 +169,9 @@ void MMU_map_at( void *va, uint32_t pa, uint32_t size )
     l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 0, .nG = 0 };
 
     entry.page_base = (pa >> 12);
+
+    // FIXME: Obviously more areas of memory need finer granularity than just the
+    // top and bottom megabytes.
     if ((uint32_t) va >= 0xfff00000) {
       top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
     }
@@ -164,7 +186,7 @@ void MMU_map_at( void *va, uint32_t pa, uint32_t size )
     for (;;) { asm ( "wfi" ); }
   }
 
-  asm ( "dsb sy" ); // TODO: replace with descriptive routine from processor
+  memory_remapped();
 }
 
 void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
@@ -205,7 +227,7 @@ void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
     for (;;) { asm ( "wfi" ); }
   }
 
-  asm ( "dsb sy" ); // TODO: replace with descriptive routine from processor
+  memory_remapped();
 }
 
 void MMU_map_device_at( void *va, uint32_t pa, uint32_t size )
@@ -242,7 +264,7 @@ void MMU_map_device_at( void *va, uint32_t pa, uint32_t size )
     for (;;) { asm ( "wfi" ); }
   }
 
-  asm ( "dsb sy" ); // TODO: replace with descriptive routine from processor
+  memory_remapped();
 }
 
 void MMU_map_device_shared_at( void *va, uint32_t pa, uint32_t size )
@@ -280,7 +302,7 @@ void MMU_map_device_shared_at( void *va, uint32_t pa, uint32_t size )
     for (;;) { asm ( "wfi" ); }
   }
 
-  asm ( "dsb sy" ); // TODO: replace with descriptive routine from processor
+  memory_remapped();
 }
 
 void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volatile startup *startup )
@@ -306,7 +328,7 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
 
   // FIXME: permissions, caches, etc.
   l1tt_section_entry rom_sections = { .type2 = 2,
-      .TEX = 0b101, .B = 1, .C = 0,     // Match existing kernel, for now
+      .TEX = 0b101, .C = 0, .B = 1,     // Match existing kernel, for now
       .XN = 0, .Domain = 0, .P = 0, 
       .AP = 2, .APX = 1,        // Read-only, at any privilege level (SCTLR.AFE = 0)
       .S = 1, .nG = 0 };        // Shared, global (read-only, so no problems with caches)
@@ -323,8 +345,8 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
   ws->mmu.l1tt_pa[0xfff] = MiB.raw | (uint32_t) ws->mmu.l2tt_pa;        // top_MiB_tt
 
   map_work_area( ws->mmu.l2tt_pa, (uint32_t) ws, &workspace, sizeof( workspace ) );
-  map_work_area( ws->mmu.l2tt_pa, (uint32_t) ws->mmu.l1tt_pa, L1TT, 4096 * 4 );
-  map_work_area( ws->mmu.l2tt_pa, (uint32_t) ws->mmu.l2tt_pa, top_MiB_tt, 4096 );
+  map_translation_table( ws->mmu.l2tt_pa, (uint32_t) ws->mmu.l1tt_pa, L1TT, 4096 * 4 );
+  map_translation_table( ws->mmu.l2tt_pa, (uint32_t) ws->mmu.l2tt_pa, top_MiB_tt, 4096 );
 
   map_shared_work_area( ws->mmu.l2tt_pa, startup->shared_memory, (void*) &shared, sizeof( shared ) );
 
@@ -334,6 +356,7 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
   // these days. (Any future 64-bit version should, though).
   asm ( "mcr p15, 0, %[ttbcr], c2, c0, 2" : : [ttbcr] "r" (0) );
   // 0x48 -> Inner and Outer write-back, write-allocate cacheable, not shared (per core tables)
+  // This should match the settings in map_work_area
   asm ( "mcr p15, 0, %[ttbr0], c2, c0, 0" : : [ttbr0] "r" (0x48 | (uint32_t) ws->mmu.l1tt_pa) );
   asm ( "mcr p15, 0, %[dacr], c3, c0, 0" : : [dacr] "r" (1) ); // Only using Domain 0, at the moment, allow access.
 
@@ -352,6 +375,8 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
 
   asm ( "  dsb sy"
       "\n  mcr p15, 0, %[sctlr], c1, c0, 0" 
+      "\n  dsb"
+      "\n  isb"
       "\n  mov sp, %[stack]"
       "\n  bx %[kernel]"
       :

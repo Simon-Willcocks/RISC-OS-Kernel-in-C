@@ -107,8 +107,8 @@ static void clean_cache_32( int level ) // 0 to 6
   int wayshift; // Number of bits to shift the way index by
   asm ( "clz %[ws], %[assoc]" : [ws] "=r" (wayshift) : [assoc] "r" (ways) );
 
-show_word( 100 + 100 * workspace.core_number, 100 + 50 * level, line_size, White );
-show_word( 100 + 100 * workspace.core_number, 110 + 50 * level, ways, White );
+show_word( 100 + 100 * workspace.core_number, 200 + 50 * level, line_size, White );
+show_word( 100 + 100 * workspace.core_number, 210 + 50 * level, ways, White );
 
   for (int way = 0; way < ways; way++) {
     uint32_t setway = (way << wayshift) | (level << 1);
@@ -117,8 +117,8 @@ show_word( 100 + 100 * workspace.core_number, 110 + 50 * level, ways, White );
       asm ( "mcr p15, 0, %[sw], c7, c14, 2" : : [sw] "r" (setway | (set << line_size)) ); // DCCISW
     }
   }
-show_word( 100 + 100 * workspace.core_number, 120 + 50 * level, sets, White );
-show_word( 100 + 100 * workspace.core_number, 130 + 50 * level, wayshift, White );
+show_word( 100 + 100 * workspace.core_number, 220 + 50 * level, sets, White );
+show_word( 100 + 100 * workspace.core_number, 230 + 50 * level, wayshift, White );
 
   asm ( "dsb sy" );
 }
@@ -169,8 +169,8 @@ static void investigate_cache( processor_fns *fixed )
   }
 
   // Only one implementation, at present.
-  fixed->clean_cache_to_PoU = try_everything;
-  fixed->clean_cache_to_PoC = try_everything;
+  fixed->clean_cache_to_PoU = do_nothing; // try_everything;
+  fixed->clean_cache_to_PoC = do_nothing; // try_everything;
 
   // Information for the routines
   for (int level = 0; level < 7 && 0 != cache_type( clidr, level ); level++) {

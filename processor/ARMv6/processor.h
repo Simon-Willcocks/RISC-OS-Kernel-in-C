@@ -86,15 +86,46 @@ static inline void clear_VF()
 static inline uint32_t fault_address()
 {
   uint32_t result;
-  asm ( "mrc p15, 0, %[dfar], c6, c6, 0" : [dfar] "=r" (result ) );
+  asm ( "mrc p15, 0, %[dfar], c6, c0, 0" : [dfar] "=r" (result ) );
   return result;
 }
 
-static inline uint32_t fault_type()
+static inline uint32_t data_fault_type()
 {
   uint32_t result;
   asm ( "mrc p15, 0, %[dfsr], c5, c0, 0" : [dfsr] "=r" (result ) );
   return result;
+}
+
+static inline uint32_t instruction_fault_type()
+{
+  uint32_t result;
+  asm ( "mrc p15, 0, %[dfsr], c5, c0, 1" : [dfsr] "=r" (result ) );
+  return result;
+}
+
+static inline void flush_internal_write_queue()
+{
+  asm ( "dsb sy" );
+}
+
+static inline void pause_speculative_execution()
+{
+  asm ( "isb" );
+}
+
+static inline void about_to_remap_memory()
+{
+}
+
+static inline void memory_remapped()
+{
+  // Not the most efficient implementation...
+  flush_internal_write_queue();
+  asm ( "mcr p15, 0, r0, cr8, cr7, 0 // TLBIALL" );
+  asm ( "mcr p15, 0, r0, cr7, cr5, 6 // BPIALL" );
+  flush_internal_write_queue();
+  pause_speculative_execution();
 }
 
 void Initialise_privileged_mode_stack_pointers();

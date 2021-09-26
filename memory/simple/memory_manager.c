@@ -201,7 +201,6 @@ void Initialise_system_DAs()
       MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
 show_word( 10, 10, workspace.core_number, Yellow );
     }
-    fill_rect( (90 + 100 * workspace.core_number), 10, 84, 100, 0xff0000ff );
 
     asm ( "dsb sy" );
   }
@@ -220,7 +219,7 @@ show_word( 10, 10, workspace.core_number, Yellow );
 
   release_lock( &shared.memory.dynamic_areas_lock );
 
-  fill_rect( (100 + 100 * workspace.core_number), 10, 64, 100, 0xff00ff00 );
+  // fill_rect( (100 + 100 * workspace.core_number), 10, 64, 100, 0xff00ff00 );
 
   // Now the non-shared DAs, can be done in parallel
 
@@ -522,40 +521,46 @@ uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment )
   return result;
 }
 
+#define W (200 * workspace.core_number)
+
+#define BSOD( n, c ) \
+  asm ( "push { r0-r12,lr }" ); \
+  register uint32_t addr; \
+  asm ( "mov %[addr], lr" : [addr] "=r" (addr) ); \
+  show_word( 100 + W, 30, workspace.core_number, c ); \
+  show_word( 100 + W, 40, addr, c ); \
+  register uint32_t *regs; \
+  asm ( "mov %[regs], sp" : [regs] "=r" (regs) ); \
+  for (int i = 13; i >= 0; i--) { \
+    show_word( 100 + W, 50 + (n * 200) + 10 * i, regs[i], c ); \
+  } \
+  show_word( 100 + W, 50 + n * 200 - 32, data_fault_type(), Red ); \
+  show_word( 100 + W, 50 + n * 200 - 22, instruction_fault_type(), Red ); \
+  show_word( 100 + W, 50 + n * 200 - 12, fault_address(), Green ); \
+  fill_rect( 100 + n + W, 4 * n, 84, 6, c ); \
+  for (;;) { asm ( "wfi" ); }
+
 void __attribute__(( naked, noreturn )) Kernel_default_prefetch()
 {
-  asm ( "push { r0-r12,lr }" );
-  register uint32_t *regs asm ( "r0" );
-  asm ( "mov r0, sp" : "=r" (regs) );
-  for (int i = 13; i >= 0; i--) {
-    show_word( 900 + 100 * workspace.core_number, 100 + 10 * i, regs[i], Blue );
-  }
-  clean_cache_to_PoC();
-  fill_rect( 20 + (100 * (workspace.core_number + 1)), 10, 64, 64, 0xff555555 );
-  clean_cache_to_PoC();
-  for (;;) { asm ( "wfi" ); }
+  BSOD( 0, Blue );
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_data_abort()
 {
-  asm ( "push { r0-r12,lr }" );
-  register uint32_t *regs asm ( "r0" );
-  asm ( "mov r0, sp" : "=r" (regs) );
-  for (int i = 13; i >= 0; i--) {
-    show_word( 900 + 100 * workspace.core_number, 400 + 10 * i, regs[i], Green );
-  }
-  clean_cache_to_PoC();
-  fill_rect( 20 + (100 * (workspace.core_number + 1)), 10, 32, 96, 0xff000077 );
-  show_word( 900 + 100 * workspace.core_number, 200, fault_type(), Red );
-  show_word( 900 + 100 * workspace.core_number, 210, fault_address(), Green );
-  show_word( 900 + 100 * workspace.core_number, 220, fault_type(), Red );
-  show_word( 900 + 100 * workspace.core_number, 230, fault_address(), Green );
-  show_word( 900 + 100 * workspace.core_number, 240, fault_type(), Red );
-  show_word( 900 + 100 * workspace.core_number, 250, fault_address(), Green );
-  for (int i = 0x77; i > 0; i--) {
-  fill_rect( 20 + (100 * (workspace.core_number + 1)), 10, 32, i, 0xff000000 | i );
-  }
-  clean_cache_to_PoC();
-  for (;;) { asm ( "wfi" ); }
+  BSOD( 1, Green );
 }
 
+void __attribute__(( naked, noreturn )) Kernel_default_undef()
+{
+  BSOD( 2, Yellow );
+}
+
+void __attribute__(( naked, noreturn )) Kernel_default_reset() 
+{
+  BSOD( 3, Red );
+}
+
+void __attribute__(( naked, noreturn )) Kernel_default_irq() 
+{
+  BSOD( 4, Yellow );
+}

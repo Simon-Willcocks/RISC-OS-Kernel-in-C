@@ -91,6 +91,8 @@ typedef struct fs fs;
 struct Kernel_shared_workspace {
   fs *filesystems;
   uint32_t fscontrol_lock;
+
+  uint32_t screen_lock; // Not sure if this will always be wanted; it might make sense to make the screen memory outer (only) sharable, and flush the L1 cache to it before releasing this lock.
 };
 
 extern struct core_workspace {

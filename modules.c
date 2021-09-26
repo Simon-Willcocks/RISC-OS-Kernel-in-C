@@ -625,7 +625,7 @@ static void set_var( const char *name, const char *value )
   do_OS_SetVarVal( &regs );
 }
 
-void Draw_Fill( uint32_t *path, uint32_t *transformation_matrix )
+static void Draw_Fill( uint32_t *path, uint32_t *transformation_matrix )
 {
   register uint32_t *draw_path asm( "r0" ) = path;
   register uint32_t fill_style asm( "r1" ) = 0;
@@ -1377,9 +1377,21 @@ static uint32_t path3[] = {
  0x00000008, 0x00004100, 0x0000d000,
  0x00000005, 0x00000000 };
 
+if (workspace.core_number == 0) {
   uint32_t sctlr;
   asm ( "  mrc p15, 0, %[sctlr], c1, c0, 0" : [sctlr] "=r" (sctlr) );
   show_word( 10, 30, sctlr, Yellow );
+
+#define show_ISAR( n ) { uint32_t isar; asm ( "mrc p15, 0, %[isar], c0, c2, "#n : [isar] "=r" (isar) ); show_word( 10, 50 + 10 * n, isar, Yellow ); }
+  show_ISAR( 0 );
+  show_ISAR( 1 );
+  show_ISAR( 2 );
+  show_ISAR( 3 );
+  show_ISAR( 4 );
+  show_ISAR( 5 );
+  show_ISAR( 6 ); // Assuming opc2 0b111 is a typo in ARM DDI 0487G.a, page G8-6623
+  show_ISAR( 7 ); // But just in case...
+}
 
 #define numberof( a ) (sizeof( a ) / sizeof( a[0] ))
 
@@ -1392,6 +1404,7 @@ static uint32_t path3[] = {
   int angle = odd ? 0 : 22; // Starting angle
   int step = 3;
 
+claim_lock( &shared.kernel.screen_lock );
   for (;;) {
     matrix[0] =  draw_cos( angle );
     matrix[1] =  draw_sin( angle );
@@ -1404,9 +1417,11 @@ static uint32_t path3[] = {
     Draw_Fill( path2, matrix );
     workspace.vdu.vduvars[154 - 128] = 0xff004c00; // BG, Dark green
     Draw_Fill( path3, matrix );
+release_lock( &shared.kernel.screen_lock );
 
     for (int i = 0; i < 0x8000000; i++) { asm ( "" ); }
 
+claim_lock( &shared.kernel.screen_lock );
     workspace.vdu.vduvars[154 - 128] = 0xff000000; // Black
     Draw_Fill( path1, matrix );
     Draw_Fill( path2, matrix );
@@ -1421,11 +1436,8 @@ static uint32_t path3[] = {
       if (angle >= 45) angle -= 45;
     }
   }
-/*
-  workspace.vdu.vduvars[153 - 128] = 0xffffffff; // FG (lines) white
-  workspace.vdu.vduvars[154 - 128] = 0xff007c00; // BG (fill) greenish
-  Draw_Stroke( path2, matrix );
-*/
+release_lock( &shared.kernel.screen_lock );
+
   // Should have entered a RISC OS Application by now...
   for (;;) { asm ( "wfi" ); }
 }
