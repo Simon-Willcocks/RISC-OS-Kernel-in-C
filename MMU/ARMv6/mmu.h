@@ -28,6 +28,10 @@
 // Where items are located in virtual memory is controlled by the linker script, but pages that are
 // writable by the kernel will often be located in the same section of memory as the vector table.
 
+// TaskSlots in RISC OS are always USR mode RWX. This is not ideal, but the way forward is to
+// migrate critical services to Secure mode Aarch64.
+typedef struct TaskSlot TaskSlot;
+
 typedef struct physical_memory_block { // All 4k pages
   uint32_t virtual_base;
   uint32_t physical_base;
@@ -36,7 +40,6 @@ typedef struct physical_memory_block { // All 4k pages
 
 uint32_t pre_mmu_allocate_physical_memory( uint32_t size, uint32_t alignment, volatile startup *startup );
 
-physical_memory_block Kernel_physical_address( uint32_t map, uint32_t va );
 uint32_t Kernel_allocate_physical_memory( uint32_t size, uint32_t alignment );
 void __attribute__(( noreturn )) Kernel_start();
 
@@ -51,15 +54,23 @@ static inline bool naturally_aligned( uint32_t location )
 // An instance of this struct will be in the core workspace, called mmu:
 struct MMU_workspace {
   uint32_t *l1tt_pa;
-  uint32_t *l2tt_pa; // 4 tables, of 256 entries each
+  uint32_t *l2tt_pa; // 4 tables, of 256 entries each, bottom, top MiB, top two MiB of TaskSlot (as needed)
+  TaskSlot *current;
 };
 
-struct MMU_shared_workspace { // Placeholder
+struct MMU_shared_workspace {
+  uint32_t lock;
+  uint32_t slots_memory;
 };
 
-void MMU_new_low_map( void *map );
-void MMU_switch_to_map( void *map );
+physical_memory_block Kernel_physical_address( TaskSlot *slot, uint32_t va );
+TaskSlot *MMU_new_slot();
+void TaskSlot_add( TaskSlot *slot, physical_memory_block memory );
+uint32_t TaskSlot_asid( TaskSlot *slot );
 
+void MMU_switch_to( TaskSlot *slot );
+
+// Kernel memory mapping routines
 void MMU_map_at( void *va, uint32_t pa, uint32_t size );
 void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size );
 void MMU_map_device_at( void *va, uint32_t pa, uint32_t size );

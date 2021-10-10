@@ -76,6 +76,8 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
   workspace.vectors.data_vec      = Kernel_default_data_abort;
   workspace.vectors.irq_vec       = Kernel_default_irq;
 
+  Initialise_undefined_registers();
+
   Initialise_privileged_mode_stack_pointers();
 
   Initialise_system_DAs();

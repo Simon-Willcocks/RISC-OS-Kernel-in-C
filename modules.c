@@ -17,7 +17,6 @@
 
 // Linker generated:
 extern uint32_t _binary_AllMods_start;
-extern uint32_t _binary_AllMods_end;
 extern uint32_t rma_base;
 extern uint32_t rma_heap;
 
@@ -289,6 +288,7 @@ static bool do_Module_Claim( svc_registers *regs )
   uint32_t r1 = regs->r[1];
   regs->r[0] = 2;
   regs->r[1] = (uint32_t) &rma_heap;
+
   bool result = do_OS_Heap( regs );
   if (result) {
     regs->r[0] = 6;
@@ -298,6 +298,7 @@ static bool do_Module_Claim( svc_registers *regs )
     static error_block nomem = { 0x101, "The area of memory reserved for relocatable modules is full" };
     regs->r[0] = (uint32_t) &nomem;
   }
+
   return result;
 }
 
@@ -431,14 +432,13 @@ static bool do_Module_EnumerateROMModules( svc_registers *regs )
 {
   int n = regs->r[1];
   uint32_t *rom_modules = &_binary_AllMods_start;
-  uint32_t *rom_modules_end = &_binary_AllMods_end;
   uint32_t *rom_module = rom_modules;
 
-  for (int i = 0; i < n && rom_module < rom_modules_end; i++) {
-    rom_module += 1 + (*rom_module)/4; // One word of length
+  for (int i = 0; i < n && 0 != *rom_module; i++) {
+    rom_module += (*rom_module)/4; // Includes size of length field
   }
 
-  if (rom_module == rom_modules_end) {
+  if (0 == *rom_module) {
     return no_more_modules( regs );
   }
 
@@ -456,14 +456,13 @@ static bool do_Module_EnumerateROMModulesWithVersion( svc_registers *regs )
 {
   int n = regs->r[1];
   uint32_t *rom_modules = &_binary_AllMods_start;
-  uint32_t *rom_modules_end = &_binary_AllMods_end;
   uint32_t *rom_module = rom_modules;
 
-  for (int i = 0; i < n && rom_module < rom_modules_end; i++) {
-    rom_module += 1 + (*rom_module)/4; // One word of length
+  for (int i = 0; i < n && 0 != *rom_module; i++) {
+    rom_module += (*rom_module)/4; // Includes size of length field
   }
 
-  if (rom_module == rom_modules_end) {
+  if (0 == *rom_module) {
     return no_more_modules( regs );
   }
 
@@ -586,7 +585,6 @@ bool do_OS_GetEnv( svc_registers *regs )
 void init_module( const char *name )
 {
   uint32_t *rom_modules = &_binary_AllMods_start;
-  uint32_t *rom_modules_end = &_binary_AllMods_end;
   uint32_t *rom_module = rom_modules;
 
   workspace.kernel.env = name;
@@ -600,16 +598,16 @@ void init_module( const char *name )
   // upcall and initialise the hardware, including checking for pressed buttons on
   // a keyboard or similar.
 
-  while (rom_module < rom_modules_end) {
+  while (0 != *rom_module) {
     module_header *header = (void*) (rom_module+1);
     register const char *title = title_string( header );
     if (0 == strcmp( title, name )) {
       register uint32_t code asm( "r0" ) = 10;
       register module_header *module asm( "r1" ) = header;
 
-      asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) );
+      asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr" );
     }
-    rom_module += 1 + (*rom_module)/4; // One word of length
+    rom_module += (*rom_module)/4; // Includes size of length field
   }
 }
 
@@ -625,7 +623,7 @@ static void set_var( const char *name, const char *value )
   do_OS_SetVarVal( &regs );
 }
 
-static void Draw_Fill( uint32_t *path, uint32_t *transformation_matrix )
+static void Draw_Fill( uint32_t *path, int32_t *transformation_matrix )
 {
   register uint32_t *draw_path asm( "r0" ) = path;
   register uint32_t fill_style asm( "r1" ) = 0;
@@ -640,15 +638,27 @@ static void Draw_Fill( uint32_t *path, uint32_t *transformation_matrix )
         : "lr" );
 }
 
-void ColourTrans_SetGCOL( uint32_t colour )
+union {
+  struct {
+    uint32_t action:3; // Set, OR, AND, EOR, Invert, Unchanged, AND NOT, OR NOT.
+    uint32_t use_transparency:1;
+    uint32_t background:1;
+    uint32_t ECF_pattern:1; // Unlikely to be supported
+    uint32_t text_colour:1; // As opposed to graphics colour
+    uint32_t read_colour:1; // As opposed to setting it
+  };
+  uint32_t raw;
+} OS_SetColour_Flags;
+
+static void SetColour( uint32_t flags, uint32_t colour )
 {
-  register uint32_t foreground asm( "r0" ) = colour;
-  register uint32_t flags asm( "r3" ) = 0;
-  register uint32_t action asm( "r4" ) = 0;
-  asm ( "swi 0x60704" : 
-        : "r" (foreground)
-        , "r" (flags)
-        , "r" (action) );
+  register uint32_t in_flags asm( "r0" ) = flags;
+  register uint32_t in_colour asm( "r1" ) = colour;
+  asm ( "swi %[swi]" : 
+        : "r" (in_colour)
+        , "r" (in_flags)
+        , [swi] "i" (OS_SetColour)
+        : "lr" );
 }
 
 void Draw_Stroke( uint32_t *path, uint32_t *transformation_matrix )
@@ -673,7 +683,8 @@ void Draw_Stroke( uint32_t *path, uint32_t *transformation_matrix )
         , "r" (thickness)
         , "r" (cap_and_join)
         , "r" (dashes)
-        , "m" (cap_and_join_style) ); // Without this, the array is not initialised
+        , "m" (cap_and_join_style) // Without this, the array is not initialised
+        : "lr" );
 }
 
 void Font_Paint( uint32_t font, const char *string, uint32_t type, uint32_t startx, uint32_t starty, uint32_t length )
@@ -694,7 +705,8 @@ void Font_Paint( uint32_t font, const char *string, uint32_t type, uint32_t star
         , "r" (ry)
         , "r" (rMatrix)
         , "r" (rBlankArea)
-        , "r" (rLength) );
+        , "r" (rLength)
+        : "lr" );
 }
 
 static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, uint32_t r2 )
@@ -820,7 +832,7 @@ bool do_OS_SerialOp( svc_registers *regs )
   return run_vector( 36, regs );
 }
 
-void __attribute__(( naked )) fast_horisontal_line_draw( uint32_t left, uint32_t y, uint32_t right, uint32_t action )
+void __attribute__(( naked )) fast_horizontal_line_draw( uint32_t left, uint32_t y, uint32_t right, uint32_t action )
 {
   asm ( "push { r0-r12, lr }" );
 
@@ -830,7 +842,7 @@ void __attribute__(( naked )) fast_horisontal_line_draw( uint32_t left, uint32_t
   uint32_t *l = row + left;
   uint32_t *r = row + right;
   switch (action) {
-  case 1:
+  case 1: // Foreground
     {
     uint32_t *p = l;
     uint32_t c = workspace.vdu.vduvars[153 - 128];
@@ -839,12 +851,22 @@ void __attribute__(( naked )) fast_horisontal_line_draw( uint32_t left, uint32_t
       p++;
     }
     }
-  case 2:
+    break;
+  case 2: // Invert
+    {
+    uint32_t *p = l;
+    while (p <= r) {
+      *p = 0xff333333; // ~*p; // FIXME?
+      p++;
+    }
+    }
+    break;
+  case 3: // Background
     {
     uint32_t *p = l;
     uint32_t c = workspace.vdu.vduvars[154 - 128];
     while (p <= r) {
-      *p = c;
+      *p = 0xff00ff80; // c;
       p++;
     }
     }
@@ -975,6 +997,8 @@ static void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint
   }
 }
 
+static void user_mode_code();
+
 void Boot()
 {
   workspace.kernel.vectors[6] = &default_ByteV;
@@ -988,19 +1012,13 @@ void Boot()
   set_var( "File$Path", "" );
 
 /*
-  init_module( "FileSwitch" ); // Uses MessageTrans, but survives it not being there at startup
-  init_module( "ResourceFS" ); // Uses TerritoryManager
 
   init_module( "TerritoryManager" ); // Uses MessageTrans to open file
   init_module( "Messages" );
   init_module( "MessageTrans" );
   init_module( "UK" );
 */
-  init_module( "DrawMod" );
-
 /*
-  init_module( "SharedCLibrary" );
-  init_module( "ColourTrans" );
 //  init_module( "DrawFile" );
   //init_module( "FileCore" );
   init_module( "ROMFonts" );
@@ -1030,9 +1048,9 @@ void Boot()
   workspace.vdu.vduvars[149 - 128] = (uint32_t) &frame_buffer;
   workspace.vdu.vduvars[150 - 128] = 1920 * 1080 * 4;
   workspace.vdu.vduvars[153 - 128] = 0xffffffff; // FG (lines) white
-  workspace.vdu.vduvars[154 - 128] = 0xffff0000; // BG (fill) red
+  workspace.vdu.vduvars[154 - 128] = 0xffffffff; // BG (fill) white
 
-  workspace.vdu.vduvars[166 - 128] = (uint32_t) fast_horisontal_line_draw;
+  workspace.vdu.vduvars[166 - 128] = (uint32_t) fast_horizontal_line_draw;
 /*
   extern uint32_t _binary_DrawFile_start;
   extern uint32_t _binary_DrawFile_size;
@@ -1048,6 +1066,39 @@ void Boot()
   Font_Paint( 0, "First text", 0b01100000000, workspace.core_number * 200, 400, 0 );
 */
 
+  init_module( "DrawMod" );
+/*
+  init_module( "FileSwitch" ); // Uses MessageTrans, but survives it not being there at startup
+  init_module( "ResourceFS" ); // Uses TerritoryManager
+
+  init_module( "SharedCLibrary" );
+*/
+  init_module( "ColourTrans" );
+
+  TaskSlot *slot = MMU_new_slot();
+  physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( 4096, 4096 ), .size = 4096 };
+  TaskSlot_add( slot, block );
+  MMU_switch_to( slot );
+
+  clean_cache_to_PoC(); // Does this fix the problem? No. It helps, though. I think.
+
+  register param asm ( "r0" ) = workspace.core_number;
+  asm ( "isb"
+    "\n\tmsr cpsr, #0x17 // Abort mode: eret is unpredictable in System mode"
+    "\n\tdsb"
+    "\n\tisb"
+    "\n\tmsr spsr, %[usermode]"
+    "\n\tmov lr, %[usr]"
+    "\n\tmsr sp_usr, %[stacktop]"
+
+    "\n\tisb"
+    "\n\teret" : : [stacktop] "r" (0x9000), [usr] "r" (user_mode_code), "r" (param), [usermode] "r" (0x10) );
+
+  __builtin_unreachable();
+}
+
+static void user_mode_code( int core_number )
+{
 static uint32_t path1[] = {
  0x00000002, 0x00000400, 0xffff7400,
  0x00000008, 0x00006900, 0xffff9e00,
@@ -1377,53 +1428,37 @@ static uint32_t path3[] = {
  0x00000008, 0x00004100, 0x0000d000,
  0x00000005, 0x00000000 };
 
-if (workspace.core_number == 0) {
-  uint32_t sctlr;
-  asm ( "  mrc p15, 0, %[sctlr], c1, c0, 0" : [sctlr] "=r" (sctlr) );
-  show_word( 10, 30, sctlr, Yellow );
+  int32_t offx = (400 << 8) + core_number * (560 << 8);
+  int32_t offy = 400 << 8;
+  int32_t matrix[6] = { 0, 0, 0, 0, offx, offy };
 
-#define show_ISAR( n ) { uint32_t isar; asm ( "mrc p15, 0, %[isar], c0, c2, "#n : [isar] "=r" (isar) ); show_word( 10, 50 + 10 * n, isar, Yellow ); }
-  show_ISAR( 0 );
-  show_ISAR( 1 );
-  show_ISAR( 2 );
-  show_ISAR( 3 );
-  show_ISAR( 4 );
-  show_ISAR( 5 );
-  show_ISAR( 6 ); // Assuming opc2 0b111 is a typo in ARM DDI 0487G.a, page G8-6623
-  show_ISAR( 7 ); // But just in case...
-}
-
-#define numberof( a ) (sizeof( a ) / sizeof( a[0] ))
-
-  uint32_t matrix[6] = { 0, 0, 0, 0, (400 << 8) + workspace.core_number * (560 << 8), 400 << 8 };
-
-//  Draw_Stroke( path1, matrix );
-  //ColourTrans_SetGCOL( 0x990000 );
-  bool odd = 0 != (workspace.core_number & 1);
+  bool odd = 0 != (core_number & 1);
   // Re-start after 45 degree turn (octagonal cog)
   int angle = odd ? 0 : 22; // Starting angle
-  int step = 3;
+  int step = 2;
 
-claim_lock( &shared.kernel.screen_lock );
+extern uint32_t frame_buffer;
+claim_lock( &frame_buffer ); // Just for fun, uses the top left pixel!
   for (;;) {
     matrix[0] =  draw_cos( angle );
     matrix[1] =  draw_sin( angle );
     matrix[2] = -draw_sin( angle );
     matrix[3] =  draw_cos( angle );
 
-    workspace.vdu.vduvars[154 - 128] = 0xff009900; // BG, greenish for fills
+    SetColour( 0, 0x990000 );
     Draw_Fill( path1, matrix );
-    workspace.vdu.vduvars[154 - 128] = 0xff00e500; // BG, light green
+    SetColour( 0, 0xe50000 );
     Draw_Fill( path2, matrix );
-    workspace.vdu.vduvars[154 - 128] = 0xff004c00; // BG, Dark green
+    SetColour( 0, 0x4c0000 );
     Draw_Fill( path3, matrix );
-release_lock( &shared.kernel.screen_lock );
 
-    for (int i = 0; i < 0x8000000; i++) { asm ( "" ); }
+    asm ( "svc %[swi]" : "=&m" (matrix) : [swi] "i" (OS_FlushCache) );
+release_lock( &frame_buffer );
+    for (int i = 0; i < 0x800000; i++) { asm ( "" ); }
+claim_lock( &frame_buffer );
 
-claim_lock( &shared.kernel.screen_lock );
-    workspace.vdu.vduvars[154 - 128] = 0xff000000; // Black
-    Draw_Fill( path1, matrix );
+    SetColour( 0, 0x000000 );
+//    Draw_Fill( path1, matrix );
     Draw_Fill( path2, matrix );
     Draw_Fill( path3, matrix );
 
@@ -1436,9 +1471,6 @@ claim_lock( &shared.kernel.screen_lock );
       if (angle >= 45) angle -= 45;
     }
   }
-release_lock( &shared.kernel.screen_lock );
-
-  // Should have entered a RISC OS Application by now...
-  for (;;) { asm ( "wfi" ); }
+  __builtin_unreachable();
 }
 

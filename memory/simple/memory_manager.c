@@ -200,6 +200,19 @@ void Initialise_system_DAs()
 
       MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
 show_word( 10, 10, workspace.core_number, Yellow );
+
+// Cache info...
+int y = 20;
+uint32_t reg;
+asm ( "mrc p15, 0, %[reg], c0, c1, 4" : [reg] "=r" (reg) ); show_word( 10, y, reg, Yellow ); y += 10;
+asm ( "mrc p15, 0, %[reg], c0, c1, 5" : [reg] "=r" (reg) ); show_word( 10, y, reg, Yellow ); y += 10;
+asm ( "mrc p15, 0, %[reg], c0, c1, 6" : [reg] "=r" (reg) ); show_word( 10, y, reg, Yellow ); y += 10;
+asm ( "mrc p15, 0, %[reg], c0, c1, 7" : [reg] "=r" (reg) ); show_word( 10, y, reg, Yellow ); y += 10;
+asm ( "mrc p15, 0, %[reg], c0, c2, 6" : [reg] "=r" (reg) ); show_word( 10, y, reg, Yellow ); y += 10;
+asm ( "mrc p15, 0, %[reg], c0, c3, 6" : [reg] "=r" (reg) ); show_word( 10, y, reg, Yellow ); y += 10;
+
+asm ( "mrc p15, 1, %[reg], c0, c0, 0" : [reg] "=r" (reg) ); show_word( 10, y, reg, Blue ); y += 10;
+clean_cache_to_PoC();
     }
 
     asm ( "dsb sy" );
@@ -211,7 +224,8 @@ show_word( 10, 10, workspace.core_number, Yellow );
 
     DynamicArea *da = shared.memory.dynamic_areas;
     while (da != 0) {
-      MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
+      if (da->number != 1) // RMA already mapped
+        MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
       da = da->next;
     }
     asm ( "dsb sy" );
@@ -522,22 +536,35 @@ uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment )
 }
 
 #define W (200 * workspace.core_number)
+#define H(n) (150 + (n * 250))
 
 #define BSOD( n, c ) \
   asm ( "push { r0-r12,lr }" ); \
   register uint32_t addr; \
   asm ( "mov %[addr], lr" : [addr] "=r" (addr) ); \
+for (int i = 0; i < 0x8000000; i++) { asm ( "" ); } \
   show_word( 100 + W, 30, workspace.core_number, c ); \
   show_word( 100 + W, 40, addr, c ); \
   register uint32_t *regs; \
   asm ( "mov %[regs], sp" : [regs] "=r" (regs) ); \
   for (int i = 13; i >= 0; i--) { \
-    show_word( 100 + W, 50 + (n * 200) + 10 * i, regs[i], c ); \
+    show_word( 100 + W, H(n) + 10 * i, regs[i], c ); \
   } \
-  show_word( 100 + W, 50 + n * 200 - 32, data_fault_type(), Red ); \
-  show_word( 100 + W, 50 + n * 200 - 22, instruction_fault_type(), Red ); \
-  show_word( 100 + W, 50 + n * 200 - 12, fault_address(), Green ); \
+  uint32_t reg; \
+  asm ( "mrs %[reg], spsr" : [reg] "=r" (reg) ); \
+  show_word( 100 + W, H(n) - 72, reg, Yellow ); \
+  asm ( "mrs %[reg], sp_usr" : [reg] "=r" (reg) ); \
+  show_word( 100 + W, H(n) - 62, reg, Blue ); \
+  asm ( "mrs %[reg], lr_usr" : [reg] "=r" (reg) ); \
+  show_word( 100 + W, H(n) - 52, reg, Blue ); \
+  asm ( "mrs %[reg], lr_svc" : [reg] "=r" (reg) ); \
+  show_word( 100 + W, H(n) - 42, reg, Blue ); \
+  show_word( 100 + W, H(n) - 32, data_fault_type(), Red ); \
+  show_word( 100 + W, H(n) - 22, instruction_fault_type(), Red ); \
+  show_word( 100 + W, H(n) - 12, fault_address(), Green ); \
   fill_rect( 100 + n + W, 4 * n, 84, 6, c ); \
+clean_cache_to_PoC(); \
+clean_cache_to_PoU(); \
   for (;;) { asm ( "wfi" ); }
 
 void __attribute__(( naked, noreturn )) Kernel_default_prefetch()
@@ -545,7 +572,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_prefetch()
   BSOD( 0, Blue );
 }
 
-void __attribute__(( naked, noreturn )) Kernel_default_data_abort()
+void Kernel_failed_data_abort()
 {
   BSOD( 1, Green );
 }
@@ -562,5 +589,5 @@ void __attribute__(( naked, noreturn )) Kernel_default_reset()
 
 void __attribute__(( naked, noreturn )) Kernel_default_irq() 
 {
-  BSOD( 4, Yellow );
+  BSOD( 4, Blue );
 }

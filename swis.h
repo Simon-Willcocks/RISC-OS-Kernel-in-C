@@ -68,6 +68,7 @@ enum {
 /* e4 */ OS_ConvertSpacedCardinal4, OS_ConvertSpacedInteger1, OS_ConvertSpacedInteger2, OS_ConvertSpacedInteger3,
 /* e8 */ OS_ConvertSpacedInteger4, OS_ConvertFixedNetStation, OS_ConvertNetStation, OS_ConvertFixedFileSize,
 /* ec */ OS_ConvertFileSize,
+/* ff */ OS_FlushCache = 0xff, // For screen updates, etc.
 /* 100-1ff */ OS_WriteI = 0x100 };
  
 // OS SWIs implemented other than in swis.c:

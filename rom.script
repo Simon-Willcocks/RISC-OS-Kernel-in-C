@@ -22,11 +22,14 @@ SECTIONS
   workspace = 0xffff0000 ;
   shared = 0xffff8000 ;
   translation_tables = 0xfff00000 ;
+  task_slots = 0xfff70000 ;
   devices = 0xfff80000 ;
   rma_base = 0x20000000 ;
   rma_heap = 0x20000000 ;
   frame_buffer = 0xef000000 ;
   system_heap = 0xffe00000 ;
+
+  _binary_AllMods_start = 0xfc0217a8 ; /* Complete hack, matches the offset of the modules in my RISC OS ROM */
 
  . = va_base ;
  .text : {
@@ -36,6 +39,7 @@ SECTIONS
   *(.text) ;
   *(.rodata*) ;
   . = ALIGN( 4096 ) ;
+  . = ALIGN( 65536 ) ; /* Ensure that the modules from the RISC OS ROM will be at their expected locations (for SharedCLib) */
   *(.modules.data*) ;
   . = ALIGN( 1024 * 1024 ) ;
   rom_size = . - va_base ;

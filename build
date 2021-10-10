@@ -29,6 +29,9 @@ fi
 if [ "$BOOT" = "" ]; then
   BOOT=boot/*
 fi
+if [ "$TASK_SLOT" = "" ]; then
+  TASK_SLOT=TaskSlot/*
+fi
 
 function paddedstring { echo -n $1 | dd bs=4 conv=sync ; }
 function byte { echo -en $( printf '\\'x%02x $1 ) ; }
@@ -38,25 +41,21 @@ function resourcefile { number 0 ; number 0; number $( stat -c %s $i ) ; number 
 
 function resourcefiles { if [ $# == 1 ]; then number $( stat -c %s $1 ) ; cat $1 ; else number 0 ; cat $1 ; shift ; resourcefiles $*  ; fi ; }
 
-# Compose list of modules
-# The Modules directory should contain an Install directory from a RISC OS build
-# (It can be at any depth, so wget -r ftp://.../.../MyBuildDirectory will work.)
-for i in $( find Modules/ -type f | grep -v _ | grep -v /RISC_OS/ ); do number $( stat -c %s $i ) ; cat $i ; done > AllMods &&
-arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 AllMods AllMods.o --prefix-sections=.modules &&
+arm-linux-gnueabi-gcc-8 -Wall -I . \
+  kernel.c swis.c modules.c swis/*.c \
+  $PROC/*.c -I $PROC \
+  $BOOT/*.c -I $BOOT \
+  $TASK_SLOT/*.c -I $TASK_SLOT \
+  $MMU/*.c -I $MMU \
+  $MM/*.c -I $MM \
+  ro_rom.o \
+  -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static \
+  -g \
+  -march=armv8-a+nofp \
+  -T rom.script -Os \
+  -o rom.elf &&
 
-if [ -f ResourceFiles.o ]; then find Files/ -newer ResourceFiles.o -exec rm -rf rfs/ Files.rfs ResourceFiles.o \; ; fi
-if [ ! -d rfs ]; then
-mkdir -p rfs/Files &&
-for i in Files/*
-do
-  resourcefile $i > rfs/$i
-done &&
-resourcefiles rfs/Files/* > Files.rfs &&
-arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Files.rfs ResourceFiles.o --prefix-sections=.modules
-fi &&
-
-arm-linux-gnueabi-gcc-8 -Wall -I . -march=armv7-a+nofp+mp -g -fno-zero-initialized-in-bss kernel.c swis.c modules.c DrawFile.o swis/*.c $PROC/*.c -I $PROC $BOOT/*.c -I $BOOT $MMU/*.c -I $MMU $MM/*.c -I $MM AllMods.o ResourceFiles.o -nostartfiles -nostdlib -T rom.script -Os -static -o rom.elf &&
 arm-linux-gnueabi-objcopy -R .ignoring -O binary rom.elf rom.bin &&
-arm-linux-gnueabi-objdump --disassemble-all rom.elf > rom.dump &&
+arm-linux-gnueabi-objdump -x --disassemble-all rom.elf > rom.dump &&
 ls -l rom.*
 

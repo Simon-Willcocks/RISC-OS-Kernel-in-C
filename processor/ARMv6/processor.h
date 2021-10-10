@@ -128,6 +128,8 @@ static inline void memory_remapped()
   pause_speculative_execution();
 }
 
+void Initialise_undefined_registers();
+
 void Initialise_privileged_mode_stack_pointers();
 
 // There's no possibility of a RISC OS thread of execution to hand over to
@@ -143,10 +145,10 @@ void Initialise_privileged_mode_stack_pointers();
 // uncached memory, mailboxes and careful cleaning and/or invalidation of caches.
 static inline void claim_lock( uint32_t volatile *lock )
 {
-  uint32_t failed = 1;
+  uint32_t failed;
   uint32_t value;
 
-  while (failed) {
+  do {
     asm volatile ( "ldrex %[value], [%[lock]]"
                    : [value] "=&r" (value)
                    : [lock] "r" (lock) );
@@ -161,8 +163,9 @@ static inline void claim_lock( uint32_t volatile *lock )
     }
     else {
       asm ( "clrex" );
+      failed = true;
     }
-  }
+  } while (failed);
   asm ( "dmb sy" );
 }
 
@@ -179,3 +182,8 @@ static inline void flush_location( void *va )
   asm ( "mcr p15, 0, %[va], cr7, cr10, 1" : : [va] "r" (va) );
 }
 
+static inline void bzero( void *p, int length )
+{
+  char *cp = p;
+  for (int i = 0; i < length; i++) cp[i] = 0;
+}

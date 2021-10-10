@@ -39,9 +39,10 @@ typedef union {
     uint32_t XN:1;
     uint32_t Domain:4;
     uint32_t P:1;
-    uint32_t AP:2;
+    uint32_t AF:1;
+    uint32_t unprivileged_access:1;
     uint32_t TEX:3;
-    uint32_t APX:1;
+    uint32_t read_only:1;
     uint32_t S:1;
     uint32_t nG:1;
     uint32_t zeros:2;
@@ -63,21 +64,62 @@ typedef union {
   uint32_t raw;
 } l1tt_table_entry;
 
+// AP[2:1] access permissions model
+// 
 typedef union {
   struct {
-    uint32_t XN:1;
+    uint32_t XN:1; // If small_page == 1, else must be 1 for large page or 0 for no memory
     uint32_t small_page:1;
     uint32_t B:1;
     uint32_t C:1;
-    uint32_t AP:2;
+    uint32_t AF:1;
+    uint32_t unprivileged_access:1;
     uint32_t TEX:3;
-    uint32_t APX:1;
+    uint32_t read_only:1;
     uint32_t S:1;
     uint32_t nG:1;
     uint32_t page_base:20;
   };
   uint32_t raw;
 } l2tt_entry;
+
+static const l2tt_entry l2_device = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .TEX = 0, .unprivileged_access = 0, .read_only = 0, .AF = 1 };
+
+// static const l2tt_entry l2_write_back_cached = { .TEX = 0b101, .C = 0, .B = 1 };
+
+// User memory is always non-Global (associated with an ASID)
+
+static const l2tt_entry l2_urwx = { .XN = 0, .small_page = 1, .TEX = 0b101, .C = 0, .B = 1, .unprivileged_access = 1, .AF = 1, .S = 0, .nG = 1 };
+static const l2tt_entry l2_prwx = { .XN = 0, .small_page = 1, .TEX = 0b101, .C = 0, .B = 1, .unprivileged_access = 0, .AF = 1, .S = 0, .nG = 0 };
+static const l2tt_entry l2_prw  = { .XN = 1, .small_page = 1, .TEX = 0b101, .C = 0, .B = 1, .unprivileged_access = 0, .AF = 1, .S = 0, .nG = 0 };
+
+static const l1tt_section_entry l1_urwx = {
+        .type2 = 2,
+        .TEX = 0b101, .C = 0, .B = 1,
+        .XN = 0, .Domain = 0, .P = 0,
+        .AF = 1, // The MMU will not cause an exception the first time the memory is accessed
+        .unprivileged_access = 1, .read_only = 0 };
+
+static const l1tt_section_entry l1_prwx = {
+        .type2 = 2,
+        .TEX = 0b101, .C = 0, .B = 1,
+        .XN = 0, .Domain = 0, .P = 0,
+        .AF = 1, // The MMU will not cause an exception the first time the memory is accessed
+        .unprivileged_access = 0, .read_only = 0 };
+
+static const l1tt_section_entry l1_prw = {
+        .type2 = 2,
+        .TEX = 0b101, .C = 0, .B = 1,
+        .XN = 0, .Domain = 0, .P = 0,
+        .AF = 1, // The MMU will not cause an exception the first time the memory is accessed
+        .unprivileged_access = 1, .read_only = 0, };
+
+static const l1tt_section_entry l1_rom_section = {
+        .type2 = 2,
+        .TEX = 0b101, .C = 0, .B = 1,
+        .XN = 0, .Domain = 0, .P = 0,
+        .AF = 1, // The MMU will not cause an exception the first time the memory is accessed
+        .unprivileged_access = 1, .read_only = 1, .S = 1, .nG = 0 };
 
 static void __attribute__(( noreturn, noinline )) go_kernel()
 {
@@ -105,7 +147,7 @@ static void map_translation_table( uint32_t *l2tt, uint32_t physical, void *virt
 
   // Writable by (and visible to) this core only, only in privileged modes.
   // This must match the TTBR0 settings
-  l2tt_entry entry = { .XN = 1, .small_page = 1, .TEX = 0b101, .C = 0, .B = 1, .AP = 1, .APX = 0, .S = 0, .nG = 1 };
+  l2tt_entry entry = l2_prw;
 
   for (int i = 0; i < (size + 0xfff) >> 12; i++) {
     l2tt[(va >> 12) + i] = entry.raw | (physical + (i << 12));
@@ -122,11 +164,11 @@ static void map_work_area( uint32_t *l2tt, uint32_t physical, void *virtual, uin
   // XN off for first page, because the vectors are in there, possibly FIQ code, as well.
 
   // Outer and Inner Write-Back, Read-Allocate Write-Allocate
-  l2tt_entry entry = { .XN = 0, .small_page = 1, .TEX = 0b101, .C = 0, .B = 1, .AP = 1, .APX = 0, .S = 0, .nG = 1 };
+  l2tt_entry entry = l2_prwx;
 
   for (int i = 0; i < (size + 0xfff) >> 12; i++) {
     l2tt[(va >> 12) + i] = entry.raw | (physical + (i << 12));
-    entry.XN = 1;
+    entry = l2_prw;
   }
 }
 
@@ -134,39 +176,35 @@ static void map_shared_work_area( uint32_t *l2tt, uint32_t physical, void *virtu
 {
   uint32_t va = 0xff000 & (uint32_t) virtual;
 
-  // Writable by (and visible to) this core only, only in privileged modes.
-  // l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
-  // The above values don't seem to work with ldrex
-  // Shared write-back, no allocate on write (whatever that means)
-  l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 1, .C = 1, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 1 };
-
+  // Writable by (and visible to) all cores, only in privileged modes.
+  l2tt_entry entry = l2_prw;
+  entry.S = 1;
 
   for (int i = 0; i < (size + 0xfff) >> 12; i++) {
     l2tt[(va >> 12) + i] = entry.raw | (physical + (i << 12));
   }
 }
 
-void MMU_map_at( void *va, uint32_t pa, uint32_t size )
+static void map_at( void *va, uint32_t pa, uint32_t size, bool shared ) 
 {
   uint32_t virt = (uint32_t) va;
-  if (naturally_aligned( virt ) && naturally_aligned( pa ) && naturally_aligned( size )) {
-    while (size > 0) {
-      l1tt_section_entry entry = { .raw = pa };
-      entry.type2 = 2;
-      entry.AP = 3;
-      entry.APX = 0; // Read/Write
-      entry.TEX = 0b101;
-      entry.C = 0;
-      entry.B = 1;
 
-      L1TT[virt / natural_alignment] = entry.raw;
+  if (naturally_aligned( virt ) && naturally_aligned( pa ) && naturally_aligned( size )) {
+    l1tt_section_entry entry = l1_urwx;
+    entry.S = shared ? 1 : 0;
+
+    while (size > 0) {
+      L1TT[virt / natural_alignment] = entry.raw | pa;
       size -= natural_alignment;
       virt += natural_alignment;
       pa += natural_alignment;
     }
   }
   else if (size == 4096) {
-    l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 0, .nG = 0 };
+    bool kernel_memory = ((uint32_t) va >= 0xfff00000);
+    l2tt_entry entry = kernel_memory ? l2_prw : l2_urwx;
+
+    entry.S = shared ? 1 : 0;
 
     entry.page_base = (pa >> 12);
 
@@ -189,28 +227,22 @@ void MMU_map_at( void *va, uint32_t pa, uint32_t size )
   memory_remapped();
 }
 
+void MMU_map_at( void *va, uint32_t pa, uint32_t size )
+{
+  map_at( va, pa, size, false );
+}
+
 void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
 {
-  uint32_t virt = (uint32_t) va;
-  if (naturally_aligned( virt ) && naturally_aligned( pa ) && naturally_aligned( size )) {
-    while (size > 0) {
-      l1tt_section_entry entry = { .raw = pa };
-      entry.type2 = 2;
-      entry.AP = 3;
-      entry.S = 1;
-      entry.APX = 0; // Read/Write
-      entry.TEX = 0b110; // Write through
-      entry.C = 1;
-      entry.B = 0;
+  map_at( va, pa, size, true );
+}
 
-      L1TT[virt / natural_alignment] = entry.raw;
-      size -= natural_alignment;
-      virt += natural_alignment;
-      pa += natural_alignment;
-    }
-  }
-  else if (size == 4096) {
-    l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
+static void map_device_at( void *va, uint32_t pa, uint32_t size, bool shared )
+{
+  uint32_t virt = (uint32_t) va;
+  if (size == 4096) {
+    l2tt_entry entry = l2_device;
+    entry.S = shared ? 1 : 0;
 
     entry.page_base = (pa >> 12);
     if ((uint32_t) va >= 0xfff00000) {
@@ -232,77 +264,12 @@ void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
 
 void MMU_map_device_at( void *va, uint32_t pa, uint32_t size )
 {
-  uint32_t virt = (uint32_t) va;
-  if (naturally_aligned( virt ) && naturally_aligned( pa ) && naturally_aligned( size )) {
-    while (size > 0) {
-      l1tt_section_entry entry = { .raw = pa };
-      entry.XN = 1;
-      entry.type2 = 2;
-      entry.AP = 3;
-      entry.APX = 0; // Read/Write
-      L1TT[virt / natural_alignment] = entry.raw;
-      size -= natural_alignment;
-      virt += natural_alignment;
-      pa += natural_alignment;
-    }
-  }
-  else if (size == 4096) {
-    l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 0, .nG = 0 };
-
-    entry.page_base = (pa >> 12);
-    if ((uint32_t) va >= 0xfff00000) {
-      top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
-    }
-    else if ((uint32_t) va < (1 << 20)) {
-      bottom_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
-    }
-    else {
-      for (;;) { asm ( "wfi" ); }
-    }
-  }
-  else {
-    for (;;) { asm ( "wfi" ); }
-  }
-
-  memory_remapped();
+  map_device_at( va, pa, size, false );
 }
 
 void MMU_map_device_shared_at( void *va, uint32_t pa, uint32_t size )
 {
-  uint32_t virt = (uint32_t) va;
-  if (naturally_aligned( virt ) && naturally_aligned( pa ) && naturally_aligned( size )) {
-    while (size > 0) {
-      l1tt_section_entry entry = { .raw = pa };
-      entry.XN = 1;
-      entry.type2 = 2;
-      entry.AP = 3;
-      entry.S = 1;
-      entry.APX = 0; // Read/Write
-      L1TT[virt / natural_alignment] = entry.raw;
-      size -= natural_alignment;
-      virt += natural_alignment;
-      pa += natural_alignment;
-    }
-  }
-  else if (size == 4096) {
-    l2tt_entry entry = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .AP = 1, .TEX = 0, .APX = 0, .S = 1, .nG = 0 };
-
-    entry.page_base = (pa >> 12);
-    if ((uint32_t) va >= 0xfff00000) {
-      top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
-    }
-    else if ((uint32_t) va < (1 << 20)) {
-      bottom_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
-    }
-    else {
-      for (;;) { asm ( "wfi" ); }
-    }
-  }
-  else {
-    for (;;) { asm ( "wfi" ); }
-  }
-
-  memory_remapped();
+  map_device_at( va, pa, size, true );
 }
 
 void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volatile startup *startup )
@@ -327,11 +294,7 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
   physical = start - (((uint32_t) MMU_enter) - physical);
 
   // FIXME: permissions, caches, etc.
-  l1tt_section_entry rom_sections = { .type2 = 2,
-      .TEX = 0b101, .C = 0, .B = 1,     // Match existing kernel, for now
-      .XN = 0, .Domain = 0, .P = 0, 
-      .AP = 2, .APX = 1,        // Read-only, at any privilege level (SCTLR.AFE = 0)
-      .S = 1, .nG = 0 };        // Shared, global (read-only, so no problems with caches)
+  l1tt_section_entry rom_sections = l1_rom_section;
 
   for (int i = 0; i < (uint32_t) &rom_size; i+= (1 << 20)) {
     ws->mmu.l1tt_pa[(start + i) >> 20] = rom_sections.raw | ((physical + i) & 0xfff00000);
@@ -340,9 +303,13 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
     ws->mmu.l1tt_pa[(physical + i) >> 20] = rom_sections.raw | ((physical + i) & 0xfff00000);
   }
 
+  about_to_remap_memory();
+
   l1tt_table_entry MiB = { .type1 = 1, .NS = 0, .Domain = 0 };
 
   ws->mmu.l1tt_pa[0xfff] = MiB.raw | (uint32_t) ws->mmu.l2tt_pa;        // top_MiB_tt
+
+  memory_remapped();
 
   map_work_area( ws->mmu.l2tt_pa, (uint32_t) ws, &workspace, sizeof( workspace ) );
   map_translation_table( ws->mmu.l2tt_pa, (uint32_t) ws->mmu.l1tt_pa, L1TT, 4096 * 4 );
@@ -364,9 +331,8 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
 
   asm ( "  mrc p15, 0, %[sctlr], c1, c0, 0" : [sctlr] "=r" (sctlr) );
 
-  // FIXME Should probably enable the Access Flag
   sctlr |=  (1 << 23); // XP, bit 23, 1 = subpage AP bits disabled.
-  sctlr &= ~(1 << 29); // Access Bit not used
+  sctlr |=  (1 << 29); // Access Flag enable
   sctlr &= ~(1 << 28); // No TEX remap (VMSAv6 functionality)
   sctlr |=  (1 << 13); // High vectors; there were problems with setting this bit independently, so do it here
   sctlr |=  (1 << 12); // Instruction cache
@@ -385,5 +351,76 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volati
       , [stack] "r" (sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack) );
 
   __builtin_unreachable();
+}
+
+extern void Kernel_failed_data_abort();
+
+static void map_block( physical_memory_block block )
+{
+  // All RISC OS memory is RWX.
+  l2tt_entry entry = l2_urwx;
+
+  about_to_remap_memory();
+
+  if (block.virtual_base < (1 << 20)) {
+    // FIXME: more than one page!
+    bottom_MiB_tt[(block.virtual_base >> 12) & 0xff] = (block.physical_base | entry.raw);
+  }
+
+  memory_remapped();
+}
+
+// Taken from swis.h, perhaps integer_context might be more appropriate?
+// Or, for aborts, we don't really need to save all the registers, just the scratch registers
+typedef struct __attribute__(( packed )) {
+  uint32_t r[13];
+  uint32_t lr;
+  uint32_t spsr;
+} svc_registers;
+
+static void handle_data_abort( svc_registers *regs )
+{
+  if (0x807 == data_fault_type() && workspace.mmu.current != 0) {
+    uint32_t fa = fault_address();
+    claim_lock( &shared.mmu.lock );
+    physical_memory_block block = Kernel_physical_address( workspace.mmu.current, fa );
+    release_lock( &shared.mmu.lock );
+    if (block.size != 0) {
+      map_block( block );
+      return;
+    }
+  }
+
+  Kernel_failed_data_abort();
+}
+
+void __attribute__(( naked, noreturn )) Kernel_default_data_abort()
+{
+  svc_registers *regs;
+  // Without volatile, this may be optimised out because regs is not used.
+  asm volatile ( 
+        "  sub lr, lr, #8"
+      "\n  srsdb sp!, #0x17"
+      "\n  push { r0-r12 }"
+      "\n  mov %[regs], sp"
+      : [regs] "=r" (regs)
+      );
+
+  handle_data_abort( regs );
+
+  asm volatile ( "pop { r0-r12 }"
+    "\n  rfeia sp!" );
+
+  __builtin_unreachable();
+}
+
+void MMU_switch_to( TaskSlot *slot )
+{
+  claim_lock( &shared.mmu.lock );
+  workspace.mmu.current = slot;
+  // Set CONTEXTIDR
+  asm ( "mcr p15, 0, %[asid], c13, c0, 1" : : [asid] "r" (TaskSlot_asid( slot )) );
+  // FIXME: clear out L2TTs, or disable walks until one is needed, then clear them
+  release_lock( &shared.mmu.lock );
 }
 

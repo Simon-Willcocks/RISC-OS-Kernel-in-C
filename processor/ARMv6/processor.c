@@ -17,22 +17,20 @@
 
 void Initialise_privileged_mode_stack_pointers()
 {
-  register uint32_t stack asm( "r0" );
+  asm ( "msr sp_und, %[stack]" : : [stack] "r" (sizeof( workspace.kernel.undef_stack ) + (uint32_t) &workspace.kernel.undef_stack) );
+  asm ( "msr sp_abt, %[stack]" : : [stack] "r" (sizeof( workspace.kernel.abt_stack ) + (uint32_t) &workspace.kernel.abt_stack) );
+  asm ( "msr sp_irq, %[stack]" : : [stack] "r" (sizeof( workspace.kernel.irq_stack ) + (uint32_t) &workspace.kernel.irq_stack) );
+  asm ( "msr sp_fiq, %[stack]" : : [stack] "r" (sizeof( workspace.kernel.fiq_stack ) + (uint32_t) &workspace.kernel.fiq_stack) );
+}
 
-  stack = sizeof( workspace.kernel.undef_stack ) + (uint32_t) &workspace.kernel.undef_stack;
-  asm ( "msr cpsr, #0xdb\n  mov sp, r0" : : "r" (stack) );
-
-  stack = sizeof( workspace.kernel.abt_stack ) + (uint32_t) &workspace.kernel.abt_stack;
-  asm ( "msr cpsr, #0xd7\n  mov sp, r0" : : "r" (stack) );
-
-  stack = sizeof( workspace.kernel.irq_stack ) + (uint32_t) &workspace.kernel.irq_stack;
-  asm ( "msr cpsr, #0xd2\n  mov sp, r0" : : "r" (stack) );
-
-  stack = sizeof( workspace.kernel.fiq_stack ) + (uint32_t) &workspace.kernel.fiq_stack;
-  asm ( "msr cpsr, #0xd1\n  mov sp, r0" : : "r" (stack) );
-
-  // Finally, end up back in svc32, with the stack pointer unchanged:
-  asm ( "msr cpsr, #0xd3" );
+void Initialise_undefined_registers()
+{
+  asm ( "msr spsr_hyp, %[zero]" : : [zero] "r" (0) );
+  asm ( "msr spsr_svc, %[zero]" : : [zero] "r" (0) );
+  asm ( "msr spsr_und, %[zero]" : : [zero] "r" (0) );
+  asm ( "msr spsr_abt, %[zero]" : : [zero] "r" (0) );
+  asm ( "msr spsr_irq, %[zero]" : : [zero] "r" (0) );
+  asm ( "msr spsr_fiq, %[zero]" : : [zero] "r" (0) );
 }
 
 void Cortex_A7_set_smp_mode()
@@ -98,6 +96,7 @@ static void clean_cache_32( int level ) // 0 to 6
   asm ( "dsb sy" );
   // Select cache level
   asm ( "mcr p15, 2, %[level], c0, c0, 0" : : [level] "r" (level << 1) ); // CSSELR Cache Size Selection Register.
+  asm ( "dsb sy" );
   asm ( "isb" );        // sync the change to the CCSIDR (from HAL_BCM2835/hdr/BCM2835)
 
   uint32_t line_size = processor.caches.v7.cache[level].line_size;
@@ -107,8 +106,8 @@ static void clean_cache_32( int level ) // 0 to 6
   int wayshift; // Number of bits to shift the way index by
   asm ( "clz %[ws], %[assoc]" : [ws] "=r" (wayshift) : [assoc] "r" (ways) );
 
-show_word( 100 + 100 * workspace.core_number, 200 + 50 * level, line_size, White );
-show_word( 100 + 100 * workspace.core_number, 210 + 50 * level, ways, White );
+show_word( 100 + 100 * workspace.core_number, 800 + 50 * level, line_size, White );
+show_word( 100 + 100 * workspace.core_number, 810 + 50 * level, ways, White );
 
   for (int way = 0; way < ways; way++) {
     uint32_t setway = (way << wayshift) | (level << 1);
@@ -117,8 +116,8 @@ show_word( 100 + 100 * workspace.core_number, 210 + 50 * level, ways, White );
       asm ( "mcr p15, 0, %[sw], c7, c14, 2" : : [sw] "r" (setway | (set << line_size)) ); // DCCISW
     }
   }
-show_word( 100 + 100 * workspace.core_number, 220 + 50 * level, sets, White );
-show_word( 100 + 100 * workspace.core_number, 230 + 50 * level, wayshift, White );
+show_word( 100 + 100 * workspace.core_number, 820 + 50 * level, sets, White );
+show_word( 100 + 100 * workspace.core_number, 830 + 50 * level, wayshift, White );
 
   asm ( "dsb sy" );
 }
@@ -130,9 +129,11 @@ static unsigned cache_type( uint32_t clidr, int level )
 
 static void try_everything()
 {
+  claim_lock( &shared.mmu.lock );
   for (int level = 0; level < 7 && cache_type( processor.caches.v7.clidr.raw, level ) != 0; level++) {
     clean_cache_32( level );
   }
+  release_lock( &shared.mmu.lock );
 }
 
 static void do_nothing()
@@ -145,8 +146,42 @@ static void clear_all()
   asm ( "mcr p15, 0, %[zero], c7, c14, 0" : : [zero] "r" (0) ); // 
 }
 
+// This one works, but probably does too much.
+static void set_way_no_CCSIDR2()
+{
+  asm ( "dsb sy" );
+  // Select cache level
+  for (int level = 1; level <= 2; level++) {
+    uint32_t size;
+    asm ( "mcr p15, 2, %[level], c0, c0, 0" : : [level] "r" ((level-1) << 1) ); // CSSELR Selection Register.
+    asm ( "mrc p15, 1, %[size], c0, c0, 0" : [size] "=r" (size) ); // CSSIDR
+    uint32_t line_size = ((size & 7)+4);
+    uint32_t ways = 1 + ((size & 0xff8) >> 3);
+    uint32_t sets = 1 + ((size & 0x7fff000) >> 13);
+    int wayshift; // Number of bits to shift the way index by
+    asm ( "clz %[ws], %[assoc]" : [ws] "=r" (wayshift) : [assoc] "r" (ways - 1) );
+
+    for (int way = 0; way < ways; way++) {
+      uint32_t setway = (way << wayshift) | ((level - 1) << 1);
+      for (int set = 0; set < sets; set++) {
+        asm ( "mcr p15, 0, %[sw], c7, c14, 2" : : [sw] "r" (setway | (set << line_size)) ); // DCCISW
+      }
+    }
+  }
+
+  asm ( "dsb sy" );
+}
+
 static void investigate_cache( processor_fns *fixed )
 {
+  uint32_t id_mmfr4;
+  asm ( "mrc p15, 0, %[reg], c0, c2, 6" : [reg] "=r" (id_mmfr4) );
+
+  if (0 == ((id_mmfr4 >> 24) & 15)) {
+    fixed->clean_cache_to_PoU = set_way_no_CCSIDR2;
+    fixed->clean_cache_to_PoC = set_way_no_CCSIDR2;
+    return;
+  }
 /* Does not work.
   fixed->clean_cache_to_PoU = clear_all;
   fixed->clean_cache_to_PoC = clear_all;
@@ -169,8 +204,10 @@ static void investigate_cache( processor_fns *fixed )
   }
 
   // Only one implementation, at present.
-  fixed->clean_cache_to_PoU = do_nothing; // try_everything;
-  fixed->clean_cache_to_PoC = do_nothing; // try_everything;
+  fixed->clean_cache_to_PoU = try_everything;
+  fixed->clean_cache_to_PoC = try_everything;
+    fixed->clean_cache_to_PoU = do_nothing;
+    fixed->clean_cache_to_PoC = do_nothing;
 
   // Information for the routines
   for (int level = 0; level < 7 && 0 != cache_type( clidr, level ); level++) {

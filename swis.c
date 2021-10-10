@@ -26,6 +26,7 @@ bool Kernel_Error_UnimplementedSWI( svc_registers *regs )
 {
   static error_block error = { 0x999, "Unimplemented SWI" };
   regs->r[0] = (uint32_t) &error;
+
   for (;;) { asm ( "wfi" ); }
   return false;
 }
@@ -325,14 +326,19 @@ static bool do_OS_HeapSort( svc_registers *regs )
     int **array = (void*) (regs->r[1] & ~0xe0000000);
     for (int i = 0; i < elements-1; i++) {
       int lowest = *array[i];
+      int **p = 0;
       for (int j = i+1; j < elements; j++) {
         if (*array[j] < lowest) {
           lowest = *array[j];
-          // Swap pointers
-          int *p = array[i];
-          array[i] = array[j];
-          array[j] = p;
+          p = &array[j];
         }
+      }
+
+      if (p != 0) {
+        // Swap pointers
+        int32_t *l = *p;
+        *p = array[i];
+        array[i] = l;
       }
     }
     }
@@ -468,7 +474,45 @@ static bool do_OS_RemoveCallBack( svc_registers *regs )
 
 
 static bool do_OS_FindMemMapEntries( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_SetColour( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+
+typedef union {
+  struct {
+    uint32_t action:3; // Set, OR, AND, EOR, Invert, Unchanged, AND NOT, OR NOT.
+    uint32_t use_transparency:1;
+    uint32_t background:1;
+    uint32_t ECF_pattern:1; // Unlikely to be supported
+    uint32_t text_colour:1; // As opposed to graphics colour
+    uint32_t read_colour:1; // As opposed to setting it
+  };
+  uint32_t raw;
+} OS_SetColour_Flags;
+
+static bool do_OS_SetColour( svc_registers *regs )
+{
+  OS_SetColour_Flags flags = { .raw = regs->r[0] };
+
+  if (flags.action != 0) {
+    return Kernel_Error_UnimplementedSWI( regs );
+  }
+
+  union {
+    struct {
+      uint32_t A:8;
+      uint32_t R:8;
+      uint32_t G:8;
+      uint32_t B:8;
+    };
+    uint32_t raw;
+  } os_colour = { .raw = regs->r[1] };
+  uint32_t colour = (255 << 24) | (os_colour.R << 16) | (os_colour.G << 8) | os_colour.B;
+
+  if (flags.background)
+    workspace.vdu.vduvars[154 - 128] = colour;
+  else
+    workspace.vdu.vduvars[153 - 128] = colour;
+  return true;
+}
+
 static bool do_OS_Pointer( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ScreenMode( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
@@ -650,6 +694,14 @@ static bool do_OS_ConvertFixedNetStation( svc_registers *regs ) { return Kernel_
 static bool do_OS_ConvertNetStation( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
+static bool do_OS_FlushCache( svc_registers *regs )
+{
+  claim_lock( &shared.mmu.lock );
+  clean_cache_to_PoC(); // FIXME
+  release_lock( &shared.mmu.lock );
+  return true;
+}
+
 static bool do_OS_ConvertFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 typedef bool (*swifn)( svc_registers *regs );
@@ -828,6 +880,8 @@ static swifn os_swis[256] = {
   [OS_ConvertNetStation] =  do_OS_ConvertNetStation,
   [OS_ConvertFixedFileSize] =  do_OS_ConvertFixedFileSize,
 
+  [OS_FlushCache] = do_OS_FlushCache, // This could be called by each core on centisecond interrupts, maybe?
+
   [OS_ConvertFileSize] =  do_OS_ConvertFileSize
 };
 
@@ -856,6 +910,48 @@ static bool Kernel_go_svc( svc_registers *regs, uint32_t svc )
   return do_module_swi( regs, svc );
 }
 
+static void do_svc_and_transient_callbacks( svc_registers *regs, uint32_t lr )
+{
+  regs->spsr &= ~VF;
+  uint32_t number = get_swi_number( lr );
+  if (Kernel_go_svc( regs, number )) {
+    // Worked
+    regs->spsr &= ~VF;
+  }
+  else if ((number & Xbit) != 0) {
+    // Error
+    // for (;;) { asm ( "wfi" ); }
+    regs->spsr |= VF;
+  }
+  else {
+    // Call error handler
+*(uint8_t*) 0x98989898 = 42; // Cause a data abort
+    for (;;) { asm ( "wfi" ); }
+  }
+
+uint32_t test = regs->spsr;
+  while (workspace.kernel.transient_callbacks != 0) {
+    transient_callback *callback = workspace.kernel.transient_callbacks;
+
+    // In case the callback registers a callback, make a private copy of the
+    // callback details and sort out the list before making the call. 
+    transient_callback latest = *callback;
+
+    callback->next = workspace.kernel.transient_callbacks_pool;
+    workspace.kernel.transient_callbacks_pool = callback;
+    workspace.kernel.transient_callbacks = latest.next;
+
+    // Callbacks preserve all registers and return by mov pc, lr
+    register uint32_t private_word asm ( "r12" ) = latest.private_word;
+    register uint32_t code asm ( "r14" ) = latest.code;
+    asm ( "blx r14" : : "r" (private_word), "r" (code) : "memory" );
+  }
+
+if (test != regs->spsr) {
+*(uint8_t*) 0x94949494 = 42; // Cause a data abort
+}
+}
+
 void __attribute__(( naked, noreturn )) Kernel_default_svc()
 {
   // Some SWIs preserve all registers
@@ -873,8 +969,8 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
   // The savings of not always having to save r4-r8 (into non-shared, cached memory)
   // will be minor compared to messing about trying to avoid it.
 
-  register svc_registers *regs asm ( "r0" );
-  register uint32_t lr;
+  svc_registers *regs;
+  uint32_t lr;
   asm ( "  srsdb sp!, #0x13"
       "\n  push { r0-r12 }"
       "\n  mov %[regs], sp"
@@ -883,38 +979,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
       , [lr] "=r" (lr)
       );
 
-  regs->spsr &= ~VF;
-  uint32_t number = get_swi_number( lr );
-  if (Kernel_go_svc( regs, number )) {
-    // Worked
-    regs->spsr &= ~VF;
-  }
-  else if ((number & Xbit) != 0) {
-    // Error
-    // for (;;) { asm ( "wfi" ); }
-    regs->spsr |= VF;
-  }
-  else {
-    // Call error handler
-    for (;;) { asm ( "wfi" ); }
-  }
-
-  while (workspace.kernel.transient_callbacks != 0) {
-    transient_callback *callback = workspace.kernel.transient_callbacks;
-
-    // In case the callback registers a callback, make a private copy of the
-    // callback details and sort out the list before making the call. 
-    transient_callback latest = *callback;
-
-    callback->next = workspace.kernel.transient_callbacks_pool;
-    workspace.kernel.transient_callbacks_pool = callback;
-    workspace.kernel.transient_callbacks = latest.next;
-
-    // Callbacks preserve all registers and return by mov pc, lr
-    register uint32_t private_word asm ( "r12" ) = latest.private_word;
-    register uint32_t code asm ( "r14" ) = latest.code;
-    asm ( "blx r14" : : "r" (private_word), "r" (code) );
-  }
+  do_svc_and_transient_callbacks( regs, lr );
 
   asm ( "pop { r0-r12 }"
     "\n  rfeia sp!" );
