@@ -81,6 +81,10 @@ bool do_OS_Heap( svc_registers *regs )
     return true;
   case Allocate:
     {
+    // In case the heap is shared between cores like, say, the RMA, claim a lock first
+    // Don't forget to do this for the other codes, too!
+    claim_lock( &shared.memory.os_heap_lock );
+
     // Size of the block of heap that will be allocted to return the requested size
     uint32_t size = (regs->r[3] + 7) & ~3;
     if (size < 8) size = 8;
@@ -117,6 +121,7 @@ bool do_OS_Heap( svc_registers *regs )
       uint32_t new_base = b->base_offset + size;
       if (new_base > b->end_offset) {
         regs->r[0] = (uint32_t) &NotEnoughMemory;
+        release_lock( &shared.memory.os_heap_lock );
         return false;
       }
       result = ptr_from_offset( b, b->base_offset + 4 );
@@ -142,6 +147,7 @@ bool do_OS_Heap( svc_registers *regs )
 
     regs->r[2] = (uint32_t) result;
     }
+    release_lock( &shared.memory.os_heap_lock );
     return true;
   case Free:
     {

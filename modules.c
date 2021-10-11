@@ -298,7 +298,7 @@ static bool do_Module_Claim( svc_registers *regs )
     static error_block nomem = { 0x101, "The area of memory reserved for relocatable modules is full" };
     regs->r[0] = (uint32_t) &nomem;
   }
-
+show_word( 200 * workspace.core_number, 500, regs->r[2], 0xffffffff );
   return result;
 }
 
@@ -1438,7 +1438,7 @@ static uint32_t path3[] = {
   int step = 2;
 
 extern uint32_t frame_buffer;
-claim_lock( &frame_buffer ); // Just for fun, uses the top left pixel!
+claim_lock( &frame_buffer ); // Just for fun, uses the top left pixel! It looks better with the lock than without, but locking the whole screen (with a real shared lock variable) might slow things down too much.
   for (;;) {
     matrix[0] =  draw_cos( angle );
     matrix[1] =  draw_sin( angle );

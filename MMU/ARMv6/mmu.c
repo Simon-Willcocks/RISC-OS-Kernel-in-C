@@ -391,7 +391,9 @@ static void handle_data_abort( svc_registers *regs )
     }
   }
 
-  Kernel_failed_data_abort();
+  asm volatile ( "ldm sp, { r0-r12, r14 }\n  b Kernel_failed_data_abort" );
+
+  __builtin_unreachable();
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_data_abort()

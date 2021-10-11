@@ -26,6 +26,9 @@ typedef struct {
 
 struct Memory_manager_shared_workspace {
   uint32_t lock;
+  uint32_t os_heap_lock; // Should only be needed for shared heaps, and possibly one lock per heap (maybe invert the magic word, but be aware of interrupt handlers using OS_Heap - how is that dealt with today?).
+  // Might be best in a shares.swis struct instead of here...
+
   uint32_t dynamic_areas_lock;
   free_block free_blocks[16]; // This is the real free memory, not what we tell the applications!
   DynamicArea *dynamic_areas;
