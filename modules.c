@@ -298,7 +298,9 @@ static bool do_Module_Claim( svc_registers *regs )
     static error_block nomem = { 0x101, "The area of memory reserved for relocatable modules is full" };
     regs->r[0] = (uint32_t) &nomem;
   }
-show_word( 200 * workspace.core_number, 500, regs->r[2], 0xffffffff );
+show_word( 200 * workspace.core_number, 500, regs->r[2], White );
+clean_cache_to_PoC();
+
   return result;
 }
 
@@ -584,6 +586,9 @@ bool do_OS_GetEnv( svc_registers *regs )
 
 void init_module( const char *name )
 {
+show_word( 200 * workspace.core_number, 520, (uint32_t) name, White );
+clean_cache_to_PoC();
+
   uint32_t *rom_modules = &_binary_AllMods_start;
   uint32_t *rom_module = rom_modules;
 
@@ -638,7 +643,7 @@ static void Draw_Fill( uint32_t *path, int32_t *transformation_matrix )
         : "lr" );
 }
 
-union {
+typedef union {
   struct {
     uint32_t action:3; // Set, OR, AND, EOR, Invert, Unchanged, AND NOT, OR NOT.
     uint32_t use_transparency:1;
@@ -685,6 +690,27 @@ void Draw_Stroke( uint32_t *path, uint32_t *transformation_matrix )
         , "r" (dashes)
         , "m" (cap_and_join_style) // Without this, the array is not initialised
         : "lr" );
+}
+
+static inline uint32_t Font_FindFont( const char *name, uint32_t xpoints, uint32_t ypoints, uint32_t xdpi, uint32_t ydpi )
+{
+  register uint32_t result asm( "r0" );
+  register uint32_t rname asm( "r1" ) = name;
+  register uint32_t rxpoints asm( "r2" ) = xpoints;
+  register uint32_t rypoints asm( "r3" ) = ypoints;
+  register uint32_t rxdpi asm( "r4" ) = xdpi;
+  register uint32_t rydpi asm( "r5" ) = ydpi;
+
+  asm ( "swi %[swi]"
+        : "=r" (result)
+        : "r" (rname)
+        , "r" (rxpoints)
+        , "r" (rypoints)
+        , "r" (rxdpi)
+        , "r" (rydpi)
+        , [swi] "i" (0x20000 | 0x40081)
+        : "lr" );
+  return result;
 }
 
 void Font_Paint( uint32_t font, const char *string, uint32_t type, uint32_t startx, uint32_t starty, uint32_t length )
@@ -1011,32 +1037,6 @@ void Boot()
   set_var( "Run$Path", "" );
   set_var( "File$Path", "" );
 
-/*
-
-  init_module( "TerritoryManager" ); // Uses MessageTrans to open file
-  init_module( "Messages" );
-  init_module( "MessageTrans" );
-  init_module( "UK" );
-*/
-/*
-//  init_module( "DrawFile" );
-  //init_module( "FileCore" );
-  init_module( "ROMFonts" );
-  init_module( "FontManager" );
-
-  init_module( "SpriteExtend" );
-  init_module( "SpriteUtils" );
-  init_module( "DitherExt" );
-  init_module( "AWRender" );
-  init_module( "GDraw" );
-  init_module( "GSpriteExtend" );
-*/
-
-//  extern uint32_t _binary_Files_rfs_start;
-//  register uint32_t *files asm ( "r0" ) = &_binary_Files_rfs_start;
-//  asm ( "svc 0x41b40" : : "r" (files) );
-  //register uint32_t matrix[6] asm( r = { 1 << 16, 0, 0, 1 << 16, 0, 0 }; // Identity matrix
-
   workspace.vdu.modevars[6] = 1920 * 4;
 
   workspace.vdu.vduvars[128 - 128] = 0;
@@ -1051,36 +1051,44 @@ void Boot()
   workspace.vdu.vduvars[154 - 128] = 0xffffffff; // BG (fill) white
 
   workspace.vdu.vduvars[166 - 128] = (uint32_t) fast_horizontal_line_draw;
-/*
-  extern uint32_t _binary_DrawFile_start;
-  extern uint32_t _binary_DrawFile_size;
-
-  register uint32_t flags asm ( "r0" ) = 0;
-  register uint32_t file asm ( "r1" ) = (uint32_t) &_binary_DrawFile_start;
-  register uint32_t size asm ( "r2" ) = (uint32_t) &_binary_DrawFile_size;
-  register uint32_t matrix asm ( "r3" ) = 0;
-  register uint32_t clipping asm ( "r4" ) = 0;
-  register uint32_t flatness asm ( "r5" ) = 0;
-  asm ( "svc 0x45540" : : "r" (flags), "r" (file), "r" (size), "r" (matrix), "r" (clipping), "r" (flatness) );
-
-  Font_Paint( 0, "First text", 0b01100000000, workspace.core_number * 200, 400, 0 );
-*/
 
   init_module( "DrawMod" );
 /*
+  init_module( "SharedCLibrary" );
   init_module( "FileSwitch" ); // Uses MessageTrans, but survives it not being there at startup
+  init_module( "TerritoryManager" ); // Uses MessageTrans to open file
   init_module( "ResourceFS" ); // Uses TerritoryManager
 
-  init_module( "SharedCLibrary" );
-*/
+/*
+  This requires more functionality in the system variables than currently implemented. SetMacro, etc.
+  init_module( "FontManager" );
+  init_module( "ROMFonts" );
+
   init_module( "ColourTrans" );
+
+  init_module( "Messages" );
+  // init_module( "MessageTrans" ); // Needs memory at the address returned by OSRSI6_DomainId 
+  init_module( "UK" );
+*/
+  // init_module( "DrawFile" ); Seems to stall
+
+//  init_module( "UtilityMod" );
+/*
+  init_module( "WindowManager" );
+  init_module( "BufferManager" );
+  init_module( "DeviceFS" );
+  init_module( "RTSupport" );
+  init_module( "USBDriver" );
+  init_module( "FileCore" );
+*/
 
   TaskSlot *slot = MMU_new_slot();
   physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( 4096, 4096 ), .size = 4096 };
   TaskSlot_add( slot, block );
   MMU_switch_to( slot );
 
-  clean_cache_to_PoC(); // Does this fix the problem? No. It helps, though. I think.
+  // This appears to be necessary. Perhaps it should be in MMU_switch_to.
+  clean_cache_to_PoC();
 
   register param asm ( "r0" ) = workspace.core_number;
   asm ( "isb"
@@ -1096,6 +1104,33 @@ void Boot()
 
   __builtin_unreachable();
 }
+
+static inline void show_character( uint32_t x, uint32_t y, unsigned char c, uint32_t colour )
+{
+  extern uint8_t system_font[128][8];
+  uint32_t dx = 0;
+  uint32_t dy = 0;
+  c = (c - ' ') & 0x7f;
+
+  for (dy = 0; dy < 8; dy++) {
+    for (dx = 0; dx < 8; dx++) {
+      if (0 != (system_font[c+1][dy] & (0x80 >> dx)))
+        set_pixel( x+dx, y+dy, colour );
+      else
+        set_pixel( x+dx, y+dy, Black );
+    }
+  }
+}
+
+void show_string( uint32_t x, uint32_t y, const char *string, uint32_t colour )
+{
+  while (*string != 0) {
+    show_character( x, y, *string++, colour );
+    x += 8;
+  }
+  clean_cache_to_PoC();
+}
+
 
 static void user_mode_code( int core_number )
 {
@@ -1437,6 +1472,9 @@ static uint32_t path3[] = {
   int angle = odd ? 0 : 22; // Starting angle
   int step = 2;
 
+//uint32_t font = 0;;
+//if (core_number == 2) font = Font_FindFont( "Trinity.Medium", 24*16, 24*16, 0, 0 );
+
 extern uint32_t frame_buffer;
 claim_lock( &frame_buffer ); // Just for fun, uses the top left pixel! It looks better with the lock than without, but locking the whole screen (with a real shared lock variable) might slow things down too much.
   for (;;) {
@@ -1455,6 +1493,14 @@ claim_lock( &frame_buffer ); // Just for fun, uses the top left pixel! It looks 
     asm ( "svc %[swi]" : "=&m" (matrix) : [swi] "i" (OS_FlushCache) );
 release_lock( &frame_buffer );
     for (int i = 0; i < 0x800000; i++) { asm ( "" ); }
+
+/*
+if (core_number == 3) {
+show_string( core_number * 200, 400, "Hello?", White );
+//Font_Paint( font, "First text", 0b100010000, core_number * 200, 400, 0 );
+}
+*/
+
 claim_lock( &frame_buffer );
 
     SetColour( 0, 0x000000 );

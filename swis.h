@@ -71,7 +71,9 @@ enum {
 /* ff */ OS_FlushCache = 0xff, // For screen updates, etc.
 /* 100-1ff */ OS_WriteI = 0x100 };
  
-// OS SWIs implemented other than in swis.c:
+// OS SWIs implemented or used other than in swis.c:
+
+bool do_OS_GSTrans( svc_registers *regs );
 
 // Implemented in os_heap.c:
 bool do_OS_Heap( svc_registers *regs );
@@ -131,12 +133,12 @@ bool do_OS_RestoreCursors( svc_registers *regs );
 bool do_OS_Plot( svc_registers *regs );
 
 // swis/varvals.c
-enum { VarType_String = 0,
-       VarType_Number,
-       VarType_Macro,
-       VarType_Expanded,
-       VarType_LiteralString,
-       VarType_Code = 16 };
+enum VarTypes { VarType_String = 0,
+                VarType_Number,
+                VarType_Macro,
+                VarType_Expanded,
+                VarType_LiteralString,
+                VarType_Code = 16 };
 
 bool do_OS_ReadVarVal( svc_registers *regs );
 bool do_OS_SetVarVal( svc_registers *regs );
@@ -145,6 +147,7 @@ bool do_OS_SetVarVal( svc_registers *regs );
 bool do_module_swi( svc_registers *regs, uint32_t svc );
 
 bool Kernel_Error_UnknownSWI( svc_registers *regs );
+bool Kernel_Error_UnimplementedSWI( svc_registers *regs );
 
 extern uint32_t rma_base; // Loader generated
 extern uint32_t rma_heap; // Loader generated

@@ -95,23 +95,29 @@ struct Kernel_shared_workspace {
   uint32_t screen_lock; // Not sure if this will always be wanted; it might make sense to make the screen memory outer (only) sharable, and flush the L1 cache to it before releasing this lock.
 };
 
-extern struct core_workspace {
-  struct {
-    uint32_t reset;
-    uint32_t undef;
-    uint32_t svc;
-    uint32_t prefetch;
-    uint32_t data;
-    uint32_t irq;
-    uint32_t fiq[512];
+// When this include is no longer necessary, I will be very happy!
+#include "Legacy/ZeroPage.h"
 
-    // The vectors can be moved, but they must stay in the same order
-    void (*reset_vec)();
-    void (*undef_vec)();
-    void (*svc_vec)();
-    void (*prefetch_vec)();
-    void (*data_vec)();
-    void (*irq_vec)();
+extern struct core_workspace {
+  union {
+    struct {
+      uint32_t reset;
+      uint32_t undef;
+      uint32_t svc;
+      uint32_t prefetch;
+      uint32_t data;
+      uint32_t irq;
+      uint32_t fiq[512];
+
+      // The vectors can be moved, but they must stay in the same order
+      void (*reset_vec)();
+      void (*undef_vec)();
+      void (*svc_vec)();
+      void (*prefetch_vec)();
+      void (*data_vec)();
+      void (*irq_vec)();
+    };
+    LegacyZeroPage zp;
   } vectors;
 
   uint32_t core_number;

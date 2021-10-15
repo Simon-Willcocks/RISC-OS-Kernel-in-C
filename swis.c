@@ -27,7 +27,7 @@ bool Kernel_Error_UnimplementedSWI( svc_registers *regs )
   static error_block error = { 0x999, "Unimplemented SWI" };
   regs->r[0] = (uint32_t) &error;
 
-  for (;;) { asm ( "wfi" ); }
+  asm ( "bkpt 77" );
   return false;
 }
 
@@ -197,7 +197,7 @@ static bool do_OS_GSRead( svc_registers *regs )
       else if (c == '_' || c == '`') c = 31;
     }
     else if (c == '<') {
-      for (;;) { asm ( "wfi" ); }
+      for (;;) { asm ( "bkpt 77\nwfi" ); }
     }
   } while (set_top_bit);
 
@@ -212,7 +212,7 @@ static bool do_OS_GSRead( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_GSTrans( svc_registers *regs )
+bool do_OS_GSTrans( svc_registers *regs )
 {
   char *buffer = (void*) regs->r[1];
   uint32_t maxsize = regs->r[2] & ~0xe0000000;
@@ -395,32 +395,153 @@ typedef struct {
 
 static const mode_selector_block only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 32, .frame_rate = 60, { { -1, 0 } } };
 
+
+// OS_ReadSysInfo 6 values
+// Not all of these will be needed or supported.
+enum OS_ReadSysInfo_6 {
+OSRSI6_CamEntriesPointer                       = 0,
+OSRSI6_MaxCamEntry                             = 1,
+OSRSI6_PageFlags_Unavailable                   = 2,
+OSRSI6_PhysRamTable                            = 3,
+OSRSI6_ARMA_Cleaner_flipflop                   = 4, // Unused in HAL kernels
+OSRSI6_TickNodeChain                           = 5,
+OSRSI6_ROMModuleChain                          = 6,
+OSRSI6_DAList                                  = 7,
+OSRSI6_AppSpaceDANode                          = 8,
+OSRSI6_Module_List                             = 9,
+OSRSI6_ModuleSHT_Entries                       = 10,
+OSRSI6_ModuleSWI_HashTab                       = 11,
+OSRSI6_IOSystemType                            = 12,
+OSRSI6_L1PT                                    = 13,
+OSRSI6_L2PT                                    = 14,
+OSRSI6_UNDSTK                                  = 15,
+OSRSI6_SVCSTK                                  = 16,
+OSRSI6_SysHeapStart                            = 17,
+
+// These are used by ROL, but conflict with our allocations
+
+OSRSI6_ROL_KernelMessagesBlock                 = 18,
+OSRSI6_ROL_ErrorSemaphore                      = 19,
+OSRSI6_ROL_MOSdictionary                       = 20,
+OSRSI6_ROL_Timer_0_Latch_Value                 = 21,
+OSRSI6_ROL_FastTickerV_Counts_Per_Second       = 22,
+OSRSI6_ROL_VecPtrTab                           = 23,
+OSRSI6_ROL_NVECTORS                            = 24,
+OSRSI6_ROL_IRQSTK                              = 25,
+OSRSI6_ROL_SWIDispatchTable                    = 26, // JTABLE-SWIRelocation?
+OSRSI6_ROL_SWIBranchBack                       = 27, // DirtyBranch?
+
+// Our allocations which conflict with the above
+
+OSRSI6_Danger_SWIDispatchTable                 = 18, // JTABLE-SWIRelocation (Relocated base of OS SWI dispatch table)
+OSRSI6_Danger_Devices                          = 19, // Relocated base of IRQ device head nodes
+OSRSI6_Danger_DevicesEnd                       = 20, // Relocated end of IRQ device head nodes
+OSRSI6_Danger_IRQSTK                           = 21,
+OSRSI6_Danger_SoundWorkSpace                   = 22, // workspace (8K) and buffers (2*4K)
+OSRSI6_Danger_IRQsema                          = 23,
+
+// Safe versions of the danger allocations
+// Only supported by OS 5.17+, so if backwards compatability is required code
+// should (safely!) fall back on the danger versions
+
+OSRSI6_SWIDispatchTable                        = 64, // JTABLE-SWIRelocation (Relocated base of OS SWI dispatch table)
+OSRSI6_Devices                                 = 65, // Relocated base of IRQ device head nodes
+OSRSI6_DevicesEnd                              = 66, // Relocated end of IRQ device head nodes
+OSRSI6_IRQSTK                                  = 67,
+OSRSI6_SoundWorkSpace                          = 68, // workspace (8K) and buffers (2*4K)
+OSRSI6_IRQsema                                 = 69,
+
+// New ROOL allocations
+
+OSRSI6_DomainId                                = 70, // current Wimp task handle
+OSRSI6_OSByteVars                              = 71, // OS_Byte vars (previously available via OS_Byte &A6/VarStart)
+OSRSI6_FgEcfOraEor                             = 72,
+OSRSI6_BgEcfOraEor                             = 73,
+OSRSI6_DebuggerSpace                           = 74,
+OSRSI6_DebuggerSpace_Size                      = 75,
+OSRSI6_CannotReset                             = 76,
+OSRSI6_MetroGnome                              = 77, // OS_ReadMonotonicTime
+OSRSI6_CLibCounter                             = 78,
+OSRSI6_RISCOSLibWord                           = 79,
+OSRSI6_CLibWord                                = 80,
+OSRSI6_FPEAnchor                               = 81,
+OSRSI6_ESC_Status                              = 82,
+OSRSI6_ECFYOffset                              = 83,
+OSRSI6_ECFShift                                = 84,
+OSRSI6_VecPtrTab                               = 85,
+OSRSI6_NVECTORS                                = 86,
+OSRSI6_CAMFormat                               = 87, // 0 = 8 bytes per entry, 1 = 16 bytes per entry
+OSRSI6_ABTSTK                                  = 88,
+OSRSI6_PhysRamtableFormat                      = 89  // 0 = addresses are in byte units, 1 = addresses are in 4KB units
+};
+
+// Testing. Is this read-only?
+// I don't think so, we need to update MetroGnome, don't we? Still, this will do as the initial values.
+static const uint32_t SysInfo[] = {
+  [OSRSI6_CamEntriesPointer]                       = 0,
+  [OSRSI6_MaxCamEntry]                             = 1,
+  [OSRSI6_PageFlags_Unavailable]                   = 2,
+  [OSRSI6_PhysRamTable]                            = 3,
+  [OSRSI6_ARMA_Cleaner_flipflop]                   = 4, // Unused in HAL kernels
+  [OSRSI6_TickNodeChain]                           = 5,
+  [OSRSI6_ROMModuleChain]                          = 6,
+  [OSRSI6_DAList]                                  = 7,
+  [OSRSI6_AppSpaceDANode]                          = 8,
+  [OSRSI6_Module_List]                             = 9,
+  [OSRSI6_ModuleSHT_Entries]                       = 10,
+  [OSRSI6_ModuleSWI_HashTab]                       = 11,
+  [OSRSI6_IOSystemType]                            = 12,
+  [OSRSI6_L1PT]                                    = 13,
+  [OSRSI6_L2PT]                                    = 14,
+  [OSRSI6_UNDSTK]                                  = 
+        sizeof( workspace.kernel.undef_stack ) + (uint32_t) &workspace.kernel.undef_stack,
+  [OSRSI6_SVCSTK]                                  = 
+        sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack,
+  [OSRSI6_SysHeapStart]                            = 17,
+
+// Safe versions of the danger allocations
+// Only supported by OS 5.17+, so if backwards compatability is required code
+// should (safely!) fall back on the danger versions
+
+  [OSRSI6_SWIDispatchTable]                        = 64, // JTABLE-SWIRelocation (Relocated base of OS SWI dispatch table)
+  [OSRSI6_Devices]                                 = 65, // Relocated base of IRQ device head nodes
+  [OSRSI6_DevicesEnd]                              = 66, // Relocated end of IRQ device head nodes
+  [OSRSI6_IRQSTK]                                  = 67,
+  [OSRSI6_SoundWorkSpace]                          = 68, // workspace (8K) and buffers (2*4K)
+  [OSRSI6_IRQsema]                                 = &workspace.vectors.zp.IRQsema,
+
+// New ROOL allocations
+
+  [OSRSI6_DomainId]                                = 0x66600666, // current Wimp task handle
+  [OSRSI6_OSByteVars]                              = 71, // OS_Byte vars (previously available via OS_Byte &A6/VarStart)
+  [OSRSI6_FgEcfOraEor]                             = 72,
+  [OSRSI6_BgEcfOraEor]                             = 73,
+  [OSRSI6_DebuggerSpace]                           = 74,
+  [OSRSI6_DebuggerSpace_Size]                      = 75,
+  [OSRSI6_CannotReset]                             = 76,
+  [OSRSI6_MetroGnome]                              = 77, // OS_ReadMonotonicTime
+  [OSRSI6_CLibCounter]                             = (uint32_t) &workspace.vectors.zp.CLibCounter,
+  [OSRSI6_RISCOSLibWord]                           = (uint32_t) &workspace.vectors.zp.RISCOSLibWord,
+  [OSRSI6_CLibWord]                                = (uint32_t) &workspace.vectors.zp.CLibWord,
+  [OSRSI6_FPEAnchor]                               = 81,
+  [OSRSI6_ESC_Status]                              = 82,
+  [OSRSI6_ECFYOffset]                              = 83,
+  [OSRSI6_ECFShift]                                = 84,
+  [OSRSI6_VecPtrTab]                               = 85,
+  [OSRSI6_NVECTORS]                                = 86,
+  [OSRSI6_CAMFormat]                               = 87, // 0 = 8 bytes per entry, 1 = 16 bytes per entry
+  [OSRSI6_ABTSTK]                                  = 88,
+  [OSRSI6_PhysRamtableFormat]                      = 89  // 0 = addresses are in byte units, 1 = addresses are in 4KB units
+};
+
 bool read_kernel_value( svc_registers *regs )
 {
   static error_block error = { 0x333, "ReadSysInfo 6 unknown code" };
 
   if (regs->r[1] == 0) {
     // Single value, number in r2, result to r2
-    switch (regs->r[2]) {
-    case 0x10: // Address top of SVC stack
-      {
-        regs->r[2] = sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack;
-        return true;
-      }
-    case 0x45: // Address of IRQsema
-      {
-        static uint32_t zero = 0;
-        regs->r[2] = (uint32_t) &zero;
-        // Probably used more than this, but DrawMod uses it to check it's
-        // not being asked to render a file from an interrupt handler!
-        return true;
-      }
-    case 0x46: // Address of DomainId
-      {
-        regs->r[2] = (uint32_t) &workspace.kernel.DomainId;
-        return true;
-      }
-    }
+    regs->r[2] = SysInfo[regs->r[2]];
+    return true;
   }
 
   regs->r[0] = (uint32_t) &error;

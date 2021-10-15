@@ -41,5 +41,5 @@ typedef struct {
   uint32_t core_entered_mmu;
 } startup;
 
-startup boot_data; // Read-only once MMU enabled
+extern startup boot_data; // Read-only once MMU enabled
 
