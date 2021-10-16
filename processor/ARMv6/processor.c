@@ -25,12 +25,29 @@ void Initialise_privileged_mode_stack_pointers()
 
 void Initialise_undefined_registers()
 {
-  asm ( "msr spsr_hyp, %[zero]" : : [zero] "r" (0) );
-  asm ( "msr spsr_svc, %[zero]" : : [zero] "r" (0) );
-  asm ( "msr spsr_und, %[zero]" : : [zero] "r" (0) );
-  asm ( "msr spsr_abt, %[zero]" : : [zero] "r" (0) );
-  asm ( "msr spsr_irq, %[zero]" : : [zero] "r" (0) );
-  asm ( "msr spsr_fiq, %[zero]" : : [zero] "r" (0) );
+  uint32_t mode;
+  asm ( "mrs %[mode], cpsr" : [mode] "=r" (mode) );
+  mode = mode & 0x1f;
+
+  // Set for the current mode.
+  asm ( "msr spsr, %[zero]" : : [zero] "r" (0) );
+
+  // Using a banked register access instruction while in the mode is constrained unpredictable.
+
+  if (mode != 0x13)
+    asm ( "msr spsr_svc, %[zero]" : : [zero] "r" (0) );
+
+  if (mode != 0x1b)
+    asm ( "msr spsr_und, %[zero]" : : [zero] "r" (0) );
+
+  if (mode != 0x17)
+    asm ( "msr spsr_abt, %[zero]" : : [zero] "r" (0) );
+
+  if (mode != 0x12)
+    asm ( "msr spsr_irq, %[zero]" : : [zero] "r" (0) );
+
+  if (mode != 0x11)
+    asm ( "msr spsr_fiq, %[zero]" : : [zero] "r" (0) );
 }
 
 void Cortex_A7_set_smp_mode()
