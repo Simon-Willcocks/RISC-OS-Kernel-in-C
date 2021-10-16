@@ -1128,7 +1128,7 @@ void show_string( uint32_t x, uint32_t y, const char *string, uint32_t colour )
     show_character( x, y, *string++, colour );
     x += 8;
   }
-  clean_cache_to_PoC();
+  asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) );
 }
 
 
@@ -1477,7 +1477,7 @@ static uint32_t path3[] = {
 
 extern uint32_t frame_buffer;
 claim_lock( &frame_buffer ); // Just for fun, uses the top left pixel! It looks better with the lock than without, but locking the whole screen (with a real shared lock variable) might slow things down too much.
-  for (;;) {
+  for (int loop = 0;; loop++) {
     matrix[0] =  draw_cos( angle );
     matrix[1] =  draw_sin( angle );
     matrix[2] = -draw_sin( angle );
@@ -1490,16 +1490,17 @@ claim_lock( &frame_buffer ); // Just for fun, uses the top left pixel! It looks 
     SetColour( 0, 0x4c0000 );
     Draw_Fill( path3, matrix );
 
-    asm ( "svc %[swi]" : "=&m" (matrix) : [swi] "i" (OS_FlushCache) );
+    asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) );
 release_lock( &frame_buffer );
     for (int i = 0; i < 0x800000; i++) { asm ( "" ); }
 
-/*
 if (core_number == 3) {
 show_string( core_number * 200, 400, "Hello?", White );
 //Font_Paint( font, "First text", 0b100010000, core_number * 200, 400, 0 );
 }
-*/
+
+register char c asm( "r0" ) = '@' + loop % 26;
+asm volatile ( "SVC 0" : : "r" (c) );
 
 claim_lock( &frame_buffer );
 
