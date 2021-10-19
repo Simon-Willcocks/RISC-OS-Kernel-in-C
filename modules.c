@@ -32,6 +32,8 @@ typedef struct {
   uint32_t offset_to_swi_handler;
   uint32_t offset_to_swi_decoding_table;
   uint32_t offset_to_swi_decoding_code;
+  uint32_t offset_to_messages_file_name;
+  uint32_t offset_to_flags;
 } module_header;
 
 struct module {
@@ -55,10 +57,20 @@ static inline uint32_t start_code( module_header *header )
 
 static inline bool run_initialisation_code( const char *env, module *m )
 {
+  uint32_t flags = *(uint32_t *) (((char*) m->header) + m->header->offset_to_flags);
+  bool multiprocessor_aware = 0 != (2 & flags);
+
+  if (multiprocessor_aware) {
+    claim_lock( &shared.kernel.mp_module_init_lock );
+  }
+
   register uint32_t non_kernel_code asm( "r14" ) = m->header->offset_to_initialisation + (uint32_t) m->header;
   register uint32_t private_word asm( "r12" ) = (uint32_t) &m->private_word;
   register uint32_t instance asm( "r11" ) = m->instance;
   register const char *environment asm( "r10" ) = env;
+
+  register uint32_t this_core asm( "r0" ) = workspace.core_number;
+  register uint32_t number_of_cores asm( "r1" ) = processor.number_of_cores;
 
   asm goto (
         "  blx r14"
@@ -68,15 +80,25 @@ static inline bool run_initialisation_code( const char *env, module *m )
       , "r" (private_word)
       , "r" (instance)
       , "r" (environment)
-      : "r0", "r1", "r2", "r3", "r4", "r5", "r6"
+      , "r" (this_core)
+      , "r" (number_of_cores)
+      : "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"
       : failed );
 
   // No changes to the registers by the module are of any interest,
   // so avoid corrupting any by simply not storing them
 
+  if (multiprocessor_aware) {
+    release_lock( &shared.kernel.mp_module_init_lock );
+  }
+
   return true;
 
 failed:
+  if (multiprocessor_aware) {
+    release_lock( &shared.kernel.mp_module_init_lock );
+  }
+
   return false;
 }
 
@@ -343,7 +365,7 @@ static bool do_Module_InsertFromMemory( svc_registers *regs )
   if (0 != new_mod->offset_to_initialisation) {
     bool success = run_initialisation_code( "", instance );
     if (!success) {
-      for (;;) { asm ( "wfi" ); }
+      asm ( "bkpt 87" );
     }
   }
 
@@ -586,8 +608,11 @@ bool do_OS_GetEnv( svc_registers *regs )
 
 void init_module( const char *name )
 {
-show_word( 200 * workspace.core_number, 520, (uint32_t) name, White );
-clean_cache_to_PoC();
+#define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" )
+#define Write0( string ) { char *c = (char*) string; register uint32_t r0 asm( "r0" ); for (;*c != '\0' && *c != '\n';) { r0 = *c++; asm volatile ( "svc 0" : : "r" (r0) ); }; }
+#define NewLine asm ( "svc 3" )
+
+Write0( name ); NewLine;
 
   uint32_t *rom_modules = &_binary_AllMods_start;
   uint32_t *rom_module = rom_modules;
@@ -632,7 +657,7 @@ static void Draw_Fill( uint32_t *path, int32_t *transformation_matrix )
 {
   register uint32_t *draw_path asm( "r0" ) = path;
   register uint32_t fill_style asm( "r1" ) = 0;
-  register uint32_t *matrix asm( "r2" ) = transformation_matrix;
+  register  int32_t *matrix asm( "r2" ) = transformation_matrix;
   register uint32_t flatness asm( "r3" ) = 0;
   asm ( "swi 0x60702"
         : 
@@ -695,7 +720,7 @@ void Draw_Stroke( uint32_t *path, uint32_t *transformation_matrix )
 static inline uint32_t Font_FindFont( const char *name, uint32_t xpoints, uint32_t ypoints, uint32_t xdpi, uint32_t ydpi )
 {
   register uint32_t result asm( "r0" );
-  register uint32_t rname asm( "r1" ) = name;
+  register const char *rname asm( "r1" ) = name;
   register uint32_t rxpoints asm( "r2" ) = xpoints;
   register uint32_t rypoints asm( "r3" ) = ypoints;
   register uint32_t rxdpi asm( "r4" ) = xdpi;
@@ -892,7 +917,7 @@ void __attribute__(( naked )) fast_horizontal_line_draw( uint32_t left, uint32_t
     uint32_t *p = l;
     uint32_t c = workspace.vdu.vduvars[154 - 128];
     while (p <= r) {
-      *p = 0xff00ff80; // c;
+      *p = c;
       p++;
     }
     }
@@ -1034,9 +1059,6 @@ void Boot()
 
   // This is obviously becoming the boot sequence, to be refactored when something's happening...
 
-  set_var( "Run$Path", "" );
-  set_var( "File$Path", "" );
-
   workspace.vdu.modevars[6] = 1920 * 4;
 
   workspace.vdu.vduvars[128 - 128] = 0;
@@ -1052,14 +1074,32 @@ void Boot()
 
   workspace.vdu.vduvars[166 - 128] = (uint32_t) fast_horizontal_line_draw;
 
+  // Start the HAL, a multiprocessing-aware module that initialises essential features before
+  // the boot sequence can start.
+  {
+    extern uint32_t _binary_Modules_HAL_start;
+    register uint32_t code asm( "r0" ) = 10;
+    register uint32_t *module asm( "r1" ) = &_binary_Modules_HAL_start;
+
+    asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr" );
+  }
+
+  set_var( "Run$Path", "" );
+  set_var( "File$Path", "" );
+
+  asm ( "svc 0xff" );
+
   init_module( "DrawMod" );
+  init_module( "UtilityMod" );
 /*
+  init_module( "FileCore" );
   init_module( "SharedCLibrary" );
   init_module( "FileSwitch" ); // Uses MessageTrans, but survives it not being there at startup
+
   init_module( "TerritoryManager" ); // Uses MessageTrans to open file
   init_module( "ResourceFS" ); // Uses TerritoryManager
 
-/*
+
   This requires more functionality in the system variables than currently implemented. SetMacro, etc.
   init_module( "FontManager" );
   init_module( "ROMFonts" );
@@ -1079,7 +1119,6 @@ void Boot()
   init_module( "DeviceFS" );
   init_module( "RTSupport" );
   init_module( "USBDriver" );
-  init_module( "FileCore" );
 */
 
   TaskSlot *slot = MMU_new_slot();
@@ -1090,7 +1129,7 @@ void Boot()
   // This appears to be necessary. Perhaps it should be in MMU_switch_to.
   clean_cache_to_PoC();
 
-  register param asm ( "r0" ) = workspace.core_number;
+  register uint32_t param asm ( "r0" ) = workspace.core_number;
   asm ( "isb"
     "\n\tmsr cpsr, #0x17 // Abort mode: eret is unpredictable in System mode"
     "\n\tdsb"
@@ -1107,14 +1146,14 @@ void Boot()
 
 static inline void show_character( uint32_t x, uint32_t y, unsigned char c, uint32_t colour )
 {
-  extern uint8_t system_font[128][8];
+  extern uint8_t system_font[128-32][8];
   uint32_t dx = 0;
   uint32_t dy = 0;
-  c = (c - ' ') & 0x7f;
+  c = (c & 0x7f) - ' ';
 
   for (dy = 0; dy < 8; dy++) {
     for (dx = 0; dx < 8; dx++) {
-      if (0 != (system_font[c+1][dy] & (0x80 >> dx)))
+      if (0 != (system_font[c][dy] & (0x80 >> dx)))
         set_pixel( x+dx, y+dy, colour );
       else
         set_pixel( x+dx, y+dy, Black );
@@ -1472,12 +1511,8 @@ static uint32_t path3[] = {
   int angle = odd ? 0 : 22; // Starting angle
   int step = 2;
 
-//uint32_t font = 0;;
-//if (core_number == 2) font = Font_FindFont( "Trinity.Medium", 24*16, 24*16, 0, 0 );
-
-extern uint32_t frame_buffer;
-claim_lock( &frame_buffer ); // Just for fun, uses the top left pixel! It looks better with the lock than without, but locking the whole screen (with a real shared lock variable) might slow things down too much.
   for (int loop = 0;; loop++) {
+
     matrix[0] =  draw_cos( angle );
     matrix[1] =  draw_sin( angle );
     matrix[2] = -draw_sin( angle );
@@ -1491,21 +1526,11 @@ claim_lock( &frame_buffer ); // Just for fun, uses the top left pixel! It looks 
     Draw_Fill( path3, matrix );
 
     asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) );
-release_lock( &frame_buffer );
+
     for (int i = 0; i < 0x800000; i++) { asm ( "" ); }
 
-if (core_number == 3) {
-show_string( core_number * 200, 400, "Hello?", White );
-//Font_Paint( font, "First text", 0b100010000, core_number * 200, 400, 0 );
-}
-
-register char c asm( "r0" ) = '@' + loop % 26;
-asm volatile ( "SVC 0" : : "r" (c) );
-
-claim_lock( &frame_buffer );
-
     SetColour( 0, 0x000000 );
-//    Draw_Fill( path1, matrix );
+//    Draw_Fill( path1, matrix ); // Not needed for small changes in angle
     Draw_Fill( path2, matrix );
     Draw_Fill( path3, matrix );
 

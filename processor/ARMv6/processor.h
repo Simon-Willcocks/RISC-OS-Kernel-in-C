@@ -22,7 +22,7 @@
       else { asm volatile ( "mrc p15, 0, %[v], "reg"\n  bic %[v], %[b]\n  eor %[v], %[v], %[n]\n  mcr p15, 0, %[v], "reg"" : [v] "=&r" (s) : [b] "ir" (bits), [n] "Ir" (new_values) ); } }
 
 typedef struct {
-  uint32_t (*number_of_cores)();
+  uint32_t number_of_cores;
   void (*clean_cache_to_PoU)(); // All aspects of the PE will see the same
   void (*clean_cache_to_PoC)(); // All memory users will see the same
 
@@ -65,7 +65,6 @@ uint32_t pre_mmu_identify_processor();
 #define PROCESSOR_PROC( name ) static inline void name() { processor.name(); }
 #define PROCESSOR_FN( name ) static inline uint32_t name() { return processor.name(); }
 
-PROCESSOR_FN( number_of_cores )
 PROCESSOR_PROC( clean_cache_to_PoU )
 PROCESSOR_PROC( clean_cache_to_PoC )
 

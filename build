@@ -32,6 +32,9 @@ fi
 if [ "$TASK_SLOT" = "" ]; then
   TASK_SLOT=TaskSlot/*
 fi
+if [ "$HAL" = "" ]; then
+  HAL=HAL/*
+fi
 
 if [ ! -f ro_rom.o ] ; then
   mkdir -p rominstall
@@ -52,6 +55,14 @@ function resourcefile { number 0 ; number 0; number $( stat -c %s $i ) ; number 
 
 function resourcefiles { if [ $# == 1 ]; then number $( stat -c %s $1 ) ; cat $1 ; else number 0 ; cat $1 ; shift ; resourcefiles $*  ; fi ; }
 
+# Linking in a HAL module. I don't know if that's what I want to see in future, or a block of modules in a list like in the ROM
+arm-linux-gnueabi-gcc-8 $HAL/*.c -o /tmp/module$$.elf \
+        -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
+        -g -march=armv8-a+nofp -T module.script -I . -DNO_MODULE_SIZE &&
+arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/HAL &&
+arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/HAL --rename-section .data=.text Modules/HAL.o &&
+rm /tmp/module$$.elf &&
+
 arm-linux-gnueabi-gcc-8 -Wall -I . \
   kernel.c swis.c modules.c swis/*.c \
   $PROC/*.c -I $PROC \
@@ -59,6 +70,7 @@ arm-linux-gnueabi-gcc-8 -Wall -I . \
   $TASK_SLOT/*.c -I $TASK_SLOT \
   $MMU/*.c -I $MMU \
   $MM/*.c -I $MM \
+  Modules/HAL.o \
   ro_rom.o \
   -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static \
   -g \

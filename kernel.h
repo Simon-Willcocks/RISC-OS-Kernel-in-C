@@ -47,7 +47,7 @@ struct callback {
   struct callback *next;
 };
 
-// Stacks are probably too large, I hope
+// Stacks sizes need to be checked (or use the zp memory)
 struct Kernel_workspace {
   uint32_t svc_stack[1280]; // Most likely to overflow; causes a data abort, for testing.
   uint32_t undef_stack[640];
@@ -56,6 +56,7 @@ struct Kernel_workspace {
   uint32_t fiq_stack[640];
   const char *env;
   uint64_t start_time;
+
   module *module_list_head;
   module *module_list_tail;
   uint32_t DomainId;
@@ -91,6 +92,10 @@ typedef struct fs fs;
 struct Kernel_shared_workspace {
   fs *filesystems;
   uint32_t fscontrol_lock;
+
+  // Only one multiprocessing module can be initialised at at time (so the 
+  // first has a chance to initialise their shared workspace).
+  uint32_t mp_module_init_lock;
 
   uint32_t screen_lock; // Not sure if this will always be wanted; it might make sense to make the screen memory outer (only) sharable, and flush the L1 cache to it before releasing this lock.
 };

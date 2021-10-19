@@ -15,8 +15,6 @@
 
 #include "inkernel.h"
 
-extern void show_string( uint32_t x, uint32_t y, const char *string, uint32_t colour );
-
 // TODO
 // Does anybody really use code variables?
 // GSTrans on Set or Read of value
@@ -36,10 +34,15 @@ static char *varname( variable *v )
   return (void*) (((char *)(v+1)) + v->length);
 }
 
+static char *varval( variable *v )
+{
+  return (char *)(v+1);
+}
+
 static uint32_t gstrans_length( const char *string )
 {
   svc_registers gstrans_regs = {};
-  gstrans_regs.r[0] = string;
+  gstrans_regs.r[0] = (uint32_t) string;
   gstrans_regs.r[1] = 0;
   gstrans_regs.r[2] = 0;
   do_OS_GSTrans( &gstrans_regs );
@@ -49,8 +52,8 @@ static uint32_t gstrans_length( const char *string )
 static void gstrans( const char *string, char *buffer, uint32_t max )
 {
   svc_registers gstrans_regs = {};
-  gstrans_regs.r[0] = string;
-  gstrans_regs.r[1] = buffer;
+  gstrans_regs.r[0] = (uint32_t) string;
+  gstrans_regs.r[1] = (uint32_t) buffer;
   gstrans_regs.r[2] = max;
   do_OS_GSTrans( &gstrans_regs );
 }
@@ -74,37 +77,61 @@ static int varnamecmp( const char *left, const char *right )
   return (*left <= ' ' && *right <= ' ') ? 0 : result;
 }
 
+// Note: Something in there corrupts a register it shouldn't, need to find it!
+#define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" )
+
+#define WriteNum( n )  \
+  uint32_t shift = 32; \
+  while (shift > 0) { \
+    shift -= 4; \
+    static const char hex[] = "0123456789abcdef"; \
+    register char c asm( "r0" ) = hex[((n) >> shift) & 0xf]; \
+    asm( "svc 0" : : "r" (c) ); \
+  };
+
+// Not using OS_Write0, because many strings are not null terminated.
+#define Write0( string ) { char *c = (char*) string; register uint32_t r0 asm( "r0" ); for (;*c != '\0' && *c != '\n' && *c != '\r';) { r0 = *c++; asm volatile ( "svc 0" : : "r" (r0) ); }; }
+
+#define NewLine asm ( "svc 3" )
+
 // Control- or space-terminated, non-null, case insensitive, but only ASCII
 static bool varnamematch( const char *wildcarded, const char *name )
 {
-show_string( 800, 100, wildcarded, White );
-show_string( 800, 110, name, White );
-
   char w;
   char n;
+  bool match;
 
   do {
-    bool wildcard = (*wildcarded == '*');
-
-    // Are there more wildcards than '*'?
+    // Wildcards are: * (to match any number of charaters) and # (to match a single character?) FIXME
     // Will match any characters in name, until the character (or terminator) following the *
-    while (*wildcarded == '*' && *wildcarded > ' ') wildcarded++;
 
-    if (wildcard) {
-      char tofollow = upper( *wildcarded );
+    if (*wildcarded == '*') {
+      // Anything after the wildcard?
+      while (*wildcarded == '*') { wildcarded++; }
 
-      // Skip to the next instance of l in name.
-      // If the remainder doesn't match, look for another instance.
-      while (*name > ' ') {
-        while (*name > ' ' && upper( *name ) != tofollow) name++;
-        if (varnamematch( wildcarded, name ))
-          return true;
+      if (*wildcarded > ' ') {
+        char tofollow = upper( *wildcarded );
+
+        // Skip to the next instance of tofollow in name.
+        // If the remainder doesn't match, look for another instance.
+        while (*name > ' ') {
+          while (*name > ' ' && (tofollow != '#' && upper( *name ) != tofollow)) name++;
+          if (varnamematch( wildcarded, name ))
+            return true;
+        }
+      }
+      else {
+        // Matches to the end of name
+        while (*name > ' ') name++;
       }
     }
 
     w = upper( *wildcarded++ );
     n = upper( *name++ );
-  } while (n == w && *name > ' ' && *wildcarded > ' ');
+
+    bool wildcard_match = ((w == '#') && (n >= ' ')); // Wildcard #
+    match = wildcard_match || (n == w);
+  } while (match && *name > ' ' && *wildcarded > ' ');
 
   return (n == w || (*wildcarded <= ' ' && *name <= ' '));
 }
@@ -119,13 +146,15 @@ bool do_OS_ReadVarVal( svc_registers *regs )
   char *buffer = (void*) regs->r[1];
   uint32_t buffer_size = regs->r[2];
 
-show_string( 100, 100, wildcarded, White );
-int y = 100;
+  WriteNum( regs->r[0] );
+
+  NewLine;
+  Write0( wildcarded );
+  WriteS( " " );
 
   if (regs->r[3] != 0) {
     // Skip over previously matched variable, don't assume we've been passed a real pointer.
-    while (v != 0 && (uint32_t) v != regs->r[3]) {
-show_string( 500, y, varname( v ), White ); y += 10;
+    while (v != 0 && (uint32_t) varname( v ) != regs->r[3]) {
       v = v->next;
     }
     if (v != 0)
@@ -133,14 +162,13 @@ show_string( 500, y, varname( v ), White ); y += 10;
   }
 
   while (v != 0 && !varnamematch( wildcarded, varname( v ) )) {
-show_string( 500, y, varname( v ), White ); y += 10;
     v = v->next;
   }
 
-  regs->r[3] = (uint32_t) v;
+  regs->r[3] = (uint32_t) varname( v );
 
   if (v == 0) {
-show_string( 100, 100, (char*) regs->r[0], Red );
+WriteS( " not found" ); NewLine;
     regs->r[2] = 0;
     regs->r[0] = (uint32_t) &not_found;
     return false;
@@ -148,41 +176,44 @@ show_string( 100, 100, (char*) regs->r[0], Red );
 
   bool size_request = (0 != (buffer_size & (1 << 31)));
 
-show_word( 0, 100, v->type, White );
   switch (v->type) {
   case VarType_String:
+    WriteS( "String: " );
     if (size_request)
       regs->r[2] = ~v->length;
     else {
       regs->r[2] = v->length;
-      memcpy( buffer, (char*) (v+1), v->length );
+      memcpy( buffer, varval( v ), v->length );
     }
     break;
   case VarType_Number:
+    WriteS( "Number" ); NewLine;
     if (regs->r[4] == 3) return Kernel_Error_UnimplementedSWI( regs );
     if (size_request)
       regs->r[2] = ~4;
     else {
       regs->r[2] = 4;
-      *(uint32_t*) buffer = *(uint32_t*) (v+1);
+      *(uint32_t*) buffer = *(uint32_t*) varval( v );
     }
     break;
   case VarType_LiteralString:
+    WriteS( "Literal string: " );
     if (size_request)
       regs->r[2] = ~(v->length-1);
     else {
       regs->r[2] = v->length-1;
-      memcpy( buffer, (char*) (v+1), v->length-1 );
+      memcpy( buffer, varval( v ), v->length-1 );
     }
     break;
   case VarType_Macro:
     {
-    uint32_t length = gstrans_length( (char*) (v+1) );
+    WriteS( "Macro: " );
+    uint32_t length = gstrans_length( varval( v ) );
     if (size_request)
       regs->r[2] = ~length;
     else {
       regs->r[2] = length;
-      gstrans( buffer, (char*) (v+1), length );
+      gstrans( buffer, varval( v ), length );
     }
     }
     break;
@@ -193,20 +224,22 @@ show_word( 0, 100, v->type, White );
 
   if (size_request) {
     // length check
-show_word( 100, 90, regs->r[2], Blue );
+WriteS( "length " ); WriteNum( regs->r[2] ); NewLine;
     regs->r[0] = (uint32_t) &buffer_overflow;
     return false;
   }
 
-show_string( 100, 100, (char*) regs->r[1], Green );
+NewLine; Write0( regs->r[1] ); NewLine;
+asm ( "svc 0xff" );
+
   return true;
 }
 
 bool do_OS_SetVarVal( svc_registers *regs )
 {
-show_string( 100, 120, (char*) regs->r[0], White );
-show_string( 100, 130, (char*) regs->r[1], White );
   if (regs->r[2] < 0) { // Delete
+WriteS( "Deleting " ); Write0( regs->r[0] ); NewLine;
+
     // Alphabetical order
 
     variable **p = &workspace.kernel.variables;
@@ -231,8 +264,18 @@ show_string( 100, 130, (char*) regs->r[1], White );
 // inserted or removed. I expect reading the old value of the variable
 // being read is quite common, like PATH=$PATH:/newpath in Unix.
 
+/*
+svc_registers before;
+svc_registers after;
+
+register svc_registers *lr asm( "lr" ) = &before;
+asm ( "stm lr, { r0-r12 }" : : "r" (lr) );
+*/
+WriteS( "Setting " ); Write0( regs->r[0] ); WriteS( " to " ); 
+
     const char *name = (void*) regs->r[0];
     uint32_t name_length = 0;
+
     while (name[name_length] >= ' ') name_length++;
     name_length++; // For nul terminator
 
@@ -242,9 +285,18 @@ show_string( 100, 130, (char*) regs->r[1], White );
     enum VarTypes type = regs->r[4];
 
     if (length == 0 && (type == VarType_String || type == VarType_LiteralString)) {
+WriteS( "*" ); // Indicate unknown length, undocumented feature
       // This is not a documented feature, afaics, but it is used by parts of the OS
-      while (value[length] != '\0' && value[length] != 10 && value[length] != 13) length++;
+      while (value[length] != '\0' && value[length] != 10 && value[length] != 13) {
+        register uint32_t r0 asm ( "r0" ) = value[length];
+        asm ( "svc 0" : : "r" (r0) : "lr" );
+        length++;
+      }
     }
+
+if (type == VarType_Number) { WriteS( "a number!" ); }
+else { WriteS( "\\\"" ); Write0( regs->r[1] ); WriteS( "\\\"" ); }
+NewLine; 
 
     uint32_t store_length = length;
 
@@ -268,17 +320,17 @@ show_string( 100, 130, (char*) regs->r[1], White );
     switch (type) {
     case VarType_String:
       {
-        gstrans( value, (char*) (v+1), store_length );
-        ((char*) (v+1))[store_length] = '\0';
+        gstrans( value, varval( v ), store_length );
+        varval( v )[store_length] = '\0';
       }
       break;
     case VarType_Number:
-      *(uint32_t*) (v+1) = regs->r[1];
+      *(uint32_t*) varval( v ) = regs->r[1];
       break;
     case VarType_LiteralString:
     case VarType_Macro:
-      memcpy( (char*) (v+1), value, length );
-      ((char*) (v+1))[length] = '\0';
+      memcpy( varval( v ), value, length );
+      varval( v )[length] = '\0';
       break;
     case VarType_Expanded:
     case VarType_Code:

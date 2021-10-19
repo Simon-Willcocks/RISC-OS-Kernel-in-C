@@ -28,18 +28,6 @@ Drop support for: 26-bit modes
 
 #include "inkernel.h"
 
-
-static void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint32_t c )
-{
-  extern uint32_t frame_buffer;
-  uint32_t *screen = &frame_buffer;
-
-  for (uint32_t y = top; y < top + h; y++) {
-    uint32_t *p = &screen[y * 1920 + left];
-    for (int x = 0; x < w; x++) { *p++ = c; }
-  }
-}
-
 // Kernel_default_undef, Kernel_default_irq, Kernel_default_reset temporarily in memory_manager.c - BSOD
 
 // Kernel_default_svc in swis.c

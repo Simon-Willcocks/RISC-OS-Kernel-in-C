@@ -30,7 +30,7 @@ SECTIONS
   system_heap = 0xffe00000 ;
 
   _binary_AllMods_start = 0xfc0217a8 ; /* Complete hack, matches the offset of the modules in my RISC OS ROM */
-  system_font = 0xfc283164 ; /* Ditto, HardFont, from vdufontl1 */
+  system_font = 0xfc040f94 ; /* Ditto, HardFont, from vdufontl1 */
 
  . = va_base ;
  .text : {

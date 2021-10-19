@@ -42,13 +42,17 @@ static bool do_OS_WriteS( svc_registers *regs )
   uint32_t r0 = regs->r[0];
   bool result = true;
 
-  while (*s != '\0' && result) {
+  while (*s != '\0') {
     regs->r[0] = *s++;
-    result = do_OS_WriteC( regs );
+    // We have to work through the whole string, or returning an error is meaningless
+    if (!do_OS_WriteC( regs )) {
+      result = false;
+      r0 = regs->r[0];
+    }
   }
 
   regs->lr = word_align( s );
-  if (result) regs->r[0] = r0;
+  regs->r[0] = r0;
 
   return result;
 }
@@ -296,6 +300,7 @@ static bool do_OS_ClaimDeviceVector( svc_registers *regs ) { return Kernel_Error
 
 static bool do_OS_ReleaseDeviceVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
+/* Untested
 static bool comparison_routine_says_less( uint32_t v1, uint32_t v2, uint32_t workspace, uint32_t routine )
 {
   register uint32_t r0 asm( "r0" ) = v1;
@@ -311,12 +316,13 @@ static bool comparison_routine_says_less( uint32_t v1, uint32_t v2, uint32_t wor
 less:
   return true;
 }
+*/
 
 static bool do_OS_HeapSort( svc_registers *regs )
 {
   // Not the proper implementation FIXME
   int elements = regs->r[0];
-  uint32_t *array = (void*) (regs->r[1] & ~0xe0000000);
+  //uint32_t *array = (void*) (regs->r[1] & ~0xe0000000);
   uint32_t flags = regs->r[1] >> 29;
   switch (regs->r[2]) {
   case 3: // Pointers to integers (DrawMod)
@@ -508,7 +514,7 @@ static const uint32_t SysInfo[] = {
   [OSRSI6_DevicesEnd]                              = 66, // Relocated end of IRQ device head nodes
   [OSRSI6_IRQSTK]                                  = 67,
   [OSRSI6_SoundWorkSpace]                          = 68, // workspace (8K) and buffers (2*4K)
-  [OSRSI6_IRQsema]                                 = &workspace.vectors.zp.IRQsema,
+  [OSRSI6_IRQsema]                                 = (uint32_t) &workspace.vectors.zp.IRQsema,
 
 // New ROOL allocations
 

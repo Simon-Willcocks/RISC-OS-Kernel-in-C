@@ -250,7 +250,7 @@ uint32_t pre_mmu_identify_processor()
   asm ( "mrc p15, 0, %[id], c0, c0, 0" : [id] "=r" (main_id) );
 
   investigate_cache( fixed );
-  fixed->number_of_cores = Cortex_A7_number_of_cores;
+  fixed->number_of_cores = Cortex_A7_number_of_cores();
 
   switch (main_id) {
   case 0x410fc070 ... 0x410fc07f: break; // A7
