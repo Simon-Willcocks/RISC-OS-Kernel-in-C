@@ -67,32 +67,31 @@ static inline char upper( char c )
 // Control- or space-terminated, non-null, case insensitive, but only ASCII
 static int varnamecmp( const char *left, const char *right )
 {
-  int result;
+  int result = 0;
 
-  do {
-    result = upper( *right ) - upper( *left );
-  } while (result == 0 && *left > ' ' && *right > ' ');
+  while (result == 0 && *left > ' ' && *right > ' ') {
+    result = upper( *left++ ) - upper( *right++ );
+  }
 
   // The terminators don't have to be the same character for a match
   return (*left <= ' ' && *right <= ' ') ? 0 : result;
 }
 
 // Note: Something in there corrupts a register it shouldn't, need to find it!
-#define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" )
+#define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "cc" )
 
-#define WriteNum( n )  \
+#define WriteNum( n ) { \
   uint32_t shift = 32; \
   while (shift > 0) { \
     shift -= 4; \
-    static const char hex[] = "0123456789abcdef"; \
-    register char c asm( "r0" ) = hex[((n) >> shift) & 0xf]; \
-    asm( "svc 0" : : "r" (c) ); \
-  };
+    register char c asm( "r0" ) = "0123456789ABCDEF"[((n) >> shift) & 0xf]; \
+    asm( "svc 0" : : "r" (c) : "cc" ); \
+  }; }
 
 // Not using OS_Write0, because many strings are not null terminated.
-#define Write0( string ) { char *c = (char*) string; register uint32_t r0 asm( "r0" ); for (;*c != '\0' && *c != '\n' && *c != '\r';) { r0 = *c++; asm volatile ( "svc 0" : : "r" (r0) ); }; }
+#define Write0( string ) { char *c = (char*) string; while (*c != '\0' && *c != '\n' && *c != '\r') { register uint32_t r0 asm( "r0" ) = *c++; asm volatile ( "svc 0" : : "r" (r0) : "cc" ); }; }
 
-#define NewLine asm ( "svc 3" )
+#define NewLine asm ( "svc 3" : : : "cc" )
 
 // Control- or space-terminated, non-null, case insensitive, but only ASCII
 static bool varnamematch( const char *wildcarded, const char *name )
@@ -147,8 +146,7 @@ bool do_OS_ReadVarVal( svc_registers *regs )
   uint32_t buffer_size = regs->r[2];
 
   WriteNum( regs->r[0] );
-
-  NewLine;
+  WriteS( ": " );
   Write0( wildcarded );
   WriteS( " " );
 
@@ -165,14 +163,16 @@ bool do_OS_ReadVarVal( svc_registers *regs )
     v = v->next;
   }
 
-  regs->r[3] = (uint32_t) varname( v );
-
   if (v == 0) {
 WriteS( " not found" ); NewLine;
-    regs->r[2] = 0;
     regs->r[0] = (uint32_t) &not_found;
+    regs->r[2] = 0; // Length
+    regs->r[3] = 0; // Name
+
     return false;
   }
+
+  regs->r[3] = (uint32_t) varname( v );
 
   bool size_request = (0 != (buffer_size & (1 << 31)));
 
@@ -230,7 +230,7 @@ WriteS( "length " ); WriteNum( regs->r[2] ); NewLine;
   }
 
 NewLine; Write0( regs->r[1] ); NewLine;
-asm ( "svc 0xff" );
+asm ( "svc 0xff" : : : "cc" );
 
   return true;
 }
@@ -288,8 +288,6 @@ WriteS( "Setting " ); Write0( regs->r[0] ); WriteS( " to " );
 WriteS( "*" ); // Indicate unknown length, undocumented feature
       // This is not a documented feature, afaics, but it is used by parts of the OS
       while (value[length] != '\0' && value[length] != 10 && value[length] != 13) {
-        register uint32_t r0 asm ( "r0" ) = value[length];
-        asm ( "svc 0" : : "r" (r0) : "lr" );
         length++;
       }
     }
@@ -313,6 +311,9 @@ NewLine;
     variable *v;
     do {
       v = rma_allocate( sizeof( variable ) + ((length + name_length +3)&~3), regs );
+if (v == 0) {
+  WriteS( "No space in RMA" ); for (;;) { asm ( "svc 0xff\n  wfi" : : : "cc" ); }
+}
     } while (v == 0);
     v->type = type;
     v->length = length;

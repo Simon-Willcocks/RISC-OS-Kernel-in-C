@@ -71,6 +71,7 @@ void *memset(void *s, int c, size_t n)
 #define WriteS( string ) asm ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "lr" )
 #define Write0( string ) { register uint32_t r0 asm( "r0" ) = (uint32_t) (string); asm ( "push { r0-r12, lr }\nsvc 2\n  pop {r0-r12, lr}" : : "r" (r0) ); } 
 
+// Return the relocated address of the item in the module: function or constant.
 static uint32_t local_ptr( void *p )
 {
   register uint32_t result;
@@ -147,6 +148,9 @@ static void new_line( struct core_workspace *workspace )
     workspace->y = 0;
   for (int x = 0; x < 60; x++) {
     workspace->display[workspace->y][x] = ' ';
+
+    int y = workspace->y * 8 + 200;
+    show_character( x * 8 + workspace->core * (60 * 8), y, ' ', Black );
   }
 }
 
@@ -168,6 +172,7 @@ void C_WrchV_handler( char c, struct core_workspace *workspace )
       show_character( x, y, c + '@', Red );
     else
       show_character( x, y, c, White );
+    asm ( "svc 0xff" );
     // End of temporary implementation
 
     workspace->display[workspace->y][workspace->x++] = c;
@@ -214,7 +219,5 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   asm ( "svc 0x2001f" : : "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
 
   WriteS( "HAL obtained WrchV\\n" );
-
-  Write0( local_ptr( "Hello" ) );
 }
 

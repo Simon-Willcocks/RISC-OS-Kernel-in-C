@@ -606,14 +606,12 @@ bool do_OS_GetEnv( svc_registers *regs )
   return true;
 }
 
+#define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "cc" )
+#define Write0( string ) { char *c = (char*) string; register uint32_t r0 asm( "r0" ); for (;*c != '\0' && *c != '\n';) { r0 = *c++; asm volatile ( "svc 0" : : "r" (r0) : "cc" ); }; }
+#define NewLine asm ( "svc 3" : : : "cc" )
+
 void init_module( const char *name )
 {
-#define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" )
-#define Write0( string ) { char *c = (char*) string; register uint32_t r0 asm( "r0" ); for (;*c != '\0' && *c != '\n';) { r0 = *c++; asm volatile ( "svc 0" : : "r" (r0) ); }; }
-#define NewLine asm ( "svc 3" )
-
-Write0( name ); NewLine;
-
   uint32_t *rom_modules = &_binary_AllMods_start;
   uint32_t *rom_module = rom_modules;
 
@@ -632,11 +630,36 @@ Write0( name ); NewLine;
     module_header *header = (void*) (rom_module+1);
     register const char *title = title_string( header );
     if (0 == strcmp( title, name )) {
+Write0( name ); NewLine;
+
       register uint32_t code asm( "r0" ) = 10;
       register module_header *module asm( "r1" ) = header;
 
-      asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr" );
+      asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
     }
+    rom_module += (*rom_module)/4; // Includes size of length field
+  }
+}
+
+void init_modules()
+{
+  uint32_t *rom_modules = &_binary_AllMods_start;
+  uint32_t *rom_module = rom_modules;
+
+  workspace.kernel.start_time = 0x0101010101ull;
+
+  while (0 != *rom_module) {
+    module_header *header = (void*) (rom_module+1);
+
+    workspace.kernel.env = title_string( header );
+
+Write0( workspace.kernel.env ); NewLine;
+
+    register uint32_t code asm( "r0" ) = 10;
+    register module_header *module asm( "r1" ) = header;
+
+    asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
+
     rom_module += (*rom_module)/4; // Includes size of length field
   }
 }
@@ -790,6 +813,10 @@ bool do_OS_GenerateError( svc_registers *regs )
 
 bool do_OS_WriteC( svc_registers *regs )
 {
+if (regs->r[0] == 0) {
+  register r0 asm( "r0" ) = regs->lr;
+  asm ( "bkpt 5" : : "r" (r0) );
+}
   return run_vector( 3, regs );
 }
 
@@ -1081,20 +1108,23 @@ void Boot()
     register uint32_t code asm( "r0" ) = 10;
     register uint32_t *module asm( "r1" ) = &_binary_Modules_HAL_start;
 
-    asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr" );
+    asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
   }
 
   set_var( "Run$Path", "" );
   set_var( "File$Path", "" );
 
-  asm ( "svc 0xff" );
+  asm ( "svc 0xff" : : : "cc" );
 
+  init_modules();
+
+/*
   init_module( "DrawMod" );
   init_module( "UtilityMod" );
-/*
+  init_module( "UtilityModule" );
+  init_module( "FileSwitch" ); // Uses MessageTrans, but survives it not being there at startup
   init_module( "FileCore" );
   init_module( "SharedCLibrary" );
-  init_module( "FileSwitch" ); // Uses MessageTrans, but survives it not being there at startup
 
   init_module( "TerritoryManager" ); // Uses MessageTrans to open file
   init_module( "ResourceFS" ); // Uses TerritoryManager
@@ -1167,7 +1197,7 @@ void show_string( uint32_t x, uint32_t y, const char *string, uint32_t colour )
     show_character( x, y, *string++, colour );
     x += 8;
   }
-  asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) );
+  asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) : "cc" );
 }
 
 
@@ -1525,7 +1555,7 @@ static uint32_t path3[] = {
     SetColour( 0, 0x4c0000 );
     Draw_Fill( path3, matrix );
 
-    asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) );
+    asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) : "cc" );
 
     for (int i = 0; i < 0x800000; i++) { asm ( "" ); }
 
