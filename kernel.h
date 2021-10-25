@@ -49,13 +49,14 @@ struct callback {
 
 // Stacks sizes need to be checked (or use the zp memory)
 struct Kernel_workspace {
-  uint32_t svc_stack[1280]; // Most likely to overflow; causes a data abort, for testing.
+  uint32_t svc_stack[4*1024]; // Most likely to overflow; causes a data abort, for testing.
   uint32_t undef_stack[640];
   uint32_t abt_stack[640];
   uint32_t irq_stack[640];
   uint32_t fiq_stack[640];
   const char *env;
   uint64_t start_time;
+  uint32_t monotonic_time;
 
   module *module_list_head;
   module *module_list_tail;
@@ -142,18 +143,19 @@ void __attribute__(( noreturn )) Boot();
 
 // microclib
 
-static inline int strlen( const char *left )
+static inline int strlen( const char *string )
 {
   int result = 0;
-  while (*left++ != '\0') result++;
+  while (*string++ != '\0') result++;
   return result;
 }
 
 static inline int strcmp( const char *left, const char *right )
 {
   int result = 0;
-  while (result == 0 && *left != 0 && *right != 0) {
+  while (result == 0) {
     result = *left++ - *right++;
+    if (*left == 0 || *right == 0) break;
   }
   return result;
 }

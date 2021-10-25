@@ -126,7 +126,24 @@ void Initialise_system_DAs()
   uint32_t initial_rma_size = natural_alignment;
   svc_registers regs;
 
-  claim_lock( &shared.memory.dynamic_areas_lock ); 
+  claim_lock( &shared.memory.dynamic_areas_setup_lock ); 
+
+  if (shared.memory.dynamic_areas == 0) {
+    // For some reason this doesn't work on real hardware if the SLVK is set up first
+    // Lack of memory? IDK.
+    initialise_frame_buffer();
+  }
+// While we're hacking like crazy, let's allocate far too much memory for RO kernel workspace...
+// See comments to GSTrans in swis.c
+
+uint32_t memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
+MMU_map_at( (void*) 0xfaf00000, memory, natural_alignment );
+memset( (void*) 0xfaf00000, '\0', natural_alignment );
+uint32_t slvk[] = {     0xe38ee201, // orr     lr, lr, #0x10000000      SLVK_setV
+                        0x638ee201, // orrvs   lr, lr, #0x10000000      SLVK_testV
+                        0xe49df004  // pop     {pc} (ldr pc, [sp], #4)  SLVK
+                        };
+memcpy( (void*) 0xfaff3358, slvk, sizeof( slvk ) );
 
   if (shared.memory.dynamic_areas == 0) {
     // First core here (need not be core zero)
@@ -183,7 +200,6 @@ void Initialise_system_DAs()
       MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
     }
 
-    initialise_frame_buffer();
     { // Screen (currently a hack FIXME)
       extern uint32_t frame_buffer;
 
@@ -231,7 +247,7 @@ clean_cache_to_PoC();
     asm ( "dsb sy" );
   }
 
-  release_lock( &shared.memory.dynamic_areas_lock );
+  release_lock( &shared.memory.dynamic_areas_setup_lock );
 
   // fill_rect( (100 + 100 * workspace.core_number), 10, 64, 100, 0xff00ff00 );
 
@@ -321,6 +337,8 @@ bool do_OS_DynamicArea( svc_registers *regs )
 {
   bool result = true;
 
+  enum { New, Remove, Info, Enumerate, Renumber };
+
   claim_lock( &shared.memory.dynamic_areas_lock );
 
   if (shared.memory.last_da_address == 0) {
@@ -330,7 +348,7 @@ bool do_OS_DynamicArea( svc_registers *regs )
   }
 
   switch (regs->r[0]) {
-  case 0:
+  case New:
     { // Create new Dynamic Area
       const char *name = (void*) regs->r[8];
 
@@ -535,7 +553,7 @@ uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment )
   return result;
 }
 
-#define W (200 * workspace.core_number)
+#define W (480 * workspace.core_number)
 #define H(n) (150 + (n * 250))
 
 #define BSOD( n, c ) \
@@ -569,25 +587,35 @@ clean_cache_to_PoU(); \
 
 void __attribute__(( naked, noreturn )) Kernel_default_prefetch()
 {
+  // When providing proper implementation, ensure the called routine is __attribute__(( noinline ))
+  // noinline attribute is required so that stack space is allocated for any local variables.
   BSOD( 0, Blue );
 }
 
 void Kernel_failed_data_abort()
 {
+  // When providing proper implementation, ensure the called routine is __attribute__(( noinline ))
+  // noinline attribute is required so that stack space is allocated for any local variables.
   BSOD( 1, Green );
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_undef()
 {
+  // When providing proper implementation, ensure the called routine is __attribute__(( noinline ))
+  // noinline attribute is required so that stack space is allocated for any local variables.
   BSOD( 2, Yellow );
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_reset() 
 {
+  // When providing proper implementation, ensure the called routine is __attribute__(( noinline ))
+  // noinline attribute is required so that stack space is allocated for any local variables.
   BSOD( 3, Red );
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_irq() 
 {
+  // When providing proper implementation, ensure the called routine is __attribute__(( noinline ))
+  // noinline attribute is required so that stack space is allocated for any local variables.
   BSOD( 4, Blue );
 }

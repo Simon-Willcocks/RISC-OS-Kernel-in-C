@@ -378,7 +378,8 @@ typedef struct __attribute__(( packed )) {
   uint32_t spsr;
 } svc_registers;
 
-static void handle_data_abort( svc_registers *regs )
+// noinline attribute is required so that stack space is allocated for any local variables.
+static void __attribute__(( noinline )) handle_data_abort( svc_registers *regs )
 {
   if (0x807 == data_fault_type() && workspace.mmu.current != 0) {
     uint32_t fa = fault_address();

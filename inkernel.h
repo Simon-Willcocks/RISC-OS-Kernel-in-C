@@ -36,3 +36,26 @@ void __attribute__(( naked, noreturn )) Kernel_default_data_abort();
 void __attribute__(( naked, noreturn )) Kernel_default_irq();
 void __attribute__(( naked, noreturn )) Kernel_default_svc();
 
+
+// TEMPORARY!
+
+#define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "cc", "lr" )
+
+extern const char hex[16];
+
+#define WriteNum( n ) { \
+  uint32_t number = n; \
+  uint32_t shift = 32; \
+  while (shift > 0) { \
+    shift -= 4; \
+    register char c asm( "r0" ) = hex[(number >> shift) & 0xf]; \
+    asm volatile ( "svc 0" : : "r" (c) : "cc", "lr" ); \
+  }; }
+
+// Not using OS_Write0, because many strings are not null terminated.
+#define Write0( string ) { char *c = (char*) string; while (*c != '\0' && *c != '\n' && *c != '\r') { register uint32_t r0 asm( "r0" ) = *c++; asm volatile ( "svc 0" : : "r" (r0) : "cc", "lr" ); }; }
+
+#define WriteN( string, len ) { register uint32_t r0 asm( "r0" ) = (uint32_t) string; register uint32_t r1 asm( "r1" ) = len; asm volatile ( "svc 0x46" : : "r" (r0), "r" (r1) : "cc", "lr" ); }
+
+#define NewLine asm ( "svc 3" : : : "cc", "lr" )
+

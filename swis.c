@@ -36,6 +36,40 @@ static uint32_t word_align( void *p )
   return (((uint32_t) p) + 3) & ~3;
 }
 
+static bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
+{
+  clear_VF();
+
+  extern uint32_t JTABLE;
+  uint32_t *jtable = &JTABLE;
+
+  register uint32_t non_kernel_code asm( "r10" ) = jtable[svc];
+  register uint32_t result asm( "r0" );
+
+  asm (
+      "\n  push { %[regs] }"
+      "\n  ldm %[regs], { r0-r9 }"
+      "\n  adr lr, return"
+      "\n  push { lr } // return address"
+      "\n  mov lr, #0 // Clear all flags - this may be wrong"
+      "\n  bx r10"
+      "\nreturn:"
+      "\n  pop { r10 }"
+      "\n  stm r10, { r0-r9 }"
+      "\n  ldr r0, [r10, %[spsr]]"
+      "\n  bic r0, #0xf0000000"
+      "\n  and r2, lr, #0xf0000000"
+      "\n  orr r0, r0, r2"
+      "\n  str r0, [r10, %[spsr]]"
+      : [result] "=r" (result)
+      : [regs] "r" (regs)
+      , "r" (non_kernel_code)
+      , [spsr] "i" (4 * (&regs->spsr - &regs->r[0]))
+      : "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r11", "r12", "lr" );
+
+  return (result & VF) == 0;
+}
+
 static bool do_OS_WriteS( svc_registers *regs )
 {
   char *s = (void*) regs->lr;
@@ -124,6 +158,7 @@ static bool do_OS_SetCallBack( svc_registers *regs ) { return Kernel_Error_Unimp
 
 static bool do_OS_ReadUnsigned( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
+#if 0
 static bool gs_space_is_terminator( uint32_t flags )
 {
   return (0 != (flags & (1 << 29)));
@@ -173,6 +208,21 @@ static bool Error_BadString( svc_registers *regs )
 
 static bool do_OS_GSRead( svc_registers *regs )
 {
+  // This routine is entered with two registers, r0 and r2, containging
+  // the result of the previous OS_GSRead or initial OS_GSInit.
+  // There is necessarily some nesting of calls, because variables may
+  // contain references to other variables, which may, in turn, do the same.
+
+  // The kernel workspace contains a stack to accommodate this.
+
+  // God knows what would happen if a code variable started using these routines.
+
+  // "I am currently processing a string (next character pointed to by r0)"
+  // "I am currently processing a variable, from a parent string (the character after the closing >)."
+  // Numbers are one character, decoded in a single call.
+
+  // r2 = flags, type, digit, parent
+  // r0 = pointer
   uint32_t flags = regs->r[2] & 0xe0000000;
   //const char *var = regs->r[2] & ~0xe0000000;
   const char *string = (void*) regs->r[0];
@@ -223,24 +273,66 @@ bool do_OS_GSTrans( svc_registers *regs )
   uint32_t translated = 0;
   regs->r[2] &= 0xe0000000;     // flags
   bool result = do_OS_GSInit( regs );
-  while (result && 0 == (regs->spsr & CF) && translated < maxsize) {
+  while (result && 0 == (regs->spsr & CF)) {
     result = do_OS_GSRead( regs );
-    if (result && buffer != 0) {
+
+    if (result && buffer != 0 && translated < maxsize) {
       buffer[translated] = regs->r[1];
     }
+
     translated++;
   }
-  if (buffer != 0) *buffer++ = '\0';
+
   regs->r[1] = (uint32_t) buffer;
   regs->r[2] = translated;
 
-  if (translated == maxsize)
+  if (translated >= maxsize) {
     regs->spsr |=  CF;
+    translated = maxsize;
+  }
   else
     regs->spsr &= ~CF;
 
   return result;
 }
+#else
+
+// GSInit, from Kernel/s/Arthur2 can be found using 'push\>[^\n]*\n[^\n]*ldrb\tr1, \[r0], #1[^\n]*\n[^\n]*cmp'
+// fc0206c4
+// GSRead, 'bne\>[^\n]*\n[^\n]*ldrb\tr1, \[r0], #1[^\n]*\n[^\n]*cmp' (then look back to the cpsie before the bic
+// fc02073c
+// GSTrans, the following 'bic\tlr, lr, #.*0x20000000'
+// fc020a50
+
+// They access memory around faff3364, as do a number of modules.
+// See hack in ./memory/simple/memory_manager.c
+// Kernel/Docs/HAL/Notes has a memory map:
+/*
+00000000 16K        Kernel workspace
+00004000 16K        Scratch space
+00008000 Mem-32K    Application memory
+0xxxxxxx 3840M-Mem  Dynamic areas
+F0000000 160M       I/O space (growing downwards if necessary)
+FA000000 1M         HAL workspace
+FA100000 8K         IRQ stack
+FA200000 32K        SVC stack
+FA300000 8K         ABT stack
+FA400000 8K         UND stack
+FAE00000 1M         Reserved for physical memory accesses
+FAF00000 256k       reserved for DCache cleaner address space (eg. StrongARM)
+FAF40000 64k        kernel buffers (for long command lines, size defined by KbuffsMaxSize)
+FAFE8000 32K        HAL workspace
+FAFF0000 32K        "Cursor/System/Sound" block (probably becoming just "System")
+FAFF8000 32K        "Nowhere"
+FB000000 4M         L2PT
+FB400000 16K        L1PT
+FB404000 4M-16K     System heap
+FB800000 8M         Soft CAM
+FC000000 64M        ROM
+*/
+
+
+#endif
 
 static bool do_OS_BinaryToDecimal( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
@@ -250,7 +342,13 @@ static bool do_OS_ReadPalette( svc_registers *regs ) { return Kernel_Error_Unimp
 
 static bool do_OS_SWINumberToString( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SWINumberFromString( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ValidateAddress( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ValidateAddress( svc_registers *regs )
+{
+  // FIXME (not all memory checks are going to pass!)
+  regs->spsr &= ~CF;
+  return true;
+}
+
 static bool do_OS_CallAfter( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_CallEvery( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
@@ -260,7 +358,14 @@ static bool do_OS_CheckModeValid( svc_registers *regs ) { return Kernel_Error_Un
 
 
 static bool do_OS_ClaimScreenMemory( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ReadMonotonicTime( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool do_OS_ReadMonotonicTime( svc_registers *regs )
+{
+  regs->r[0] = workspace.kernel.monotonic_time;
+  workspace.kernel.monotonic_time++; // FIXME! ASAP!
+  return true;
+}
+
 static bool do_OS_SubstituteArgs( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_PrettyPrint( svc_registers *regs )
@@ -295,7 +400,18 @@ static bool do_OS_PrettyPrint( svc_registers *regs )
 
 static bool do_OS_WriteEnv( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadArgs( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ReadRAMFsLimits( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadRAMFsLimits( svc_registers *regs )
+{
+  regs->r[0] = 5;
+  if (do_OS_ReadDynamicArea( regs )) {
+    regs->r[1] = regs->r[1] + regs->r[1] + 1;
+    return true;
+  }
+  else {
+    return false;
+  }
+}
+
 static bool do_OS_ClaimDeviceVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ReleaseDeviceVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
@@ -501,8 +617,8 @@ static const uint32_t SysInfo[] = {
   [OSRSI6_L2PT]                                    = 14,
   [OSRSI6_UNDSTK]                                  = 
         sizeof( workspace.kernel.undef_stack ) + (uint32_t) &workspace.kernel.undef_stack,
-  [OSRSI6_SVCSTK]                                  = 
-        sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack,
+  [OSRSI6_SVCSTK]                                  = 0x73273273, // A trap! Why does FileSwitch need to know this?
+        //sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack,
   [OSRSI6_SysHeapStart]                            = 17,
 
 // Safe versions of the danger allocations
@@ -518,7 +634,7 @@ static const uint32_t SysInfo[] = {
 
 // New ROOL allocations
 
-  [OSRSI6_DomainId]                                = 0x66600666, // current Wimp task handle
+  [OSRSI6_DomainId]                                = (uint32_t) &workspace.vectors.zp.DomainId, // current Wimp task handle
   [OSRSI6_OSByteVars]                              = 71, // OS_Byte vars (previously available via OS_Byte &A6/VarStart)
   [OSRSI6_FgEcfOraEor]                             = 72,
   [OSRSI6_BgEcfOraEor]                             = 73,
@@ -683,7 +799,7 @@ static bool do_OS_ConvertDateAndTime( svc_registers *regs )
   return true;
 }
 
-static const char hex[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
+const char hex[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
 
 static bool hex_convert( svc_registers *regs, int digits )
 {
@@ -831,6 +947,17 @@ static bool do_OS_FlushCache( svc_registers *regs )
 
 static bool do_OS_ConvertFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
+bool do_OS_Heap( svc_registers *regs )
+{
+  // Note: This could possibly be improved by having a lock per heap, one bit in the header, say.
+  // I would hope this is never called from an interrupt handler, but if so, we should probably return an error,
+  // if shared.memory.os_heap_lock is non-zero. Masking interrupts is no longer a guarantee of atomicity.
+  claim_lock( &shared.memory.os_heap_lock );
+  bool result = run_risos_code_implementing_swi( regs, 0x1d );
+  release_lock( &shared.memory.os_heap_lock );
+  return result;
+}
+
 typedef bool (*swifn)( svc_registers *regs );
 
 static swifn os_swis[256] = {
@@ -877,13 +1004,15 @@ static swifn os_swis[256] = {
   [OS_Release] =  do_OS_Release,
   [OS_ReadUnsigned] =  do_OS_ReadUnsigned,
   [OS_GenerateEvent] =  do_OS_GenerateEvent,
-  [OS_ReadVarVal] =  do_OS_ReadVarVal,
 
+  [OS_ReadVarVal] =  do_OS_ReadVarVal,
   [OS_SetVarVal] =  do_OS_SetVarVal,
+/*
+  Using existing RISC OS code for the time being
   [OS_GSInit] =  do_OS_GSInit,
   [OS_GSRead] =  do_OS_GSRead,
   [OS_GSTrans] =  do_OS_GSTrans,
-
+*/
   [OS_BinaryToDecimal] =  do_OS_BinaryToDecimal,
   [OS_FSControl] =  do_OS_FSControl,
   [OS_ChangeDynamicArea] =  do_OS_ChangeDynamicArea,
@@ -1016,11 +1145,12 @@ static bool Kernel_go_svc( svc_registers *regs, uint32_t svc )
 {
   switch (svc & ~Xbit) {
   case 0 ... 255:
-    if (os_swis[svc & ~Xbit] != 0)
+    if (os_swis[svc & ~Xbit] != 0) {
       return os_swis[svc & ~Xbit]( regs );
-    else
-      return Kernel_Error_UnknownSWI( regs );
-
+    }
+    else {
+      return run_risos_code_implementing_swi( regs, svc & ~Xbit );
+    }
   case OS_WriteI ... OS_WriteI+255:
     {
       uint32_t r0 = regs->r[0];
@@ -1037,10 +1167,11 @@ static bool Kernel_go_svc( svc_registers *regs, uint32_t svc )
   return do_module_swi( regs, svc );
 }
 
-static void do_svc_and_transient_callbacks( svc_registers *regs, uint32_t lr )
+static void __attribute__(( noinline )) do_svc_and_transient_callbacks( svc_registers *regs, uint32_t lr )
 {
   regs->spsr &= ~VF;
   uint32_t number = get_swi_number( lr );
+
   if (Kernel_go_svc( regs, number )) {
     // Worked
     regs->spsr &= ~VF;

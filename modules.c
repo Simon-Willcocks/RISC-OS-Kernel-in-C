@@ -59,12 +59,13 @@ static inline bool run_initialisation_code( const char *env, module *m )
 {
   uint32_t flags = *(uint32_t *) (((char*) m->header) + m->header->offset_to_flags);
   bool multiprocessor_aware = 0 != (2 & flags);
+  uint32_t init_code = m->header->offset_to_initialisation + (uint32_t) m->header;
 
   if (multiprocessor_aware) {
     claim_lock( &shared.kernel.mp_module_init_lock );
   }
 
-  register uint32_t non_kernel_code asm( "r14" ) = m->header->offset_to_initialisation + (uint32_t) m->header;
+  register uint32_t non_kernel_code asm( "r14" ) = init_code;
   register uint32_t private_word asm( "r12" ) = (uint32_t) &m->private_word;
   register uint32_t instance asm( "r11" ) = m->instance;
   register const char *environment asm( "r10" ) = env;
@@ -95,6 +96,10 @@ static inline bool run_initialisation_code( const char *env, module *m )
   return true;
 
 failed:
+  NewLine;
+  WriteS( "\005Failed\005" );
+  NewLine;
+
   if (multiprocessor_aware) {
     release_lock( &shared.kernel.mp_module_init_lock );
   }
@@ -134,31 +139,36 @@ failed:
 
 static bool run_swi_handler_code( svc_registers *regs, uint32_t svc, module *m )
 {
-  register uint32_t non_kernel_code asm( "r14" ) = m->header->offset_to_swi_handler + (uint32_t) m->header;
+  clear_VF();
+
+  register uint32_t non_kernel_code asm( "r10" ) = m->header->offset_to_swi_handler + (uint32_t) m->header;
   register uint32_t private_word asm( "r12" ) = (uint32_t) &m->private_word;
   register uint32_t svc_index asm( "r11" ) = svc & 0x3f;
 
-  clear_VF();
-
-  asm goto (
-        "  push { %[regs] }"
+  asm (
+      "\n  push { %[regs] }"
       "\n  ldm %[regs], { r0-r9 }"
-      "\n  blx r14"
-      "\n  pop { r14 }"
-      "\n  stm r14, { r0-r9 }"
-      "\n  bvs %l[failed]"
+      "\n  adr %[regs], return"
+      "\n  push { %[regs] } // return address"
+      "\n  mov lr, #0 // Clear all flags - this may be wrong"
+      "\n  bx r10"
+      "\nreturn:"
+      "\n  pop { %[regs] }"
+      "\n  stm %[regs], { r0-r9 }"
+      "\n  ldr r1, [%[regs], %[spsr]]"
+      "\n  bic r1, #0xf0000000"
+      "\n  and r2, r14, #0xf0000000"
+      "\n  orr r1, r1, r2"
+      "\n  str r1, [%[regs], %[spsr]]"
       :
       : [regs] "r" (regs)
       , "r" (private_word)
       , "r" (svc_index)
       , "r" (non_kernel_code)
-      : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"
-      : failed );
+      , [spsr] "i" (4 * (&regs->spsr - &regs->r[0]))
+      : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9" );
 
-  return true;
-
-failed:
-  return false;
+  return (regs->spsr & VF) == 0;
 }
 
 // Returns true unless intercepted by vector code
@@ -320,8 +330,6 @@ static bool do_Module_Claim( svc_registers *regs )
     static error_block nomem = { 0x101, "The area of memory reserved for relocatable modules is full" };
     regs->r[0] = (uint32_t) &nomem;
   }
-show_word( 200 * workspace.core_number, 500, regs->r[2], White );
-clean_cache_to_PoC();
 
   return result;
 }
@@ -365,7 +373,7 @@ static bool do_Module_InsertFromMemory( svc_registers *regs )
   if (0 != new_mod->offset_to_initialisation) {
     bool success = run_initialisation_code( "", instance );
     if (!success) {
-      asm ( "bkpt 87" );
+      return false; // Without inserting into modules list
     }
   }
 
@@ -501,6 +509,21 @@ static bool do_Module_EnumerateROMModulesWithVersion( svc_registers *regs )
   return true;
 }
 
+static bool do_Module_ModHandReason_FindEndOfROM_ModuleChain( svc_registers *regs )
+{
+  int n = regs->r[1];
+  uint32_t *rom_modules = &_binary_AllMods_start;
+  uint32_t *rom_module = rom_modules;
+
+  for (int i = 0; i < n && 0 != *rom_module; i++) {
+    rom_module += (*rom_module)/4; // Includes size of length field
+  }
+
+  regs->r[2] = rom_module;
+
+  return true;
+}
+
 bool do_OS_Module( svc_registers *regs )
 {
   enum { Run, Load, Enter, ReInit, Delete, DescribeRMA,
@@ -508,7 +531,8 @@ bool do_OS_Module( svc_registers *regs )
          InsertAndRelocateFromMemory, ExtractModuleInfo,
          ExtendBlock, CreateNewInstantiation, RenameInstantiation,
          MakePreferredInstantiation, AddExpansionCardModule,
-         LookupModuleName, EnumerateROMModules, EnumerateROMModulesWithVersion };
+         LookupModuleName, EnumerateROMModules, EnumerateROMModulesWithVersion,
+         ModHandReason_FindEndOfROM_ModuleChain };
 
   switch (regs->r[0]) {
   case Run: return do_Module_Run( regs );
@@ -532,6 +556,7 @@ bool do_OS_Module( svc_registers *regs )
   case LookupModuleName: return do_Module_LookupModuleName( regs );
   case EnumerateROMModules: return do_Module_EnumerateROMModules( regs );
   case EnumerateROMModulesWithVersion: return do_Module_EnumerateROMModulesWithVersion( regs );
+  case ModHandReason_FindEndOfROM_ModuleChain: return do_Module_ModHandReason_FindEndOfROM_ModuleChain( regs );
   default:
     regs->r[0] = (uint32_t) &UnknownCall;
     return false;
@@ -606,10 +631,6 @@ bool do_OS_GetEnv( svc_registers *regs )
   return true;
 }
 
-#define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "cc" )
-#define Write0( string ) { char *c = (char*) string; register uint32_t r0 asm( "r0" ); for (;*c != '\0' && *c != '\n';) { r0 = *c++; asm volatile ( "svc 0" : : "r" (r0) : "cc" ); }; }
-#define NewLine asm ( "svc 3" : : : "cc" )
-
 void init_module( const char *name )
 {
   uint32_t *rom_modules = &_binary_AllMods_start;
@@ -634,11 +655,68 @@ Write0( name ); NewLine;
 
       register uint32_t code asm( "r0" ) = 10;
       register module_header *module asm( "r1" ) = header;
-
       asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
     }
     rom_module += (*rom_module)/4; // Includes size of length field
   }
+}
+
+bool excluded( const char *name )
+{
+  // These modules fail on init, at the moment.
+  static const char *excludes[] = { "PCI"               // Data abort fc01ff04 prob. pci_handles
+                                  //, "FileSwitch"        // init failed: reads top of SVC stack, Address of DomainId, System heap address, System Heap Dynamic area details. Seems to expect heap to be at 0x30000000. Calls OS_Heap free many times.
+     //                             , "Messages"          // Jump to 4, 0xfc0588c4 popne    {pc}
+
+                                  , "WindowManager"
+                                  , "Debugger"
+                                  , "BCMSupport"        // Doesn't return, afaics
+                                  , "RTSupport"         // Doesn't return, afaics
+                                  , "USBDriver"         // Doesn't return, afaics
+                                  , "DWCDriver"         // Doesn't return, afaics
+                                  , "XHCIDriver"        // Doesn't return, afaics
+                                  , "VCHIQ"             // Doesn't return, afaics
+                                  , "BCMSound"          // Initialisation returns an error
+                                  , "TaskManager"       // Initialisation returns an error
+                                  , "ScreenModes"       // Doesn't return, afaics
+                                  , "BCMVideo"          // Tries to use OS_MMUControl
+
+                                  , "DMAManager"    // 
+  //                                , "DisplayManager"    // Accesses memory at 0x210184bb - Outside RMA?
+                                  , "DragASprite"       // Doesn't return, afaics
+                                  , "BBCEconet"       // Doesn't return, afaics
+                                  , "RamFS"             // Tries to use OS_MMUControl
+                                  , "Filer"             // Doesn't return, afaics
+                                  , "FSLock"             // Doesn't return, afaics
+                                  , "FontManager"        // Doesn't return, afaics
+                                  , "FPEmulator"        // Undefined instruction fc277a00
+                                  , "VFPSupport"        // Init returned with V set
+                                  , "Hourglass"        // OS_ReadPalette
+                                  , "InternationalKeyboard" // Probably because there isn't one?
+                                  , "NetFS"             // Doesn't return
+                                  , "NetPrint"             // Doesn't return
+                                  , "NetStatus"             // Doesn't return
+                                  , "PipeFS"             // OS_ClaimProcessorVector
+                                  , "RTC"               // No ticks? No hardware?
+                                  , "ScreenBlanker"        // Doesn't return, afaics
+                                  , "ScrSaver"        // Doesn't return, afaics
+                                  , "Serial"        // "esources$Path{,_Message} not found
+                                  , "ShellCLI"        // "esources$Path{,_Message} not found
+                                  , "SoundDMA"          // 0xfc30a098 accesses 0xfaff4034 data abort
+                                  , "SoundControl"          // No return
+                                  , "SoundChannels"          // 0xfc30d8b8 accesses 0xfaff4040 data (? green) abort
+                                  , "Squash"                    // No return
+                                  , "BootFX"                    // No return
+                                  , "SystemDevices"             // No return
+                                  //, "TaskWindow"             // Data abort, fc339bc4 -> 01f0343c
+
+  };
+
+  for (int i = 0; i < number_of( excludes ); i++) {
+    if (0 == strcmp( name, excludes[i] ))
+      return true;
+  }
+  return false;
 }
 
 void init_modules()
@@ -653,13 +731,19 @@ void init_modules()
 
     workspace.kernel.env = title_string( header );
 
-Write0( workspace.kernel.env ); NewLine;
+    WriteS( "INIT: " );
+    Write0( workspace.kernel.env );
+    if (!excluded( workspace.kernel.env )) {
+      NewLine;
+      register uint32_t code asm( "r0" ) = 10;
+      register module_header *module asm( "r1" ) = header;
 
-    register uint32_t code asm( "r0" ) = 10;
-    register module_header *module asm( "r1" ) = header;
-
-    asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
-
+      asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
+    }
+    else {
+      WriteS( " - excluded" );
+    }
+    NewLine;
     rom_module += (*rom_module)/4; // Includes size of length field
   }
 }
@@ -786,7 +870,8 @@ void Font_Paint( uint32_t font, const char *string, uint32_t type, uint32_t star
 static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, uint32_t r2 )
 {
   // Always does a simple return to caller, never intercepting because there's no lower call.
-  asm ( "push { r0-r11, lr }" );
+  register uint32_t *regs;
+  asm ( "push { r0-r11, lr }\n  mov %[regs], sp" : [regs] "=r" (regs) );
   switch (r0) {
   case 0xa1:
     {
@@ -798,7 +883,15 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     }
     }
     break;
-  default: asm ( "wfi" );
+  case 0xa6 ... 0xff:
+    {
+    // All treated the same, afaics, a place for storing a byte.
+    uint8_t *v = (&workspace.vectors.zp.OsbyteVars) - 0xa6 + r0;
+    regs[1] = *v;
+    *v = ((*v) & r2) ^ r1;
+    }
+    break;
+  default: asm ( "bkpt 1" );
   }
   asm ( "pop { r0-r11, pc }" );
 }
@@ -1110,11 +1203,6 @@ void Boot()
 
     asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
   }
-
-  set_var( "Run$Path", "" );
-  set_var( "File$Path", "" );
-
-  asm ( "svc 0xff" : : : "cc" );
 
   init_modules();
 

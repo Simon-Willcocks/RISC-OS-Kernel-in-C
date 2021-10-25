@@ -140,23 +140,42 @@ if ((x | y) & (1 << 31)) asm( "bkpt 3" );
   }
 }
 
+static void show_character_at( int cx, int cy, char ch, int core, uint32_t colour )
+{
+  int x = cx * 8 + core * (60 * 8) + 4;
+  int y = cy * 8 + 200;
+  show_character( x, y, ch, colour );
+}
+
+static void show_line( int y, int core, uint32_t colour )
+{
+  y = y * 8 + 200;
+  int x = core * (60 * 8) + 2;
+  set_pixel( x, y, colour );
+  set_pixel( x, y+2, colour );
+  set_pixel( x, y+4, colour );
+  set_pixel( x, y+6, colour );
+}
+
 static void new_line( struct core_workspace *workspace )
 {
+  show_line( workspace->y, workspace->core, Black );
+
   workspace->x = 0;
   workspace->y++;
   if (workspace->y == 40)
     workspace->y = 0;
-  for (int x = 0; x < 60; x++) {
+  for (int x = 0; x < 59; x++) {
     workspace->display[workspace->y][x] = ' ';
 
-    int y = workspace->y * 8 + 200;
-    show_character( x * 8 + workspace->core * (60 * 8), y, ' ', Black );
+    show_character_at( x, workspace->y, ' ', workspace->core, Black );
   }
+  show_line( workspace->y, workspace->core, Green );
 }
 
 void C_WrchV_handler( char c, struct core_workspace *workspace )
 {
-  if (workspace->x == 39 || c == '\n') {
+  if (workspace->x == 58 || c == '\n') {
     new_line( workspace );
   }
   if (c == '\r') {
@@ -165,19 +184,18 @@ void C_WrchV_handler( char c, struct core_workspace *workspace )
   if (c != '\n' && c != '\r') {
     // This part is temporary, until the display update can be triggered by an interrupt FIXME
     // The whole "screen" will be displayed, with a cache flush, and the top line will be (workspace->y + 1) % 40
-    int x = (workspace->x) * 8 + workspace->core * (60 * 8);
-    int y = workspace->y * 8 + 200;
 
     if (c < ' ')
-      show_character( x, y, c + '@', Red );
+      show_character_at( workspace->x, workspace->y, c + '@', workspace->core, Red );
     else
-      show_character( x, y, c, White );
+      show_character_at( workspace->x, workspace->y, c, workspace->core, White );
+
     asm ( "svc 0xff" );
     // End of temporary implementation
 
     workspace->display[workspace->y][workspace->x++] = c;
   }
-
+//for (int i = 0; i < 0x100000; i++) { asm volatile ( "" ); }
   clear_VF();
 }
 

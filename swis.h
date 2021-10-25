@@ -152,6 +152,11 @@ bool Kernel_Error_UnimplementedSWI( svc_registers *regs );
 extern uint32_t rma_base; // Loader generated
 extern uint32_t rma_heap; // Loader generated
 
+static inline void rma_free( uint32_t block )
+{
+  // FIXME
+}
+
 static inline void *rma_allocate( uint32_t size, svc_registers *regs )
 {
   uint32_t r0 = regs->r[0];
