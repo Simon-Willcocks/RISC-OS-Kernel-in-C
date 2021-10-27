@@ -148,16 +148,14 @@ static bool run_swi_handler_code( svc_registers *regs, uint32_t svc, module *m )
   asm (
       "\n  push { %[regs] }"
       "\n  ldm %[regs], { r0-r9 }"
-      "\n  adr %[regs], return"
-      "\n  push { %[regs] } // return address"
-      "\n  mov lr, #0 // Clear all flags - this may be wrong"
-      "\n  bx r10"
+      "\n  blx r10"
       "\nreturn:"
       "\n  pop { %[regs] }"
       "\n  stm %[regs], { r0-r9 }"
       "\n  ldr r1, [%[regs], %[spsr]]"
       "\n  bic r1, #0xf0000000"
-      "\n  and r2, r14, #0xf0000000"
+      "\n  mrs r2, cpsr"
+      "\n  and r2, r2, #0xf0000000"
       "\n  orr r1, r1, r2"
       "\n  str r1, [%[regs], %[spsr]]"
       :
@@ -257,11 +255,19 @@ bool do_OS_ServiceCall( svc_registers *regs )
   bool result = true;
   module *m = workspace.kernel.module_list_head;
 
+WriteS( "*** Service Call " ); WriteNum( regs->r[1] ); NewLine;
   uint32_t r12 = regs->r[12];
   while (m != 0 && regs->r[1] != 0 && result) {
     regs->r[12] = (uint32_t) &m->private_word;
     if (0 != m->header->offset_to_service_call_handler) {
+Write0( title_string( m->header ) ); WriteS( " " );
       result = run_service_call_handler_code( regs, m );
+if (regs->r[1] == 0) {
+  WriteS( "claimed" ); NewLine;
+}
+else {
+  WriteS( "finished" ); NewLine;
+}
     }
     m = m->next;
   }
@@ -352,6 +358,18 @@ static bool do_Module_Clear( svc_registers *regs )
   return false;
 }
 
+static bool pre_init_service( module_header *m, uint32_t size_plus_4 )
+{
+  svc_registers serviceregs = { .r = { [0] = (uint32_t) m, [1] = 0xb9, [2] = size_plus_4, [7] = 0x11111111 } };
+  do_OS_ServiceCall( &serviceregs );
+}
+
+static bool post_init_service( module_header *m, uint32_t size_plus_4 )
+{
+  svc_registers serviceregs = { .r = { [0] = (uint32_t) m, [1] = 0xda, [2] = (uint32_t) "FIXME", [7] = 0x22222222 } };
+  do_OS_ServiceCall( &serviceregs );
+}
+
 static bool do_Module_InsertFromMemory( svc_registers *regs )
 {
   module_header *new_mod = (void*) regs->r[1];
@@ -371,6 +389,7 @@ static bool do_Module_InsertFromMemory( svc_registers *regs )
   // in your own SWI chunk."
 
   if (0 != new_mod->offset_to_initialisation) {
+    pre_init_service( new_mod, ((uint32_t*) new_mod)[-1] );
     bool success = run_initialisation_code( "", instance );
     if (!success) {
       return false; // Without inserting into modules list
@@ -385,6 +404,8 @@ static bool do_Module_InsertFromMemory( svc_registers *regs )
   }
 
   workspace.kernel.module_list_tail = instance;
+
+  post_init_service( new_mod, ((uint32_t*) new_mod)[-1] );
 
   return true;
 }
@@ -509,7 +530,7 @@ static bool do_Module_EnumerateROMModulesWithVersion( svc_registers *regs )
   return true;
 }
 
-static bool do_Module_ModHandReason_FindEndOfROM_ModuleChain( svc_registers *regs )
+static bool do_Module_FindEndOfROM_ModuleChain( svc_registers *regs )
 {
   int n = regs->r[1];
   uint32_t *rom_modules = &_binary_AllMods_start;
@@ -519,7 +540,7 @@ static bool do_Module_ModHandReason_FindEndOfROM_ModuleChain( svc_registers *reg
     rom_module += (*rom_module)/4; // Includes size of length field
   }
 
-  regs->r[2] = rom_module;
+  regs->r[2] = 4 + (uint32_t) rom_module;
 
   return true;
 }
@@ -532,7 +553,7 @@ bool do_OS_Module( svc_registers *regs )
          ExtendBlock, CreateNewInstantiation, RenameInstantiation,
          MakePreferredInstantiation, AddExpansionCardModule,
          LookupModuleName, EnumerateROMModules, EnumerateROMModulesWithVersion,
-         ModHandReason_FindEndOfROM_ModuleChain };
+         FindEndOfROM_ModuleChain };
 
   switch (regs->r[0]) {
   case Run: return do_Module_Run( regs );
@@ -556,7 +577,7 @@ bool do_OS_Module( svc_registers *regs )
   case LookupModuleName: return do_Module_LookupModuleName( regs );
   case EnumerateROMModules: return do_Module_EnumerateROMModules( regs );
   case EnumerateROMModulesWithVersion: return do_Module_EnumerateROMModulesWithVersion( regs );
-  case ModHandReason_FindEndOfROM_ModuleChain: return do_Module_ModHandReason_FindEndOfROM_ModuleChain( regs );
+  case FindEndOfROM_ModuleChain: return do_Module_FindEndOfROM_ModuleChain( regs );
   default:
     regs->r[0] = (uint32_t) &UnknownCall;
     return false;
@@ -731,7 +752,7 @@ void init_modules()
 
     workspace.kernel.env = title_string( header );
 
-    WriteS( "INIT: " );
+    WriteS( "\x09NIT: " );
     Write0( workspace.kernel.env );
     if (!excluded( workspace.kernel.env )) {
       NewLine;
@@ -876,17 +897,22 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
   case 0xa1:
     {
     switch (r1) {
-    case  24: asm ( "mov r0, %[v]\nstr r0, [sp, #8]" : : [v] "i" (1) ); break; // UK Territory
+    case  24: asm ( "mov r0, %[v]\nstr r0, [sp, #8]" : : [v] "i" (1 ^ 1) ); break; // UK Territory (encoded)
     case 134: asm ( "mov r0, %[v]\nstr r0, [sp, #8]" : : [v] "i" (128) ); break; // Font Cache pages: 512k
     case 200 ... 205: asm ( "mov r0, %[v]\nstr r0, [sp, #8]" : : [v] "i" (32) ); break; // FontMax 1-5
-    default: asm ( "wfi" );
+    default: asm ( "bkpt 1" );
     }
     }
     break;
-  case 0xa6 ... 0xff:
+  case 0xa8 ... 0xff:
     {
-    // All treated the same, afaics, a place for storing a byte.
-    uint8_t *v = (&workspace.vectors.zp.OsbyteVars) - 0xa6 + r0;
+    // All treated the same, a place for storing a byte.
+    // "; All calls &A8 to &FF are implemented together."
+    // "; <NEW VALUE> = (<OLD VALUE> AND R2 ) EOR R1"
+    // "; The old value is returned in R1 and the next location is returned in R2"
+    // Kernel/s/PMF/osbyte
+
+    uint8_t *v = ((uint8_t*) &workspace.vectors.zp.OsbyteVars) - 0xa6 + r0;
     regs[1] = *v;
     *v = ((*v) & r2) ^ r1;
     }

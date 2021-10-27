@@ -31,7 +31,7 @@ SECTIONS
   frame_buffer = 0xef000000 ;
   system_heap = 0x30000000 ; /* To match legacy expectations. Had proposed 0xffe00000 */
 
-  _binary_AllMods_start = 0xfc0217a8 ; /* Complete hack, matches the offset of the modules in my RISC OS ROM */
+  _binary_AllMods_start = 0xfc0217a8 ; /* Complete hack, matches SysModules_Info(+4?) in my RISC OS ROM */
   system_font = 0xfc040f94 ; /* Ditto, HardFont, from vdufontl1 */
   JTABLE = 0xfc01014c ; /* SWI table from ROM. */
 

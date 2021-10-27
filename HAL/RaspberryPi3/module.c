@@ -140,16 +140,18 @@ if ((x | y) & (1 << 31)) asm( "bkpt 3" );
   }
 }
 
+#define TOP 400
+
 static void show_character_at( int cx, int cy, char ch, int core, uint32_t colour )
 {
   int x = cx * 8 + core * (60 * 8) + 4;
-  int y = cy * 8 + 200;
+  int y = cy * 8 + TOP;
   show_character( x, y, ch, colour );
 }
 
 static void show_line( int y, int core, uint32_t colour )
 {
-  y = y * 8 + 200;
+  y = y * 8 + TOP;
   int x = core * (60 * 8) + 2;
   set_pixel( x, y, colour );
   set_pixel( x, y+2, colour );
@@ -190,7 +192,7 @@ void C_WrchV_handler( char c, struct core_workspace *workspace )
     else
       show_character_at( workspace->x, workspace->y, c, workspace->core, White );
 
-    asm ( "svc 0xff" );
+    asm ( "svc 0xff" : : : "lr", "cc" );
     // End of temporary implementation
 
     workspace->display[workspace->y][workspace->x++] = c;

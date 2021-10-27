@@ -1141,7 +1141,7 @@ static swifn os_swis[256] = {
   [OS_ConvertFileSize] =  do_OS_ConvertFileSize
 };
 
-static bool Kernel_go_svc( svc_registers *regs, uint32_t svc )
+static bool __attribute__(( noinline )) Kernel_go_svc( svc_registers *regs, uint32_t svc )
 {
   switch (svc & ~Xbit) {
   case 0 ... 255:
@@ -1177,12 +1177,14 @@ static void __attribute__(( noinline )) do_svc_and_transient_callbacks( svc_regi
     regs->spsr &= ~VF;
   }
   else if ((number & Xbit) != 0) {
-    // Error
-    // for (;;) { asm ( "wfi" ); }
+    // Error, should be returned
+    WriteNum( number );
+    WriteS( " \\x18" ); Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
     regs->spsr |= VF;
   }
   else {
     // Call error handler
+    Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
 *(uint8_t*) 0x98989898 = 42; // Cause a data abort
     for (;;) { asm ( "wfi" ); }
   }

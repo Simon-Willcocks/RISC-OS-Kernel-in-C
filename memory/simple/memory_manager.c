@@ -136,6 +136,8 @@ void Initialise_system_DAs()
 // While we're hacking like crazy, let's allocate far too much memory for RO kernel workspace...
 // See comments to GSTrans in swis.c
 
+// This is the mechanism used by Kernel SWIs to return to callers, not normal modules...
+
 uint32_t memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
 MMU_map_at( (void*) 0xfaf00000, memory, natural_alignment );
 memset( (void*) 0xfaf00000, '\0', natural_alignment );

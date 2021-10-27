@@ -43,12 +43,14 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc();
 
 extern const char hex[16];
 
+// Warning, using the same variable name for n as inside the braces quietly fails
+// Hence: write_num_number_to_write
 #define WriteNum( n ) { \
-  uint32_t number = n; \
+  uint32_t write_num_number_to_write = n; \
   uint32_t shift = 32; \
   while (shift > 0) { \
     shift -= 4; \
-    register char c asm( "r0" ) = hex[(number >> shift) & 0xf]; \
+    register char c asm( "r0" ) = hex[(write_num_number_to_write >> shift) & 0xf]; \
     asm volatile ( "svc 0" : : "r" (c) : "cc", "lr" ); \
   }; }
 
