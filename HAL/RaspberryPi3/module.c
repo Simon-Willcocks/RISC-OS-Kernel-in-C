@@ -45,25 +45,30 @@ static inline void clear_VF()
 // Check that this doesn't get optimised to a call to memset!
 void *memset(void *s, int c, size_t n)
 {
+  // In this pattern, if there is a larger size, and it is double the current one, use "if", otherwise use "while"
   char cv = c & 0xff;
   char *cp = s;
-  while ((((uint32_t) cp) & sizeof( cv )) != 0 && n >= sizeof( cv )) { *cp++ = cv; n-= sizeof( cv ); }
+  // Next size is double, use if, not while
+  if ((((size_t) cp) & (1 << 0)) != 0 && n >= sizeof( cv )) { *cp++ = cv; n-=sizeof( cv ); }
 
-  uint16_t hv = cv; hv = hv | (hv << 8 * sizeof( cv ));
+  uint16_t hv = cv; hv = hv | (hv << (8 * sizeof( cv )));
   uint16_t *hp = (void*) cp;
-  while ((((uint32_t) hp) & sizeof( hv )) != 0 && n >= sizeof( hv )) { *hp++ = hv; n-=sizeof( hv ); }
+  // Next size is double, use if, not while
+  if ((((size_t) hp) & (1 << 2)) != 0 && n >= sizeof( hv )) { *hp++ = hv; n-=sizeof( hv ); }
 
-  uint32_t wv = hv; wv = wv | (wv << 8 * sizeof( hv ));
-  uint32_t *wp = (void*) cp;
-  while ((((uint32_t) wp) & sizeof( wv )) != 0 && n >= sizeof( wv )) { *wp++ = wv; n-=sizeof( wv ); }
+  uint32_t wv = hv; wv = wv | (wv << (8 * sizeof( hv )));
+  uint32_t *wp = (void*) hp;
+  // Next size is double, use if, not while
+  if ((((size_t) wp) & (1 << 3)) != 0 && n >= sizeof( wv )) { *wp++ = wv; n-=sizeof( wv ); }
 
-  uint64_t dv = wv; dv = dv | (dv << 8 * sizeof( wv ));
-  uint64_t *dp = (void*) cp;
-  while ((((uint32_t) dp) & sizeof( dv )) != 0 && n >= sizeof( dv )) { *dp++ = dv; n-=sizeof( dv ); }
+  uint64_t dv = wv; dv = dv | (dv << (8 * sizeof( wv )));
+  uint64_t *dp = (void*) wp;
+  // No larger size, use while, not if, and don't check the pointer bit
+  while (n >= sizeof( dv )) { *dp++ = dv; n-=sizeof( dv ); }
 
-  if (n >= sizeof( wv )) { wp = (void *) dp; *wp++ = wv; n-=sizeof( wv ); }
-  if (n >= sizeof( hv )) { hp = (void *) wp; *hp++ = hv; n-=sizeof( hv ); }
-  if (n >= sizeof( cv )) { cp = (void *) hp; *cp++ = cv; n-=sizeof( cv ); }
+  wp = (void *) dp; if (n >= sizeof( wv )) { *wp++ = wv; n-=sizeof( wv ); }
+  hp = (void *) wp; if (n >= sizeof( hv )) { *hp++ = hv; n-=sizeof( hv ); }
+  cp = (void *) hp; if (n >= sizeof( cv )) { *cp++ = cv; n-=sizeof( cv ); }
 
   return s;
 }
@@ -81,25 +86,73 @@ static uint32_t local_ptr( void *p )
 
 struct workspace {
   uint32_t lock;
+  void *mbox;
+
+  uint32_t *uart;
+  uint32_t *gpio;
+
+  void *mailbox_request;
+  uint32_t fb_physical_address;
+  uint32_t *frame_buffer;
   struct core_workspace {
-    int core;
+    struct workspace *shared;
     uint32_t x;
     uint32_t y;
     char display[40][60];
   } core_specific[];
 };
 
+static int core( struct core_workspace *cws )
+{
+  return cws - cws->shared->core_specific;
+}
+
+static void *rma_claim( uint32_t bytes )
+{
+  // XOS_Module 6 Claim
+  register void *memory asm( "r2" );
+  register uint32_t code asm( "r0" ) = 6;
+  register uint32_t size asm( "r3" ) = bytes;
+  asm ( "svc 0x2001e" : "=r" (memory) : "r" (size), "r" (code) : "lr" );
+
+  return memory;
+}
+
+typedef struct {
+  uint32_t va;
+  uint32_t pa;
+} dma_memory;
+
+
+static uint32_t lock_for_dma( uint32_t address, uint32_t bytes )
+{
+  register uint32_t addr asm( "r0" ) = address;
+  register uint32_t size asm( "r1" ) = bytes;
+  register uint32_t physical asm( "r0" );
+
+  asm ( "svc 0xfc" : "=r" (physical) : "r" (size), "r" (addr) : "lr" );
+
+  return physical;
+}
+
+static dma_memory rma_claim_for_dma( uint32_t bytes, uint32_t alignment )
+{
+  dma_memory result;
+
+  // FIXME: Loop, allocating blocks and attempting to lock the memory for DMA, then release all those that couldn't be locked.
+  result.va = (uint32_t) rma_claim( bytes + alignment );
+  result.pa = lock_for_dma( result.va, bytes + alignment );
+
+  return result;
+}
+
 static struct workspace *new_workspace( uint32_t number_of_cores )
 {
   uint32_t required = sizeof( struct workspace ) + number_of_cores * sizeof( struct core_workspace );
 
-  // XOS_Module 6 Claim
-  register struct workspace *memory asm( "r2" );
-  register uint32_t code asm( "r0" ) = 6;
-  register uint32_t size asm( "r3" ) = required;
-  asm ( "svc 0x2001e" : "=r" (memory) : "r" (size), "r" (code) : "lr" );
+  struct workspace *memory = rma_claim( required );
 
-  memory->lock = 0;
+  memset( memory, 0, sizeof( memory ) );
 
   return memory;
 }
@@ -114,54 +167,53 @@ enum fb_colours {
   Magenta = 0xffff00ff,
   White   = 0xffffffff };
 
-static inline void set_pixel( uint32_t x, uint32_t y, uint32_t colour )
+static inline void set_pixel( uint32_t x, uint32_t y, uint32_t colour, struct workspace *ws )
 {
-  uint32_t *frame_buffer = (void*) 0xef000000; // FIXME location of DA 6, which we'll be setting anyway.
-  frame_buffer[x + y * 1920] = colour;
+  ws->frame_buffer[x + y * 1920] = colour;
 }
 
-static inline void show_character( uint32_t x, uint32_t y, unsigned char c, uint32_t colour )
+static inline void show_character( uint32_t x, uint32_t y, unsigned char c, uint32_t colour, struct workspace *ws )
 {
   struct __attribute__(( packed )) {
     uint8_t system_font[128][8];
   } const * const font = (void*) (0xfc040f94-(32*8)); // FIXME
 
-if ((x | y) & (1 << 31)) asm( "bkpt 3" );
+if ((x | y) & (1 << 31)) asm( "bkpt 3" ); // -ve coordinates? No thanks!
   uint32_t dx = 0;
   uint32_t dy = 0;
 
   for (dy = 0; dy < 8; dy++) {
     for (dx = 0; dx < 8; dx++) {
       if (0 != (font->system_font[c][dy] & (0x80 >> dx)))
-        set_pixel( x+dx, y+dy, colour );
+        set_pixel( x+dx, y+dy, colour, ws );
       else
-        set_pixel( x+dx, y+dy, Black );
+        set_pixel( x+dx, y+dy, Black, ws );
     }
   }
 }
 
 #define TOP 400
 
-static void show_character_at( int cx, int cy, char ch, int core, uint32_t colour )
+static void show_character_at( int cx, int cy, char ch, int core, uint32_t colour, struct workspace *ws )
 {
   int x = cx * 8 + core * (60 * 8) + 4;
   int y = cy * 8 + TOP;
-  show_character( x, y, ch, colour );
+  show_character( x, y, ch, colour, ws );
 }
 
-static void show_line( int y, int core, uint32_t colour )
+static void show_line( int y, int core, uint32_t colour, struct workspace *ws )
 {
   y = y * 8 + TOP;
   int x = core * (60 * 8) + 2;
-  set_pixel( x, y, colour );
-  set_pixel( x, y+2, colour );
-  set_pixel( x, y+4, colour );
-  set_pixel( x, y+6, colour );
+  set_pixel( x, y, colour, ws );
+  set_pixel( x, y+2, colour, ws );
+  set_pixel( x, y+4, colour, ws );
+  set_pixel( x, y+6, colour, ws );
 }
 
 static void new_line( struct core_workspace *workspace )
 {
-  show_line( workspace->y, workspace->core, Black );
+  show_line( workspace->y, core( workspace ), Black, workspace->shared );
 
   workspace->x = 0;
   workspace->y++;
@@ -170,9 +222,9 @@ static void new_line( struct core_workspace *workspace )
   for (int x = 0; x < 59; x++) {
     workspace->display[workspace->y][x] = ' ';
 
-    show_character_at( x, workspace->y, ' ', workspace->core, Black );
+    show_character_at( x, workspace->y, ' ', core( workspace ), Black, workspace->shared );
   }
-  show_line( workspace->y, workspace->core, Green );
+  show_line( workspace->y, core( workspace ), Green, workspace->shared );
 }
 
 void C_WrchV_handler( char c, struct core_workspace *workspace )
@@ -187,13 +239,15 @@ void C_WrchV_handler( char c, struct core_workspace *workspace )
     // This part is temporary, until the display update can be triggered by an interrupt FIXME
     // The whole "screen" will be displayed, with a cache flush, and the top line will be (workspace->y + 1) % 40
 
+if (0 != workspace->shared->frame_buffer != 0) {
     if (c < ' ')
-      show_character_at( workspace->x, workspace->y, c + '@', workspace->core, Red );
+      show_character_at( workspace->x, workspace->y, c + '@', core( workspace ), Red, workspace->shared );
     else
-      show_character_at( workspace->x, workspace->y, c, workspace->core, White );
+      show_character_at( workspace->x, workspace->y, c, core( workspace ), White, workspace->shared );
 
     asm ( "svc 0xff" : : : "lr", "cc" );
     // End of temporary implementation
+}
 
     workspace->display[workspace->y][workspace->x++] = c;
   }
@@ -210,21 +264,214 @@ static void WrchV_handler( char c )
   asm ( "pop { r0, r1, r2, r3, r12 }" );
 }
 
+static void *map_device_page( uint32_t physical_address )
+{
+  register uint32_t phys asm( "r0" ) = physical_address;
+  register uint32_t pages asm( "r1" ) = 1;
+  register void *result asm( "r0" );
+  asm ( "svc 0xfe" : "=r" (result) : "r" (phys), "r" (pages) : "lr", "cc" );
+  return result;
+}
+
+#define LED_BLINK_TIME 0x10000000
+
+void led_on( struct workspace *workspace )
+{
+  workspace->gpio[0x1c/4] = (1 << 22); // Set
+}
+
+void led_off( struct workspace *workspace )
+{
+  workspace->gpio[0x28/4] = (1 << 22); // Clr
+}
+
+void led_blink( struct workspace *workspace, int n )
+{
+  // Count the blinks! Extra short = 0, Long = 5
+
+  if (n == 0) {
+    led_on( workspace );
+    for (uint64_t i = 0; i < LED_BLINK_TIME / 4; i++) { asm volatile ( "" ); }
+    led_off( workspace );
+    for (uint64_t i = 0; i < LED_BLINK_TIME; i++) { asm volatile ( "" ); }
+  }
+  else {
+    while (n >= 5) {
+      led_on( workspace );
+      for (uint64_t i = 0; i < LED_BLINK_TIME * 4; i++) { asm volatile ( "" ); }
+      led_off( workspace );
+      for (uint64_t i = 0; i < LED_BLINK_TIME; i++) { asm volatile ( "" ); }
+      n -= 5;
+    }
+    while (n > 0) {
+      led_on( workspace );
+      for (uint64_t i = 0; i < LED_BLINK_TIME; i++) { asm volatile ( "" ); }
+      led_off( workspace );
+      for (uint64_t i = 0; i < LED_BLINK_TIME; i++) { asm volatile ( "" ); }
+      n --;
+    }
+  }
+  for (uint64_t i = 0; i < 4 * LED_BLINK_TIME; i++) { asm volatile ( "" ); }
+}
+
+void show_word( int x, int y, uint32_t number, uint32_t colour, struct workspace *ws )
+{
+  static const char hex[16] = "0123456789abcdef";
+  for (int shift = 28; shift >= 0; shift -= 4) {
+    show_character( x, y, hex[(number >> shift) & 0xf], colour, ws );
+    x += 8;
+  }
+}
+
+static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
+{
+#if 0
+  uint32_t *mbox = workspace->mbox;
+
+  static const int space_to_claim = 26 * sizeof( uint32_t );
+
+  dma_memory tag_memory = rma_claim_for_dma( space_to_claim, 16 );
+
+  while (0xf & tag_memory.pa) { tag_memory.pa++; tag_memory.va++; }
+
+  uint32_t volatile *dma_tags = (void*) tag_memory.va;
+
+  dma_tags[ 0] = space_to_claim;
+  dma_tags[ 1] = 0;
+  dma_tags[ 2] = 0x00040001;    // Allocate buffer
+  dma_tags[ 3] = 8;
+  dma_tags[ 4] = 0;
+  dma_tags[ 5] = 2 << 20;       // 2 MB aligned (more for long descriptor translation tables)
+  dma_tags[ 6] = 0;
+  dma_tags[ 7] = 0x00048003;    // Set physical (display) width/height
+  dma_tags[ 8] = 8;
+  dma_tags[ 9] = 0;
+  dma_tags[10] = 1920;
+  dma_tags[11] = 1080;
+  dma_tags[12] = 0x00048004;    // Set virtual (buffer) width/height
+  dma_tags[13] = 8;
+  dma_tags[14] = 0;
+  dma_tags[15] = 1920;
+  dma_tags[16] = 1080;
+  dma_tags[17] = 0x00048005;    // Colour depth
+  dma_tags[18] = 4;
+  dma_tags[19] = 0;
+  dma_tags[20] = 32;
+  dma_tags[21] = 0x00048006;    // Pixel order
+  dma_tags[22] = 4;
+  dma_tags[23] = 0;
+  dma_tags[24] = 0;             // 0 = BGR, 1 = RGB
+  dma_tags[25] = 0;             // End tag
+
+workspace->frame_buffer = 0xef000000;
+for (int i = 0; i < 26; i++) {
+  show_word( 100, i * 10, dma_tags[i], White, workspace );
+}
+  asm volatile ( "dsb" );
+  asm ( "svc 0xff" : : : "lr", "cc" );
+
+  uint32_t volatile *mailbox = &mbox[0x220];
+
+  mailbox[8] = 8 | tag_memory.pa;
+
+//led_blink( workspace, 8 | tag_memory.pa );
+
+  //workspace->gpio[0x28/4] = (1 << 22); // Clr
+  workspace->gpio[0x1c/4] = (1 << 22); // Set
+  asm volatile ( "dsb" );
+
+  while ((mailbox[6] & (1 << 30)) != 0) { }
+
+for (int i = 0; i < 26; i++) {
+  show_word( 200, i * 10, dma_tags[i], White, workspace );
+}
+  asm ( "svc 0xff" : : : "lr", "cc" );
+while (dma_tags[5] == (2 << 20)) {
+int offset = 0x28;
+for (int c = 0; c < 6; c++) {
+  for (int i = 0; i < 0x10000000; i++) { asm volatile( "" ); }
+  workspace->gpio[offset/4] = (1 << 22);
+  offset = (0x1c + 0x28) - offset;
+}
+  for (int i = 0; i < 0x10000000; i++) { asm volatile( "" ); }
+  for (int i = 0; i < 0x10000000; i++) { asm volatile( "" ); }
+}
+
+  workspace->gpio[0x28/4] = (1 << 22); // Clr
+  asm volatile ( "dsb" );
+
+  return (dma_tags[5] & ~0xc0000000);
+#endif
+}
+
 void init( uint32_t this_core, uint32_t number_of_cores )
 {
   struct workspace **private;
   // Preserve r12, in case we make a function call
   asm volatile ( "mov %[private_word], r12" : [private_word] "=r" (private) );
 
+  bool first_entry = *private == 0;
+
   struct workspace *workspace;
 
-  if (*private == 0) {
+  if (first_entry) {
     *private = new_workspace( number_of_cores );
   }
 
   workspace = *private;
 
-  workspace->core_specific[this_core].core = this_core;
+  // Map this addresses into all cores
+  workspace->mbox = map_device_page( 0x3f00b000 );
+
+  // Temporary?
+  //workspace->uart = map_device_page( 0x3f020000 );
+  //workspace->uart[0x40] = 'W';
+
+  workspace->gpio = map_device_page( 0x3f200000 );
+
+  uint32_t *gpio = workspace->gpio;
+  gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6); // Output, pin 22
+  asm volatile ( "dsb" );
+  //gpio[0x28/4] = (1 << 22); // Clr
+  gpio[0x1c/4] = (1 << 22); // Set
+  asm volatile ( "dsb" );
+
+// led_blink( workspace, 9 );
+
+  if (first_entry) {
+    // workspace->fb_physical_address = initialise_frame_buffer( workspace );
+    // Set by memory_manager/do_Module_Claim, I hope
+
+    register uint32_t r0 asm ( "r0" ) = 30;
+    register uint32_t r1 asm ( "r1" ) = workspace->fb_physical_address;
+    register uint32_t r2 asm ( "r2" ) = 8 << 20;  // Allows access to slightly more RAM than needed, FIXME (1920x1080x4 = 0x7e9000)
+    register void *base asm ( "r1" );
+
+    asm ( "svc %[os_dynamicarea]" : "=r" (base) : [os_dynamicarea] "i" (0x66), "r" (r0), "r" (r1), "r" (r2) : "lr", "cc" );
+
+    workspace->frame_buffer = base;
+  }
+
+  if (first_entry) {
+    for (int y = 0; y < 1080; y++) {
+      for (int x = 0; x < 1920; x++) {
+        set_pixel( x, y, Green, workspace );
+      }
+    }
+  }
+
+memset( workspace->frame_buffer, 255, 1920*1080*4 );
+int offset = 0x1c;
+for (;;) {
+  for (int i = 0; i < 0x10000000; i++) { asm volatile( "" ); }
+  workspace->gpio[offset/4] = (1 << 22);
+  offset = (0x1c + 0x28) - offset;
+  if (workspace->frame_buffer != (void*) 0xef000000) {
+    for (;;) {}
+  }
+}
+
+  workspace->core_specific[this_core].shared = workspace;
   workspace->core_specific[this_core].x = 0;
   workspace->core_specific[this_core].y = 0;
   for (int y = 0; y < 40; y++) {
