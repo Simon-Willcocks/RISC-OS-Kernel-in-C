@@ -31,6 +31,20 @@ bool Kernel_Error_UnimplementedSWI( svc_registers *regs )
   return false;
 }
 
+bool Kernel_Error_TooManyDevicePages( svc_registers *regs )
+{
+  static error_block error = { 0x555, "Too many device pages have been requested" }; // FIXME allocated number
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
+
+bool Kernel_Error_NonMatchingDevicePagingRequest( svc_registers *regs )
+{
+  static error_block error = { 0x555, "The device memory has been previously assigned, but with a different size" }; // FIXME allocated number
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
+
 static uint32_t word_align( void *p )
 {
   return (((uint32_t) p) + 3) & ~3;
@@ -937,6 +951,120 @@ static bool do_OS_ConvertFixedNetStation( svc_registers *regs ) { return Kernel_
 static bool do_OS_ConvertNetStation( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
+static bool duplicate_page( uint32_t pa, uint32_t i )
+{
+  // This physical address has already been mapped (possibly by a different core, or even a different module)
+  return (pa >> 12) == shared.memory.device_pages[i].page_number;
+}
+
+// FIXME Move to TaskSlot
+static bool do_OS_ReleaseDMALock( svc_registers *regs )
+{
+  // On entry
+  //    R0 = Virtual address that was locked
+  //    R1 = Number of bytes that were locked
+
+  // On exit
+  //    R0,R1  preserved
+
+  // Use
+  //    For use by the HAL and other modules to communicate with devices that can directly access memory.
+  //
+  //    While there is a DMA lock in place in a TaskSlot, the memory manager will not be permitted to
+  //    resize or rearrange the slot for efficiency.
+
+  // FIXME FIXME FIXME Implement this! (TaskSlot related.)
+
+  return true;
+}
+
+// FIXME Move to TaskSlot
+static bool do_OS_LockForDMA( svc_registers *regs )
+{
+  // On entry
+  //    R0 = Virtual address to be locked
+  //    R1 = Number of bytes to be locked
+
+  // On exit
+  //    R0 = Physical address of locked memory
+  //    R1   preserved
+
+  // Use
+  //    For use by the HAL and other modules to communicate with devices that can directly access memory.
+  //
+  //    Virtual addresses will be allocated first come first served, multiple requests for the same physical
+  //    address will receive the same virtual address, independent of the active core.
+
+  // FIXME FIXME FIXME Needs a proper implementation! At the moment, the RMA is a single block of contiguous
+  // memory, and that's the only area that will be used for this purpose until a proper implementation is put
+  // in place for TaskSlots.
+  // Check number of bytes to ensure it doesn't go over into another page.
+  // Worst case for this is that a two (or four) megabyte block of memory will have to replace two smaller ones, and
+  // all the memory copied from one to the other... Or we could just report an error, and they'll have to allocate
+  // different areas of memory until one is practical.
+
+  regs->r[0] = regs->r[0] - (uint32_t) &rma_heap + shared.memory.rma_memory;
+
+  return true;
+}
+
+bool do_OS_MapDevicePages( svc_registers *regs )
+{
+  // On entry
+  //    R0 = Physical address to be mapped, must be on a page boundary
+  //    R1 = Number of pages to be mapped
+
+  // On exit
+  //    R0 = Virtual address of device memory, accessible only in privileged modes, on the current core
+  //    R1   preserved
+
+  // Use
+  //    For use by the HAL and other modules to map devices to virtual addresses for use by drivers.
+  //
+  //    This should probably only be used in the module's first initialisation.
+  //
+  //    Virtual addresses will be allocated first come first served, multiple requests for the same physical
+  //    address will receive the same virtual address, independent of the active core.
+
+  extern uint32_t devices; // Linker symbol
+
+  claim_lock( &shared.memory.device_page_lock );
+  uint32_t va = (uint32_t) &devices;
+  uint32_t pa = regs->r[0];
+
+  uint32_t i = 0;
+  while (i < number_of( shared.memory.device_pages )
+      && !duplicate_page( pa, i )
+      && shared.memory.device_pages[i].pages != 0) {
+    va += 4096 * shared.memory.device_pages[i].pages;
+    i++;
+  }
+
+  if (i >= number_of( shared.memory.device_pages )) {
+    release_lock( &shared.memory.device_page_lock );
+    return Kernel_Error_TooManyDevicePages( regs );
+  }
+
+  if (duplicate_page( pa, i )) {
+    if (shared.memory.device_pages[i].pages != regs->r[1]) {
+      release_lock( &shared.memory.device_page_lock );
+      return Kernel_Error_NonMatchingDevicePagingRequest( regs );
+    }
+  }
+  else {
+    shared.memory.device_pages[i].pages = regs->r[1];
+    shared.memory.device_pages[i].page_number = pa >> 12;
+  }
+
+  MMU_map_device_shared_at( (void*) va, pa, 4096 * shared.memory.device_pages[i].pages );
+
+  regs->r[0] = va;
+
+  release_lock( &shared.memory.device_page_lock );
+
+  return true;
+}
+
 static bool do_OS_FlushCache( svc_registers *regs )
 {
   claim_lock( &shared.mmu.lock );
@@ -1136,6 +1264,9 @@ static swifn os_swis[256] = {
   [OS_ConvertNetStation] =  do_OS_ConvertNetStation,
   [OS_ConvertFixedFileSize] =  do_OS_ConvertFixedFileSize,
 
+  [OS_LockForDMA] = do_OS_LockForDMA,
+  [OS_ReleaseDMALock] = do_OS_ReleaseDMALock,
+  [OS_MapDevicePages] = do_OS_MapDevicePages,
   [OS_FlushCache] = do_OS_FlushCache, // This could be called by each core on centisecond interrupts, maybe?
 
   [OS_ConvertFileSize] =  do_OS_ConvertFileSize
@@ -1185,7 +1316,7 @@ static void __attribute__(( noinline )) do_svc_and_transient_callbacks( svc_regi
   else {
     // Call error handler
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
-*(uint8_t*) 0x98989898 = 42; // Cause a data abort
+    asm ( "bkpt 1" );
     for (;;) { asm ( "wfi" ); }
   }
 

@@ -86,7 +86,7 @@ static uint32_t local_ptr( void *p )
 
 struct workspace {
   uint32_t lock;
-  void *mbox;
+  uint32_t *mbox;
 
   uint32_t *uart;
   uint32_t *gpio;
@@ -152,7 +152,7 @@ static struct workspace *new_workspace( uint32_t number_of_cores )
 
   struct workspace *memory = rma_claim( required );
 
-  memset( memory, 0, sizeof( memory ) );
+  memset( memory, 0, required );
 
   return memory;
 }
@@ -239,7 +239,7 @@ void C_WrchV_handler( char c, struct core_workspace *workspace )
     // This part is temporary, until the display update can be triggered by an interrupt FIXME
     // The whole "screen" will be displayed, with a cache flush, and the top line will be (workspace->y + 1) % 40
 
-if (0 != workspace->shared->frame_buffer != 0) {
+if (0 != workspace->shared->frame_buffer) {
     if (c < ' ')
       show_character_at( workspace->x, workspace->y, c + '@', core( workspace ), Red, workspace->shared );
     else
@@ -316,17 +316,19 @@ void led_blink( struct workspace *workspace, int n )
 
 void show_word( int x, int y, uint32_t number, uint32_t colour, struct workspace *ws )
 {
-  static const char hex[16] = "0123456789abcdef";
-  for (int shift = 28; shift >= 0; shift -= 4) {
-    show_character( x, y, hex[(number >> shift) & 0xf], colour, ws );
-    x += 8;
+  // Note: You cannot use a lookup table without resorting to trickery
+  // static const char hex[] = ... loads the absolute address of the array.
+  // Use local_ptr( hex ), or calculations...
+  for (int nibble = 0; nibble < 8; nibble++) {
+    char c = '0' + ((number >> (nibble*4)) & 0xf);
+    if (c > '9') c += ('a' - '0' - 10);
+    show_character( x+64-nibble*8, y, c, colour, ws );
   }
 }
 
 static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
 {
-#if 0
-  uint32_t *mbox = workspace->mbox;
+  uint32_t volatile *mailbox = &workspace->mbox[0x220];
 
   static const int space_to_claim = 26 * sizeof( uint32_t );
 
@@ -363,28 +365,25 @@ static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
   dma_tags[24] = 0;             // 0 = BGR, 1 = RGB
   dma_tags[25] = 0;             // End tag
 
-workspace->frame_buffer = 0xef000000;
-for (int i = 0; i < 26; i++) {
-  show_word( 100, i * 10, dma_tags[i], White, workspace );
-}
-  asm volatile ( "dsb" );
+  asm volatile ( "dsb sy" );
   asm ( "svc 0xff" : : : "lr", "cc" );
 
-  uint32_t volatile *mailbox = &mbox[0x220];
+  uint32_t request = 8 | tag_memory.pa;
 
-  mailbox[8] = 8 | tag_memory.pa;
-
-//led_blink( workspace, 8 | tag_memory.pa );
+  mailbox[8] = request;
 
   //workspace->gpio[0x28/4] = (1 << 22); // Clr
   workspace->gpio[0x1c/4] = (1 << 22); // Set
   asm volatile ( "dsb" );
 
-  while ((mailbox[6] & (1 << 30)) != 0) { }
+  uint32_t response;
 
-for (int i = 0; i < 26; i++) {
-  show_word( 200, i * 10, dma_tags[i], White, workspace );
-}
+  do {
+    while ((mailbox[6] & (1 << 30)) != 0) { } // Empty?
+
+    response = mailbox[0];
+  } while (response != request);
+
   asm ( "svc 0xff" : : : "lr", "cc" );
 while (dma_tags[5] == (2 << 20)) {
 int offset = 0x28;
@@ -401,7 +400,6 @@ for (int c = 0; c < 6; c++) {
   asm volatile ( "dsb" );
 
   return (dma_tags[5] & ~0xc0000000);
-#endif
 }
 
 void init( uint32_t this_core, uint32_t number_of_cores )
@@ -436,15 +434,13 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   gpio[0x1c/4] = (1 << 22); // Set
   asm volatile ( "dsb" );
 
-// led_blink( workspace, 9 );
-
   if (first_entry) {
-    // workspace->fb_physical_address = initialise_frame_buffer( workspace );
-    // Set by memory_manager/do_Module_Claim, I hope
+    workspace->fb_physical_address = initialise_frame_buffer( workspace );
 
     register uint32_t r0 asm ( "r0" ) = 30;
     register uint32_t r1 asm ( "r1" ) = workspace->fb_physical_address;
     register uint32_t r2 asm ( "r2" ) = 8 << 20;  // Allows access to slightly more RAM than needed, FIXME (1920x1080x4 = 0x7e9000)
+    // TODO Add a few more virtual lines, so that we're allocated the full 8MiB.
     register void *base asm ( "r1" );
 
     asm ( "svc %[os_dynamicarea]" : "=r" (base) : [os_dynamicarea] "i" (0x66), "r" (r0), "r" (r1), "r" (r2) : "lr", "cc" );
@@ -455,21 +451,10 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   if (first_entry) {
     for (int y = 0; y < 1080; y++) {
       for (int x = 0; x < 1920; x++) {
-        set_pixel( x, y, Green, workspace );
+        set_pixel( x, y, 0xff000033, workspace );
       }
     }
   }
-
-memset( workspace->frame_buffer, 255, 1920*1080*4 );
-int offset = 0x1c;
-for (;;) {
-  for (int i = 0; i < 0x10000000; i++) { asm volatile( "" ); }
-  workspace->gpio[offset/4] = (1 << 22);
-  offset = (0x1c + 0x28) - offset;
-  if (workspace->frame_buffer != (void*) 0xef000000) {
-    for (;;) {}
-  }
-}
 
   workspace->core_specific[this_core].shared = workspace;
   workspace->core_specific[this_core].x = 0;

@@ -37,6 +37,11 @@ struct Memory_manager_shared_workspace {
   uint32_t last_da_address;
   uint32_t user_da_number;
 
+  uint32_t device_page_lock;
+  struct {
+    uint32_t pages:12;
+    uint32_t page_number:20;
+  } device_pages[63];
 
   // For an early display, probably using the DrawMod...
   uint32_t TEMPORARY_screen;

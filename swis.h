@@ -55,9 +55,9 @@ enum {
 /* 58 */ OS_ReadSysInfo, OS_Confirm, OS_ChangedBox, OS_CRC,
 /* 5c */ OS_ReadDynamicArea, OS_PrintChar, OS_ChangeRedirection, OS_RemoveCallBack,
 
-/* 60 */ OS_FindMemMapEntries, OS_SetColour, OS_Pointer, OS_ScreenMode,
-/* 64 */ OS_DynamicArea, OS_Memory, OS_ClaimProcessorVector, OS_Reset,
-/* 68 */ OS_MMUControl,
+/* 60 */ OS_FindMemMapEntries, OS_SetColour,
+/* 64 */ OS_Pointer = 0x64, OS_ScreenMode, OS_DynamicArea,
+/* 68 */ OS_Memory = 0x68, OS_ClaimProcessorVector, OS_Reset, OS_MMUControl,
  
 /* c0 */ OS_ConvertStandardDateAndTime = 0xc0, OS_ConvertDateAndTime,
 /* d0 */ OS_ConvertHex1 = 0xd0, OS_ConvertHex2, OS_ConvertHex4, OS_ConvertHex6,
@@ -68,7 +68,9 @@ enum {
 /* e4 */ OS_ConvertSpacedCardinal4, OS_ConvertSpacedInteger1, OS_ConvertSpacedInteger2, OS_ConvertSpacedInteger3,
 /* e8 */ OS_ConvertSpacedInteger4, OS_ConvertFixedNetStation, OS_ConvertNetStation, OS_ConvertFixedFileSize,
 /* ec */ OS_ConvertFileSize,
-/* ff */ OS_FlushCache = 0xff, // For screen updates, etc.
+
+// New SWIs for C kernel, if they duplicate another solution, one or other approach may be discarded.
+/* fc */ OS_LockForDMA = 0xfc, OS_ReleaseDMALock, OS_MapDevicePages, OS_FlushCache, // For screen updates, etc.
 /* 100-1ff */ OS_WriteI = 0x100 };
  
 // OS SWIs implemented or used other than in swis.c:
@@ -149,8 +151,8 @@ bool do_module_swi( svc_registers *regs, uint32_t svc );
 bool Kernel_Error_UnknownSWI( svc_registers *regs );
 bool Kernel_Error_UnimplementedSWI( svc_registers *regs );
 
-extern uint32_t rma_base; // Loader generated
-extern uint32_t rma_heap; // Loader generated
+extern uint32_t rma_base; // Linker generated
+extern uint32_t rma_heap; // Linker generated
 
 static inline void rma_free( uint32_t block )
 {

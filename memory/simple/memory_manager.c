@@ -26,72 +26,6 @@
 
 #include "inkernel.h"
 
-///// DEBUG code only.
-
-static inline void initialise_frame_buffer()
-{
-// I want to get the screen available early in the programming process, it will properly be done in a module
-uint32_t volatile * const gpio = (void*) 0xfff40000;
-uint32_t volatile * const mbox = (void*) 0xfff41000;
-MMU_map_device_shared_at( (void*) gpio, 0x3f200000, 4096 );
-MMU_map_device_at( (void*) mbox, 0x3f00b000, 4096 );
-
-gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6); // Output, pin 22
-      gpio[0x28/4] = (1 << 22); // Clr
-extern startup boot_data;
-
-uint32_t volatile *mailbox = &mbox[0x220];
-static const uint32_t __attribute__(( aligned( 16 ) )) volatile tags[26] =
-{ sizeof( tags ), 0, // 0x00028001, 8, 0, 1, 3, 0x00028001, 8, 0, 2, 3,
-          // Tags: Tag, buffer size, request code, buffer
-          0x00040001, // Allocate buffer
-          8, 0, 2 << 20, 0, // Size, Code, In: Alignment, Out: Base, Size
-          0x00048003, // Set physical (display) width/height
-          8, 0, 1920, 1080,
-          0x00048004, // Set virtual (buffer) width/height
-          8, 0, 1920, 1080,
-          0x00048005, // Set depth
-          4, 0, 32,
-          0x00048006, // Set pixel order
-          4, 0, 0,    // 0 = BGR, 1 = RGB
-0 };
-extern uint32_t va_base;
-mailbox[8] = 8 | (boot_data.final_location + (uint32_t) tags - (uint32_t) &va_base);
-uint32_t count = 0;
-uint32_t const toggle = (1 << 26);
-while ((mailbox[6] & (1 << 30)) != 0) {
-  if (((++count) & (toggle - 1)) == 0) {
-    if ((count & toggle) != 0) {
-      gpio[0x1c/4] = (1 << 22); // Set
-    }
-    else {
-      gpio[0x28/4] = (1 << 22); // Clr
-    }
-  }
-}
-      gpio[0x1c/4] = (1 << 22); // Set
-uint32_t s = (tags[5] & ~0xc0000000);
-
-shared.memory.TEMPORARY_screen = s;
-asm ( "dsb sy" );
-}
-
-static void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint32_t c )
-{
-  extern uint32_t frame_buffer;
-  uint32_t *screen = &frame_buffer;
-
-  for (uint32_t y = top; y < top + h; y++) {
-    uint32_t *p = &screen[y * 1920 + left];
-    for (int x = 0; x < w; x++) { *p++ = c; }
-  }
-}
-
-///// End DEBUG code
-
-
-
-
 // Very, very simple implementation: one block of contiguous physical memory for each DA.
 // It will break very quickly, but hopefully demonstrate the principle.
 
@@ -128,11 +62,6 @@ void Initialise_system_DAs()
 
   claim_lock( &shared.memory.dynamic_areas_setup_lock ); 
 
-  if (shared.memory.dynamic_areas == 0) {
-    // For some reason this doesn't work on real hardware if the SLVK is set up first
-    // Lack of memory? IDK.
-    initialise_frame_buffer();
-  }
 // While we're hacking like crazy, let's allocate far too much memory for RO kernel workspace...
 // See comments to GSTrans in swis.c
 
@@ -149,7 +78,6 @@ memcpy( (void*) 0xfaff3358, slvk, sizeof( slvk ) );
 
   if (shared.memory.dynamic_areas == 0) {
     // First core here (need not be core zero)
-
     uint32_t RMA = -1;
 
     // But there may not be any memory to allocate, yet...
@@ -202,37 +130,6 @@ memcpy( (void*) 0xfaff3358, slvk, sizeof( slvk ) );
       MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
     }
 
-    { // Screen (currently a hack FIXME)
-      extern uint32_t frame_buffer;
-
-      DynamicArea *da = rma_allocate( sizeof( DynamicArea ), &regs );
-      if (da == 0) goto nomem;
-      da->number = 2;
-      da->permissions = 6; // rw-
-      da->shared = 1;
-      da->virtual_page = ((uint32_t) &frame_buffer) >> 12;
-      da->start_page = shared.memory.TEMPORARY_screen >> 12;
-      da->pages = (8 << 20) >> 12; // Allows access to slightly more RAM than needed, FIXME (1920x1080x4 = 0x7e9000)
-      da->next = shared.memory.dynamic_areas;
-      shared.memory.dynamic_areas = da;
-
-      MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
-show_word( 10, 10, workspace.core_number, Yellow );
-
-// Cache info...
-int y = 20;
-uint32_t reg;
-asm ( "mrc p15, 0, %[reg], c0, c1, 4" : [reg] "=r" (reg) ); show_word( 10, y, reg, Yellow ); y += 10;
-asm ( "mrc p15, 0, %[reg], c0, c1, 5" : [reg] "=r" (reg) ); show_word( 10, y, reg, Yellow ); y += 10;
-asm ( "mrc p15, 0, %[reg], c0, c1, 6" : [reg] "=r" (reg) ); show_word( 10, y, reg, Yellow ); y += 10;
-asm ( "mrc p15, 0, %[reg], c0, c1, 7" : [reg] "=r" (reg) ); show_word( 10, y, reg, Yellow ); y += 10;
-asm ( "mrc p15, 0, %[reg], c0, c2, 6" : [reg] "=r" (reg) ); show_word( 10, y, reg, Yellow ); y += 10;
-asm ( "mrc p15, 0, %[reg], c0, c3, 6" : [reg] "=r" (reg) ); show_word( 10, y, reg, Yellow ); y += 10;
-
-asm ( "mrc p15, 1, %[reg], c0, c0, 0" : [reg] "=r" (reg) ); show_word( 10, y, reg, Blue ); y += 10;
-clean_cache_to_PoC();
-    }
-
     asm ( "dsb sy" );
   }
   else {
@@ -250,8 +147,6 @@ clean_cache_to_PoC();
   }
 
   release_lock( &shared.memory.dynamic_areas_setup_lock );
-
-  // fill_rect( (100 + 100 * workspace.core_number), 10, 64, 100, 0xff00ff00 );
 
   // Now the non-shared DAs, can be done in parallel
 
@@ -283,8 +178,7 @@ clean_cache_to_PoC();
   return;
 
 nomem:
-  fill_rect( (100 + 100 * workspace.core_number), 10, 64, 100, 0xffff0000 );
-  for (;;) { asm ( "wfi" ); }
+  asm ( "bkpt 1" );
 }
 
 bool do_OS_ChangeDynamicArea( svc_registers *regs )
@@ -394,7 +288,6 @@ bool do_OS_DynamicArea( svc_registers *regs )
       register uint32_t current_size asm ( "r4" ) = 0;
       register uint32_t page_size asm ( "r5" ) = 4096;
       register uint32_t workspace asm ( "r12" ) = da->workarea;
-      register uint32_t result asm ( "r0" );
       asm goto ( "blx %[pregrow]"
              "\n  bvs %l[do_not_grow]"
           : // asm goto does not allow output as at gcc-10, although the documentation pretends it does
@@ -439,7 +332,45 @@ bool do_OS_DynamicArea( svc_registers *regs )
       }
       break;
 do_not_grow:
-      for (;;) { asm( "wfi" ); }
+      for (;;) { asm( "bkpt 1\nwfi" ); }
+    }
+    break;
+  case 30:
+    { // Screen. Creates DA 2, at R1, size R2, returns virtual address in R1
+      // Virtual address is always at frame_buffer (set in rom.script)
+
+      // TODO: Remove existing DA, if any, allow resizing, etc.
+      // This is not going to work with more than one thread, unless data abort maps it...
+      extern uint32_t frame_buffer;
+
+      DynamicArea *da = shared.memory.dynamic_areas;
+      while (da != 0 && da->number != 2) {
+        da = da->next;
+      }
+
+bool first_entry = da == 0;
+      if (da == 0) {
+        da = rma_allocate( sizeof( DynamicArea ), regs );
+        if (da == 0) goto nomem;
+        da->number = 2;
+        da->permissions = 6; // rw-
+        da->shared = 1;
+        da->virtual_page = ((uint32_t) &frame_buffer) >> 12;
+        da->start_page = regs->r[1] >> 12;
+        da->pages = regs->r[2] >> 12;
+        da->next = shared.memory.dynamic_areas;
+        shared.memory.dynamic_areas = da;
+      }
+
+      // Could be mapped in when used, by searching DAs in data_abort
+      // Should probably have XN.
+      MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
+
+if (first_entry) {
+    memset( &frame_buffer, 0xff, 1920*1080*4 );
+}
+
+      regs->r[1] = (uint32_t) &frame_buffer;
     }
     break;
   default:
@@ -582,7 +513,6 @@ for (int i = 0; i < 0x8000000; i++) { asm ( "" ); } \
   show_word( 100 + W, H(n) - 32, data_fault_type(), Red ); \
   show_word( 100 + W, H(n) - 22, instruction_fault_type(), Red ); \
   show_word( 100 + W, H(n) - 12, fault_address(), Green ); \
-  fill_rect( 100 + n + W, 4 * n, 84, 6, c ); \
 clean_cache_to_PoC(); \
 clean_cache_to_PoU(); \
   for (;;) { asm ( "wfi" ); }

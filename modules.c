@@ -55,6 +55,7 @@ static inline uint32_t start_code( module_header *header )
   return header->offset_to_start + (uint32_t) header;
 }
 
+static inline void initialise_frame_buffer();
 static inline bool run_initialisation_code( const char *env, module *m )
 {
   uint32_t flags = *(uint32_t *) (((char*) m->header) + m->header->offset_to_flags);
@@ -63,6 +64,8 @@ static inline bool run_initialisation_code( const char *env, module *m )
 
   if (multiprocessor_aware) {
     claim_lock( &shared.kernel.mp_module_init_lock );
+
+if (m->private_word == 0) initialise_frame_buffer();
   }
 
   register uint32_t non_kernel_code asm( "r14" ) = init_code;
@@ -255,18 +258,18 @@ bool do_OS_ServiceCall( svc_registers *regs )
   bool result = true;
   module *m = workspace.kernel.module_list_head;
 
-WriteS( "*** Service Call " ); WriteNum( regs->r[1] ); NewLine;
+//WriteS( "*** Service Call " ); WriteNum( regs->r[1] ); NewLine;
   uint32_t r12 = regs->r[12];
   while (m != 0 && regs->r[1] != 0 && result) {
     regs->r[12] = (uint32_t) &m->private_word;
     if (0 != m->header->offset_to_service_call_handler) {
-Write0( title_string( m->header ) ); WriteS( " " );
+//Write0( title_string( m->header ) ); WriteS( " " );
       result = run_service_call_handler_code( regs, m );
 if (regs->r[1] == 0) {
-  WriteS( "claimed" ); NewLine;
+  //WriteS( "claimed" ); NewLine;
 }
 else {
-  WriteS( "finished" ); NewLine;
+  //WriteS( "finished" ); NewLine;
 }
     }
     m = m->next;
@@ -358,13 +361,13 @@ static bool do_Module_Clear( svc_registers *regs )
   return false;
 }
 
-static bool pre_init_service( module_header *m, uint32_t size_plus_4 )
+static void pre_init_service( module_header *m, uint32_t size_plus_4 )
 {
   svc_registers serviceregs = { .r = { [0] = (uint32_t) m, [1] = 0xb9, [2] = size_plus_4, [7] = 0x11111111 } };
   do_OS_ServiceCall( &serviceregs );
 }
 
-static bool post_init_service( module_header *m, uint32_t size_plus_4 )
+static void post_init_service( module_header *m, uint32_t size_plus_4 )
 {
   svc_registers serviceregs = { .r = { [0] = (uint32_t) m, [1] = 0xda, [2] = (uint32_t) "FIXME", [7] = 0x22222222 } };
   do_OS_ServiceCall( &serviceregs );
@@ -933,7 +936,7 @@ bool do_OS_GenerateError( svc_registers *regs )
 bool do_OS_WriteC( svc_registers *regs )
 {
 if (regs->r[0] == 0) {
-  register r0 asm( "r0" ) = regs->lr;
+  register int r0 asm( "r0" ) = regs->lr;
   asm ( "bkpt 5" : : "r" (r0) );
 }
   return run_vector( 3, regs );
@@ -1195,6 +1198,38 @@ static void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint
 }
 
 static void user_mode_code();
+
+static inline void initialise_frame_buffer()
+{
+// I want to get the screen available early in the programming process, it will properly be done in a module
+uint32_t volatile * const mbox = (void*) 0xfff41000;
+MMU_map_device_at( (void*) mbox, 0x3f00b000, 4096 );
+
+extern startup boot_data;
+
+uint32_t volatile *mailbox = &mbox[0x220];
+static const uint32_t __attribute__(( aligned( 16 ) )) volatile tags[26] =
+{ sizeof( tags ), 0, // 0x00028001, 8, 0, 1, 3, 0x00028001, 8, 0, 2, 3,
+          // Tags: Tag, buffer size, request code, buffer
+          0x00040001, // Allocate buffer
+          8, 0, 2 << 20, 0, // Size, Code, In: Alignment, Out: Base, Size
+          0x00048003, // Set physical (display) width/height
+          8, 0, 1920, 1080,
+          0x00048004, // Set virtual (buffer) width/height
+          8, 0, 1920, 1080,
+          0x00048005, // Set depth
+          4, 0, 32,
+          0x00048006, // Set pixel order
+          4, 0, 0,    // 0 = BGR, 1 = RGB
+0 };
+extern uint32_t va_base;
+mailbox[8] = 8 | (boot_data.final_location + (uint32_t) tags - (uint32_t) &va_base);
+while ((mailbox[6] & (1 << 30)) != 0) { }
+uint32_t response = mailbox[0];
+asm volatile ( "" : : "r" (response) );
+uint32_t s = (tags[5] & ~0xc0000000);
+  asm ( "svc 0xff" : : : "lr" ); // This seems to be vital. Why?
+}
 
 void Boot()
 {

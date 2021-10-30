@@ -170,6 +170,3 @@ static inline char *strcpy( char *dest, const char *src )
   return result;
 }
 
-void *memset(void *s, int c, uint32_t n);
-void *memcpy(void *d, const void *s, uint32_t n);
-

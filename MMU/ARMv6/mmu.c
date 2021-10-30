@@ -391,7 +391,11 @@ static void __attribute__(( noinline )) handle_data_abort( svc_registers *regs )
       return;
     }
   }
+/*
+  DynamicArea *da = shared.memory.dynamic_areas;
 
+  MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
+*/
   asm volatile ( "ldm sp, { r0-r12, r14 }\n  b Kernel_failed_data_abort" );
 
   __builtin_unreachable();

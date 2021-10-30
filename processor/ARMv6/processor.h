@@ -186,3 +186,7 @@ static inline void bzero( void *p, int length )
   char *cp = p;
   for (int i = 0; i < length; i++) cp[i] = 0;
 }
+
+void *memset(void *s, int c, uint32_t n);
+void *memcpy(void *d, const void *s, uint32_t n);
+
