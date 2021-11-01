@@ -259,32 +259,39 @@ WriteS( "*** Service Call " ); WriteNum( regs->r[1] ); NewLine;
 
 error_block UnknownCall = { 0x105, "Unknown OS_Module call" };
 
+#define OSMERR( f, l ) do { WriteS( f l ); for (;;) {}; } while (0)
+
 static bool do_Module_Run( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
 
 static bool do_Module_Load( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
 
 static bool do_Module_Enter( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
 
 static bool do_Module_ReInit( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
 
 static bool do_Module_Delete( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
@@ -323,18 +330,29 @@ static bool do_Module_Claim( svc_registers *regs )
 
 static bool do_Module_Free( svc_registers *regs )
 {
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  uint32_t r1 = regs->r[1];
+  regs->r[0] = 3; // Free
+  regs->r[1] = (uint32_t) &rma_heap;
+
+  bool result = do_OS_Heap( regs );
+  if (result) {
+    regs->r[0] = 7;
+    regs->r[1] = r1;
+  }
+
+  return result;
 }
 
 static bool do_Module_Tidy( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
 
 static bool do_Module_Clear( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
@@ -459,48 +477,64 @@ fail:
 
 static bool do_Module_InsertAndRelocateFromMemory( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
 
 static bool do_Module_ExtractModuleInfo( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
 
 static bool do_Module_ExtendBlock( svc_registers *regs )
 {
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  uint32_t r1 = regs->r[1];
+  regs->r[0] = 4; // Change the size of a block
+  regs->r[1] = (uint32_t) &rma_heap;
+
+  bool result = do_OS_Heap( regs );
+  if (result) {
+    regs->r[0] = 13;
+    regs->r[1] = r1;
+  }
+
+  return result;
 }
 
 static bool do_Module_CreateNewInstantiation( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
 
 static bool do_Module_RenameInstantiation( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
 
 static bool do_Module_MakePreferredInstantiation( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
 
 static bool do_Module_AddExpansionCardModule( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
 
 static bool do_Module_LookupModuleName( svc_registers *regs )
 {
+Write0( __func__ ); for (;;) {};
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
@@ -827,6 +861,8 @@ bool excluded( const char *name )
   return false;
 }
 
+extern void run_transient_callbacks();
+
 void init_modules()
 {
   uint32_t *rom_modules = &_binary_AllMods_start;
@@ -847,6 +883,9 @@ void init_modules()
       register module_header *module asm( "r1" ) = header;
 
       asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
+
+      // Not in USR mode, but idling
+      run_transient_callbacks();
     }
     else {
       WriteS( " - excluded" );
@@ -1020,6 +1059,8 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     break;
   case 0xa8 ... 0xff:
     {
+    WriteS( " " ); WriteNum( r1 );
+    WriteS( " " ); WriteNum( r2 );
     // All treated the same, a place for storing a byte.
     // "; All calls &A8 to &FF are implemented together."
     // "; <NEW VALUE> = (<OLD VALUE> AND R2 ) EOR R1"

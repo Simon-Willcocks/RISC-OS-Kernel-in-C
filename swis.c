@@ -1468,10 +1468,12 @@ static bool __attribute__(( noinline )) Kernel_go_svc( svc_registers *regs, uint
   return do_module_swi( regs, svc );
 }
 
-static void __attribute__(( noinline )) do_svc_and_transient_callbacks( svc_registers *regs, uint32_t lr )
+static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t lr )
 {
   regs->spsr &= ~VF;
   uint32_t number = get_swi_number( lr );
+
+  uint32_t r0 = regs->lr;
 
   if (Kernel_go_svc( regs, number )) {
     // Worked
@@ -1480,7 +1482,23 @@ static void __attribute__(( noinline )) do_svc_and_transient_callbacks( svc_regi
   else if ((number & Xbit) != 0) {
     // Error, should be returned
     WriteNum( number );
+    WriteS( " " );
+    WriteNum( r0 );
+    WriteS( " " );
+    WriteNum( regs->r[1] );
+    WriteS( " " );
+    WriteNum( regs->r[2] );
     WriteS( " \\x18" ); Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
+    if (0x999 == *(uint32_t*)regs->r[0] || 0x1e6 == *(uint32_t*)regs->r[0]) {
+      switch (number) {
+      case 0x61500 ... 0x6153f: // MessageTrans
+      case 0x63040 ... 0x6307f: // Territory
+        break;
+      default:
+        WriteS( "Unimplemented!" );
+        for (;;) { asm ( "wfi" ); }
+      }
+    }
     regs->spsr |= VF;
   }
   else {
@@ -1489,8 +1507,10 @@ static void __attribute__(( noinline )) do_svc_and_transient_callbacks( svc_regi
     asm ( "bkpt 1" );
     for (;;) { asm ( "wfi" ); }
   }
+}
 
-uint32_t test = regs->spsr;
+void run_transient_callbacks()
+{
   while (workspace.kernel.transient_callbacks != 0) {
     transient_callback *callback = workspace.kernel.transient_callbacks;
 
@@ -1504,10 +1524,6 @@ uint32_t test = regs->spsr;
 
     run_handler( latest.code, latest.private_word );
   }
-
-if (test != regs->spsr) {
-*(uint8_t*) 0x94949494 = 42; // Cause a data abort
-}
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_svc()
@@ -1537,7 +1553,10 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
       , [lr] "=r" (lr)
       );
 
-  do_svc_and_transient_callbacks( regs, lr );
+  do_svc( regs, lr );
+  if (0 == regs->spsr & 0x1f) {
+    run_transient_callbacks();
+  }
 
   asm ( "pop { r0-r12 }"
     "\n  rfeia sp!" );
