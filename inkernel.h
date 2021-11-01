@@ -22,11 +22,6 @@ typedef struct {
   uint32_t private;
 } swi_handler;
 
-typedef struct {
-  uint32_t code;
-  char desc[];
-} error_block;
-
 bool do_module_swi( svc_registers *regs, uint32_t svc );
 
 void __attribute__(( naked, noreturn )) Kernel_default_reset();

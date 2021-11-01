@@ -38,41 +38,33 @@ typedef struct {
 
 struct module {
   module_header *header;
-  uint32_t private_word;
+  uint32_t *private_word;
+  uint32_t local_private_word;
   uint32_t instance;
   module *next;  // Simple singly-linked list
 };
-
-static inline bool error_nomem( svc_registers *regs )
-{
-    static error_block nomem = { 0x101, "The area of memory reserved for relocatable modules is full" };
-    regs->r[0] = (uint32_t) &nomem;
-    return false;
-}
 
 static inline uint32_t start_code( module_header *header )
 {
   return header->offset_to_start + (uint32_t) header;
 }
 
-static inline void initialise_frame_buffer();
+static inline uint32_t mp_aware( module_header *header )
+{
+  uint32_t flags = *(uint32_t *) (((char*) header) + header->offset_to_flags);
+  return 0 != (2 & flags);
+}
+
 static inline bool run_initialisation_code( const char *env, module *m )
 {
-  uint32_t flags = *(uint32_t *) (((char*) m->header) + m->header->offset_to_flags);
-  bool multiprocessor_aware = 0 != (2 & flags);
   uint32_t init_code = m->header->offset_to_initialisation + (uint32_t) m->header;
 
-  if (multiprocessor_aware) {
-    claim_lock( &shared.kernel.mp_module_init_lock );
-
-if (m->private_word == 0) initialise_frame_buffer();
-  }
-
   register uint32_t non_kernel_code asm( "r14" ) = init_code;
-  register uint32_t private_word asm( "r12" ) = (uint32_t) &m->private_word;
+  register uint32_t *private_word asm( "r12" ) = m->private_word;
   register uint32_t instance asm( "r11" ) = m->instance;
   register const char *environment asm( "r10" ) = env;
 
+  // These will be passed to old-style modules as well, but they'll ignore them
   register uint32_t this_core asm( "r0" ) = workspace.core_number;
   register uint32_t number_of_cores asm( "r1" ) = processor.number_of_cores;
 
@@ -92,20 +84,12 @@ if (m->private_word == 0) initialise_frame_buffer();
   // No changes to the registers by the module are of any interest,
   // so avoid corrupting any by simply not storing them
 
-  if (multiprocessor_aware) {
-    release_lock( &shared.kernel.mp_module_init_lock );
-  }
-
   return true;
 
 failed:
   NewLine;
   WriteS( "\005Failed\005" );
   NewLine;
-
-  if (multiprocessor_aware) {
-    release_lock( &shared.kernel.mp_module_init_lock );
-  }
 
   return false;
 }
@@ -118,7 +102,7 @@ static inline uint32_t finalisation_code( module_header *header )
 static bool run_service_call_handler_code( svc_registers *regs, module *m )
 {
   register uint32_t non_kernel_code asm( "r14" ) = m->header->offset_to_service_call_handler + (uint32_t) m->header;
-  register uint32_t private_word asm( "r12" ) = (uint32_t) &m->private_word;
+  register uint32_t *private_word asm( "r12" ) = m->private_word;
 
   asm goto (
         "  push { %[regs] }"
@@ -145,7 +129,7 @@ static bool run_swi_handler_code( svc_registers *regs, uint32_t svc, module *m )
   clear_VF();
 
   register uint32_t non_kernel_code asm( "r10" ) = m->header->offset_to_swi_handler + (uint32_t) m->header;
-  register uint32_t private_word asm( "r12" ) = (uint32_t) &m->private_word;
+  register uint32_t *private_word asm( "r12" ) = m->private_word;
   register uint32_t svc_index asm( "r11" ) = svc & 0x3f;
 
   asm (
@@ -258,22 +242,16 @@ bool do_OS_ServiceCall( svc_registers *regs )
   bool result = true;
   module *m = workspace.kernel.module_list_head;
 
-//WriteS( "*** Service Call " ); WriteNum( regs->r[1] ); NewLine;
+WriteS( "*** Service Call " ); WriteNum( regs->r[1] ); NewLine;
   uint32_t r12 = regs->r[12];
   while (m != 0 && regs->r[1] != 0 && result) {
-    regs->r[12] = (uint32_t) &m->private_word;
+    regs->r[12] = m->private_word;
     if (0 != m->header->offset_to_service_call_handler) {
-//Write0( title_string( m->header ) ); WriteS( " " );
       result = run_service_call_handler_code( regs, m );
-if (regs->r[1] == 0) {
-  //WriteS( "claimed" ); NewLine;
-}
-else {
-  //WriteS( "finished" ); NewLine;
-}
     }
     m = m->next;
   }
+
   regs->r[12] = r12;
 
   return result;
@@ -373,44 +351,110 @@ static void post_init_service( module_header *m, uint32_t size_plus_4 )
   do_OS_ServiceCall( &serviceregs );
 }
 
+static module *new_instance( module_header *m, svc_registers *regs )
+{
+  module *instance = rma_allocate( sizeof( module ), regs );
+
+  if (instance != 0) {
+    instance->header = m;
+    instance->private_word = &instance->local_private_word;
+    instance->local_private_word = 0;
+    instance->instance = 0;
+    instance->next = 0;
+  }
+
+  return instance;
+}
+
 static bool do_Module_InsertFromMemory( svc_registers *regs )
 {
   module_header *new_mod = (void*) regs->r[1];
 
-  module *instance = rma_allocate( sizeof( module ), regs );
+  // "During initialisation, your module is not on the active module list, and
+  // so you cannot call SWIs in your own SWI chunk."
 
-  if (instance == 0) {
-    return error_nomem( regs );
-  }
-
-  instance->header = new_mod;
-  instance->private_word = 0;
-  instance->instance = 0;
-  instance->next = 0;
-
-  // "During initialisation, your module is not on the active module list, and so you cannot call SWIs
-  // in your own SWI chunk."
+  module *instance;
+  module *shared_instance = 0;
+  bool success = true;
 
   if (0 != new_mod->offset_to_initialisation) {
+    // FIXME Does this still make sense? Does anyone patch ROM modules any more?
     pre_init_service( new_mod, ((uint32_t*) new_mod)[-1] );
-    bool success = run_initialisation_code( "", instance );
-    if (!success) {
-      return false; // Without inserting into modules list
+  }
+  bool mp_module = mp_aware( new_mod );
+
+  if (mp_module) {
+    claim_lock( &shared.kernel.mp_module_init_lock );
+
+    WriteS( "MP" );
+    shared_instance = shared.kernel.module_list_head;
+    while (shared_instance != 0 && shared_instance->header != new_mod) {
+      shared_instance = shared_instance->next;
+    }
+
+    if (shared_instance == 0) {
+      // No core has initialised this module, yet.
+      // Store a copy in the shared list.
+      shared_instance = new_instance( new_mod, regs );
+
+      if (shared_instance != 0) {
+        if (shared.kernel.module_list_tail == 0) {
+          shared.kernel.module_list_head = shared_instance;
+        }
+        else {
+          shared.kernel.module_list_tail->next = shared_instance;
+        }
+
+        shared.kernel.module_list_tail = shared_instance;
+      }
+      else {
+        success = error_nomem( regs );
+      }
     }
   }
 
-  if (workspace.kernel.module_list_tail == 0) {
-    workspace.kernel.module_list_head = instance;
+  if (success) {
+    instance = new_instance( new_mod, regs );
+    success = instance != 0; 
+
+    if (success && shared_instance != 0) {
+      instance->private_word = shared_instance->private_word;
+      while (instance->private_word != &shared_instance->local_private_word) {
+        asm ( "wfi" );
+      }
+    }
+
+    if (success && 0 != new_mod->offset_to_initialisation) {
+      success = run_initialisation_code( "", instance );
+    }
+
+    if (success) {
+      if (workspace.kernel.module_list_tail == 0) {
+        workspace.kernel.module_list_head = instance;
+      }
+      else {
+        workspace.kernel.module_list_tail->next = instance;
+      }
+
+      workspace.kernel.module_list_tail = instance;
+    }
   }
-  else {
-    workspace.kernel.module_list_tail->next = instance;
+
+  if (mp_module) {
+    release_lock( &shared.kernel.mp_module_init_lock );
   }
 
-  workspace.kernel.module_list_tail = instance;
+  if (success && 0 != new_mod->offset_to_initialisation) {
+    post_init_service( new_mod, ((uint32_t*) new_mod)[-1] );
+  }
 
-  post_init_service( new_mod, ((uint32_t*) new_mod)[-1] );
+  return success;
 
-  return true;
+nomem:
+  error_nomem( regs );
+
+fail:
+  return false;
 }
 
 static bool do_Module_InsertAndRelocateFromMemory( svc_registers *regs )
@@ -464,6 +508,7 @@ static bool do_Module_LookupModuleName( svc_registers *regs )
 static int module_state( module_header *header )
 {
   module *m = workspace.kernel.module_list_head;
+
   while (m != 0 && m->header != header) {
     m = m->next;
   }
@@ -592,11 +637,31 @@ bool do_OS_CallAVector( svc_registers *regs )
   return run_vector( regs->r[9], regs );
 }
 
+static bool error_InvalidVector( svc_registers *regs )
+{
+  static error_block error = { 0x999, "Invalid vector number #" };
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
+
+static callback *get_a_callback()
+{
+  callback *result = workspace.kernel.callbacks_pool;
+  if (result != 0) {
+    workspace.kernel.callbacks_pool = result->next;
+  }
+  else {
+    svc_registers regs;
+    result = rma_allocate( sizeof( callback ), &regs );
+  }
+  return result;
+}
+
 bool do_OS_Claim( svc_registers *regs )
 {
   int number = regs->r[0];
   if (number > number_of( workspace.kernel.vectors )) {
-    return Kernel_Error_UnknownSWI( regs );
+    return error_InvalidVector( regs );
   }
 
   vector **p = &workspace.kernel.vectors[number];
@@ -616,7 +681,7 @@ bool do_OS_Claim( svc_registers *regs )
     v = v->next;
   }
 
-  vector *new = rma_allocate( sizeof( vector ), regs );
+  vector *new = get_a_callback();
   if (new == 0) {
     return error_nomem( regs );
   }
@@ -632,8 +697,31 @@ bool do_OS_Claim( svc_registers *regs )
 
 bool do_OS_Release( svc_registers *regs )
 {
-  return Kernel_Error_UnknownSWI( regs );
+  int number = regs->r[0];
+  if (number > number_of( workspace.kernel.vectors )) {
+    return error_InvalidVector( regs );
+  }
+
+  vector **p = &workspace.kernel.vectors[number];
+  vector *v = *p;
+
+  while (v != 0) {
+    if (v->code == regs->r[1] && v->private_word == regs->r[2]) {
+      // Duplicate to be removed
+      *p = v->next; // Removed from list
+      v->next = workspace.kernel.callbacks_pool;
+      workspace.kernel.callbacks_pool = v;
+      return true;
+    }
+
+    p = &v->next;
+    v = v->next;
+  }
+
+  // FIXME Error on not found?
+  return true;
 }
+
 bool do_OS_AddToVector( svc_registers *regs )
 {
   return Kernel_Error_UnknownSWI( regs );
@@ -689,8 +777,6 @@ bool excluded( const char *name )
 {
   // These modules fail on init, at the moment.
   static const char *excludes[] = { "PCI"               // Data abort fc01ff04 prob. pci_handles
-                                  //, "FileSwitch"        // init failed: reads top of SVC stack, Address of DomainId, System heap address, System Heap Dynamic area details. Seems to expect heap to be at 0x30000000. Calls OS_Heap free many times.
-     //                             , "Messages"          // Jump to 4, 0xfc0588c4 popne    {pc}
 
                                   , "WindowManager"
                                   , "Debugger"
@@ -726,13 +812,11 @@ bool excluded( const char *name )
                                   , "ScrSaver"        // Doesn't return, afaics
                                   , "Serial"        // "esources$Path{,_Message} not found
                                   , "ShellCLI"        // "esources$Path{,_Message} not found
-                                  , "SoundDMA"          // 0xfc30a098 accesses 0xfaff4034 data abort
                                   , "SoundControl"          // No return
-                                  , "SoundChannels"          // 0xfc30d8b8 accesses 0xfaff4040 data (? green) abort
                                   , "Squash"                    // No return
                                   , "BootFX"                    // No return
                                   , "SystemDevices"             // No return
-                                  //, "TaskWindow"             // Data abort, fc339bc4 -> 01f0343c
+                                  , "TaskWindow"             // Data abort, fc339bc4 -> 01f0343c
 
   };
 
@@ -896,13 +980,40 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
   // Always does a simple return to caller, never intercepting because there's no lower call.
   register uint32_t *regs;
   asm ( "push { r0-r11, lr }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+
+  WriteS( "OS_Byte " ); WriteNum( r0 );
+
   switch (r0) {
   case 0xa1:
     {
+    WriteS( " CMOS byte " ); WriteNum( r1 );
     switch (r1) {
-    case  24: asm ( "mov r0, %[v]\nstr r0, [sp, #8]" : : [v] "i" (1 ^ 1) ); break; // UK Territory (encoded)
-    case 134: asm ( "mov r0, %[v]\nstr r0, [sp, #8]" : : [v] "i" (128) ); break; // Font Cache pages: 512k
-    case 200 ... 205: asm ( "mov r0, %[v]\nstr r0, [sp, #8]" : : [v] "i" (32) ); break; // FontMax 1-5
+
+    // No loud beep, scrolling allowed, no boot from disc, serial data format code 0
+    // Read from UK territory module
+    case 0x10: regs[2] = 0; break;
+
+    // Unplugged flags
+    case 0x6:
+    case 0x7:
+    case 0x12 ... 0x15:
+      regs[2] = 0; break;
+    
+    // UK Territory (encoded)
+    case 0x18: regs[2] = 1 ^ 1; break;
+
+    // Font Cache pages: 512k
+    case 0x86: regs[2] = 128; break;
+
+    // Time zone (15 mins as signed)
+    case 0x8b: regs[2] = 0; break;
+
+    // FontMax 1-5
+    case 0xc8 ... 0xcc: regs[2] = 32; break;
+
+    // Alarm flags/DST ???
+    case 0xdc: regs[2] = 0; break;
+
     default: asm ( "bkpt 1" );
     }
     }
@@ -922,6 +1033,7 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     break;
   default: asm ( "bkpt 1" );
   }
+  NewLine;
   asm ( "pop { r0-r11, pc }" );
 }
 
@@ -1199,38 +1311,6 @@ static void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint
 
 static void user_mode_code();
 
-static inline void initialise_frame_buffer()
-{
-// I want to get the screen available early in the programming process, it will properly be done in a module
-uint32_t volatile * const mbox = (void*) 0xfff41000;
-MMU_map_device_at( (void*) mbox, 0x3f00b000, 4096 );
-
-extern startup boot_data;
-
-uint32_t volatile *mailbox = &mbox[0x220];
-static const uint32_t __attribute__(( aligned( 16 ) )) volatile tags[26] =
-{ sizeof( tags ), 0, // 0x00028001, 8, 0, 1, 3, 0x00028001, 8, 0, 2, 3,
-          // Tags: Tag, buffer size, request code, buffer
-          0x00040001, // Allocate buffer
-          8, 0, 2 << 20, 0, // Size, Code, In: Alignment, Out: Base, Size
-          0x00048003, // Set physical (display) width/height
-          8, 0, 1920, 1080,
-          0x00048004, // Set virtual (buffer) width/height
-          8, 0, 1920, 1080,
-          0x00048005, // Set depth
-          4, 0, 32,
-          0x00048006, // Set pixel order
-          4, 0, 0,    // 0 = BGR, 1 = RGB
-0 };
-extern uint32_t va_base;
-mailbox[8] = 8 | (boot_data.final_location + (uint32_t) tags - (uint32_t) &va_base);
-while ((mailbox[6] & (1 << 30)) != 0) { }
-uint32_t response = mailbox[0];
-asm volatile ( "" : : "r" (response) );
-uint32_t s = (tags[5] & ~0xc0000000);
-  asm ( "svc 0xff" : : : "lr" ); // This seems to be vital. Why?
-}
-
 void Boot()
 {
   workspace.kernel.vectors[6] = &default_ByteV;
@@ -1244,7 +1324,7 @@ void Boot()
 
   workspace.vdu.vduvars[128 - 128] = 0;
   workspace.vdu.vduvars[129 - 128] = 0;
-  workspace.vdu.vduvars[130 - 128] = 1920 - 1;
+  workspace.vdu.vduvars[130 - 128] = 1920 - 1;  // TODO set these from information from the HAL
   workspace.vdu.vduvars[131 - 128] = 1080 - 1;
   extern uint32_t frame_buffer;
   workspace.vdu.vduvars[148 - 128] = (uint32_t) &frame_buffer;
@@ -1266,39 +1346,6 @@ void Boot()
   }
 
   init_modules();
-
-/*
-  init_module( "DrawMod" );
-  init_module( "UtilityMod" );
-  init_module( "UtilityModule" );
-  init_module( "FileSwitch" ); // Uses MessageTrans, but survives it not being there at startup
-  init_module( "FileCore" );
-  init_module( "SharedCLibrary" );
-
-  init_module( "TerritoryManager" ); // Uses MessageTrans to open file
-  init_module( "ResourceFS" ); // Uses TerritoryManager
-
-
-  This requires more functionality in the system variables than currently implemented. SetMacro, etc.
-  init_module( "FontManager" );
-  init_module( "ROMFonts" );
-
-  init_module( "ColourTrans" );
-
-  init_module( "Messages" );
-  // init_module( "MessageTrans" ); // Needs memory at the address returned by OSRSI6_DomainId 
-  init_module( "UK" );
-*/
-  // init_module( "DrawFile" ); Seems to stall
-
-//  init_module( "UtilityMod" );
-/*
-  init_module( "WindowManager" );
-  init_module( "BufferManager" );
-  init_module( "DeviceFS" );
-  init_module( "RTSupport" );
-  init_module( "USBDriver" );
-*/
 
   TaskSlot *slot = MMU_new_slot();
   physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( 4096, 4096 ), .size = 4096 };

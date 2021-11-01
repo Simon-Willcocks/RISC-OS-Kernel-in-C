@@ -45,7 +45,9 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
       Kernel_add_free_RAM( boot_data.less_aligned.base >> 12, boot_data.less_aligned.size >> 12 );
     }
   }
-  else { for (;;) { asm ( "wfi" ); } } // Uncomment when debugging to reduce distractions
+  // Real hardware display still doesn't come up without this:
+  else { for (int i = 0; i < 0x7000000; i++) { asm volatile ( "" ); } }
+  //else { for (;;) { asm ( "wfi" ); } } // Uncomment when debugging to reduce distractions
 
   int32_t vector_offset = ((uint32_t*) &workspace.vectors.reset_vec - &workspace.vectors.reset - 2) * 4;
 

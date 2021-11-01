@@ -36,15 +36,26 @@ typedef struct shared_workspace shared_workspace;
 #include "mmu.h"
 #include "memory_manager.h"
 
+typedef struct callback callback;
+
 typedef struct module module;
-typedef struct callback vector;
-typedef struct callback transient_callback;
+typedef callback vector;
+typedef callback transient_callback;
 typedef struct variable variable;
+
+typedef struct ticker_event ticker_event;
+struct ticker_event {
+  uint32_t code;
+  uint32_t private_word;
+  uint32_t remaining;
+  uint32_t reload;
+  ticker_event *next;
+};
 
 struct callback {
   uint32_t code;
   uint32_t private_word;
-  struct callback *next;
+  callback *next;
 };
 
 // Stacks sizes need to be checked (or use the zp memory)
@@ -58,6 +69,8 @@ struct Kernel_workspace {
   uint64_t start_time;
   uint32_t monotonic_time;
 
+  callback *callbacks_pool;
+
   module *module_list_head;
   module *module_list_tail;
   uint32_t DomainId;
@@ -68,6 +81,8 @@ struct Kernel_workspace {
   // implementation, yet, but it's probably also an efficient
   // approach:
   transient_callback *transient_callbacks_pool;
+  ticker_event *ticker_queue;
+  ticker_event *ticker_event_pool;
 };
 
 struct VDU_workspace {
@@ -97,6 +112,11 @@ struct Kernel_shared_workspace {
   // Only one multiprocessing module can be initialised at at time (so the 
   // first has a chance to initialise their shared workspace).
   uint32_t mp_module_init_lock;
+
+  // The elements of this linked list won't be used directly, they're a place to hold the private word for
+  // multi-processing modules; all cores share the same private word.
+  module *module_list_head;
+  module *module_list_tail;
 
   uint32_t screen_lock; // Not sure if this will always be wanted; it might make sense to make the screen memory outer (only) sharable, and flush the L1 cache to it before releasing this lock.
 };

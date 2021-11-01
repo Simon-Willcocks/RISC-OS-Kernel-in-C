@@ -363,10 +363,178 @@ static bool do_OS_ValidateAddress( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_CallAfter( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+// Ticker events
 
-static bool do_OS_CallEvery( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_RemoveTickerEvent( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+// Future possibility: Store the TaskSlot associated with the callback
+// (transient callbacks, too), and swap it in and out again as needed.
+static ticker_event *allocate_ticker_event()
+{
+  ticker_event *result = workspace.kernel.ticker_event_pool;
+  if (result == 0) {
+    svc_registers regs;
+    result = rma_allocate( sizeof( transient_callback ), &regs );
+  }
+  else {
+    workspace.kernel.ticker_event_pool = result->next;
+  }
+  return result;
+}
+
+static void find_place_in_queue( ticker_event *new )
+{
+  ticker_event **queue = &workspace.kernel.ticker_queue;
+  while (*queue != 0 && (*queue)->remaining >= new->remaining) {
+    new->remaining -= (*queue)->remaining;
+    queue = &(*queue)->next;
+  }
+  new->next = (*queue)->next;
+  *queue = new;
+}
+
+static void run_handler( uint32_t code, uint32_t private )
+{
+  // Very trustingly, run module code
+  register uint32_t p asm ( "r12" ) = private;
+  register uint32_t c asm ( "r14" ) = code;
+  asm volatile ( "blx r14" : : "r" (p), "r" (c) : "cc", "memory" );
+}
+
+static void run_ticker_events()
+{
+  asm ( "push { r0-r12, r14 }" );
+  while (workspace.kernel.ticker_queue->remaining == 0) {
+    ticker_event *e = workspace.kernel.ticker_queue;
+    workspace.kernel.ticker_queue = e->next;
+    run_handler( e->code, e->private_word );
+    if (e->reload != 0) {
+      e->remaining = e->reload;
+      find_place_in_queue( e );
+    }
+    else {
+      e->next = workspace.kernel.ticker_event_pool;
+      workspace.kernel.ticker_event_pool = e->next;
+    }
+  }
+  asm ( "pop { r0-r12, pc }" );
+}
+
+static void __attribute__(( naked )) TickerV_handler();
+
+static void release_TickerV()
+{
+  register uint32_t vector asm( "r0" ) = 0x1c;
+  register void *code asm( "r1" ) = TickerV_handler;
+  register uint32_t private asm( "r2" ) = 0;
+  // Private word not used
+  asm ( "svc %[swi]"
+           :
+           : [swi] "i" (OS_Release | 0x20000)
+           , "r" (vector)
+           , "r" (code)
+           , "r" (private) );
+}
+
+static void claim_TickerV()
+{
+  register uint32_t vector asm( "r0" ) = 0x1c;
+  register void *code asm( "r1" ) = TickerV_handler;
+  register uint32_t private asm( "r2" ) = 0;
+  // Private word not used
+  asm ( "svc %[swi]"
+           :
+           : [swi] "i" (OS_Claim | 0x20000)
+           , "r" (vector)
+           , "r" (code)
+           , "r" (private) );
+}
+
+static void __attribute__(( noinline )) C_TickerV_handler()
+{
+  if (workspace.kernel.ticker_queue != 0) {
+    workspace.kernel.ticker_queue->remaining--;
+    if (workspace.kernel.ticker_queue->remaining == 0) {
+      run_ticker_events();
+    }
+  }
+
+  if (workspace.kernel.ticker_queue == 0) {
+    release_TickerV();
+  }
+}
+
+static void __attribute__(( naked )) TickerV_handler()
+{
+  // C will ensure the callee saved registers are preserved.
+  // We don't care about the private word.
+  asm ( "push { r0, r1, r2, r3, r12 }" );
+  C_TickerV_handler();
+  asm ( "pop { r0, r1, r2, r3, r12 }" );
+}
+
+static bool insert_into_timer_queue( uint32_t code, uint32_t private, uint32_t timeout, uint32_t reload )
+{
+  if (workspace.kernel.ticker_queue == 0) {
+    claim_TickerV();
+  }
+
+  ticker_event *new = allocate_ticker_event();
+  if (new == 0)
+    return false;
+
+  new->remaining = timeout;
+  new->reload = reload;
+  new->code = code;
+  new->private_word = private;
+
+  find_place_in_queue( new );
+
+  return true;
+}
+
+static bool do_OS_CallAfter( svc_registers *regs ) 
+{
+  if (!insert_into_timer_queue( regs->r[1], regs->r[2], regs->r[0], 0 ))
+    return error_nomem( regs );
+  return true;
+}
+
+static bool do_OS_CallEvery( svc_registers *regs )
+{
+  if (!insert_into_timer_queue( regs->r[1], regs->r[2], regs->r[0], regs->r[0] ))
+    return error_nomem( regs );
+  return true;
+}
+
+static bool do_OS_RemoveTickerEvent( svc_registers *regs )
+{
+  ticker_event **queue = &workspace.kernel.ticker_queue;
+
+  uint32_t code = regs->r[0];
+  uint32_t private_word = regs->r[1];
+
+  while (*queue != 0) {
+    ticker_event *e = *queue;
+    if (e->code == code && e->private_word == private_word) {
+      if (e->next != 0) {
+        e->next->remaining += e->remaining;
+      }
+      *queue = e->next;
+      e->next = workspace.kernel.ticker_event_pool;
+      workspace.kernel.ticker_event_pool = e;
+      break;
+    }
+    queue = &e->next;
+  }
+
+  if (workspace.kernel.ticker_queue == 0) {
+    release_TickerV();
+  }
+
+  return true;
+}
+
+
+
 static bool do_OS_InstallKeyHandler( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_CheckModeValid( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
@@ -1021,7 +1189,9 @@ bool do_OS_MapDevicePages( svc_registers *regs )
   // Use
   //    For use by the HAL and other modules to map devices to virtual addresses for use by drivers.
   //
-  //    This should probably only be used in the module's first initialisation.
+  //    This should be used in the initialisation routine of a device driver module, it may be repeated for
+  //    each core, if access is required from more than one core (it is up to the module to protect the device
+  //    from simultaneous accesses).
   //
   //    Virtual addresses will be allocated first come first served, multiple requests for the same physical
   //    address will receive the same virtual address, independent of the active core.
@@ -1332,10 +1502,7 @@ uint32_t test = regs->spsr;
     workspace.kernel.transient_callbacks_pool = callback;
     workspace.kernel.transient_callbacks = latest.next;
 
-    // Callbacks preserve all registers and return by mov pc, lr
-    register uint32_t private_word asm ( "r12" ) = latest.private_word;
-    register uint32_t code asm ( "r14" ) = latest.code;
-    asm ( "blx r14" : : "r" (private_word), "r" (code) : "memory" );
+    run_handler( latest.code, latest.private_word );
   }
 
 if (test != regs->spsr) {

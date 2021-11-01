@@ -67,7 +67,13 @@ void Initialise_system_DAs()
 
 // This is the mechanism used by Kernel SWIs to return to callers, not normal modules...
 
-uint32_t memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
+uint32_t memory;
+    // Forgot that there may not be any memory to allocate, yet...
+do {
+  for (int i = 0; i < 1000; i++) { asm ( "" ); }
+  memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
+} while (memory == 0xffffffff);
+
 MMU_map_at( (void*) 0xfaf00000, memory, natural_alignment );
 memset( (void*) 0xfaf00000, '\0', natural_alignment );
 uint32_t slvk[] = {     0xe38ee201, // orr     lr, lr, #0x10000000      SLVK_setV
@@ -348,7 +354,6 @@ do_not_grow:
         da = da->next;
       }
 
-bool first_entry = da == 0;
       if (da == 0) {
         da = rma_allocate( sizeof( DynamicArea ), regs );
         if (da == 0) goto nomem;
@@ -363,12 +368,8 @@ bool first_entry = da == 0;
       }
 
       // Could be mapped in when used, by searching DAs in data_abort
-      // Should probably have XN.
+      // Should probably have XN. TODO
       MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
-
-if (first_entry) {
-    memset( &frame_buffer, 0xff, 1920*1080*4 );
-}
 
       regs->r[1] = (uint32_t) &frame_buffer;
     }
@@ -487,7 +488,8 @@ uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment )
 }
 
 #define W (480 * workspace.core_number)
-#define H(n) (150 + (n * 250))
+//#define H(n) (150 + (n * 250))
+#define H(n) (150)
 
 #define BSOD( n, c ) \
   asm ( "push { r0-r12,lr }" ); \

@@ -227,7 +227,7 @@ static void new_line( struct core_workspace *workspace )
   show_line( workspace->y, core( workspace ), Green, workspace->shared );
 }
 
-void C_WrchV_handler( char c, struct core_workspace *workspace )
+void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace *workspace )
 {
   if (workspace->x == 58 || c == '\n') {
     new_line( workspace );
@@ -251,7 +251,7 @@ if (0 != workspace->shared->frame_buffer) {
 
     workspace->display[workspace->y][workspace->x++] = c;
   }
-//for (int i = 0; i < 0x100000; i++) { asm volatile ( "" ); }
+
   clear_VF();
 }
 
@@ -277,12 +277,16 @@ static void *map_device_page( uint32_t physical_address )
 
 void led_on( struct workspace *workspace )
 {
+  asm volatile ( "dsb" ); // Probably overkill on the dsbs, but we're alternating between two devices
   workspace->gpio[0x1c/4] = (1 << 22); // Set
+  asm volatile ( "dsb" );
 }
 
 void led_off( struct workspace *workspace )
 {
+  asm volatile ( "dsb" );
   workspace->gpio[0x28/4] = (1 << 22); // Clr
+  asm volatile ( "dsb" );
 }
 
 void led_blink( struct workspace *workspace, int n )
@@ -326,11 +330,41 @@ void show_word( int x, int y, uint32_t number, uint32_t colour, struct workspace
   }
 }
 
+// TODO Take that code out of DynamicArea, and have another SWI for defining the screen, including the width and height...
+static uint32_t *map_screen_into_memory( uint32_t address )
+{
+  register uint32_t r0 asm ( "r0" ) = 30;
+  register uint32_t r1 asm ( "r1" ) = address;
+  register uint32_t r2 asm ( "r2" ) = 8 << 20;  // Allows access to slightly more RAM than needed, FIXME (1920x1080x4 = 0x7e9000)
+  // TODO Add a few more virtual lines, so that we're allocated the full 8MiB.
+  register uint32_t *base asm ( "r1" );
+
+  asm ( "svc %[os_dynamicarea]" : "=r" (base) : [os_dynamicarea] "i" (0x66), "r" (r0), "r" (r1), "r" (r2) : "lr", "cc" );
+
+  return base;
+}
+
+static inline stop_and_blink( struct workspace *workspace )
+{
+  bool on = true;
+  for (;;) {
+    for (int i = 0; i < 0x10000000; i++) { asm volatile( "" ); }
+
+    if (on) led_off( workspace );
+    else led_on( workspace );
+    on = !on;
+  }
+}
+
 static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
 {
   uint32_t volatile *mailbox = &workspace->mbox[0x220];
 
+  const int width = 1920;
+  const int height = 1080;
+
   static const int space_to_claim = 26 * sizeof( uint32_t );
+  static const uint32_t alignment = 2 << 20; // 2 MB aligned (more for long descriptor translation tables than short ones)
 
   dma_memory tag_memory = rma_claim_for_dma( space_to_claim, 16 );
 
@@ -338,68 +372,93 @@ static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
 
   uint32_t volatile *dma_tags = (void*) tag_memory.va;
 
-  dma_tags[ 0] = space_to_claim;
-  dma_tags[ 1] = 0;
-  dma_tags[ 2] = 0x00040001;    // Allocate buffer
-  dma_tags[ 3] = 8;
-  dma_tags[ 4] = 0;
-  dma_tags[ 5] = 2 << 20;       // 2 MB aligned (more for long descriptor translation tables)
-  dma_tags[ 6] = 0;
-  dma_tags[ 7] = 0x00048003;    // Set physical (display) width/height
-  dma_tags[ 8] = 8;
-  dma_tags[ 9] = 0;
-  dma_tags[10] = 1920;
-  dma_tags[11] = 1080;
-  dma_tags[12] = 0x00048004;    // Set virtual (buffer) width/height
-  dma_tags[13] = 8;
-  dma_tags[14] = 0;
-  dma_tags[15] = 1920;
-  dma_tags[16] = 1080;
-  dma_tags[17] = 0x00048005;    // Colour depth
-  dma_tags[18] = 4;
-  dma_tags[19] = 0;
-  dma_tags[20] = 32;
-  dma_tags[21] = 0x00048006;    // Pixel order
-  dma_tags[22] = 4;
-  dma_tags[23] = 0;
-  dma_tags[24] = 0;             // 0 = BGR, 1 = RGB
-  dma_tags[25] = 0;             // End tag
+  // Note: my initial sequence of tags, 0x00040001, 0x00048003, 0x00048004, 0x00048005, 0x00048006,
+  // didn't get a valid size value from QEMU.
+
+  int index = 0;
+  dma_tags[index++] = space_to_claim;
+  dma_tags[index++] = 0;
+  dma_tags[index++] = 0x00048005;    // Colour depth
+  dma_tags[index++] = 4;
+  dma_tags[index++] = 0;
+  dma_tags[index++] = 32;
+  dma_tags[index++] = 0x00048006;    // Pixel order
+  dma_tags[index++] = 4;
+  dma_tags[index++] = 0;
+  dma_tags[index++] = 0;             // 0 = BGR, 1 = RGB
+  dma_tags[index++] = 0x00048003;    // Set physical (display) width/height
+  dma_tags[index++] = 8;
+  dma_tags[index++] = 0;
+  dma_tags[index++] = width;
+  dma_tags[index++] = height;
+  dma_tags[index++] = 0x00048004;    // Set virtual (buffer) width/height
+  dma_tags[index++] = 8;
+  dma_tags[index++] = 0;
+  dma_tags[index++] = width;
+  dma_tags[index++] = height + 13;    // Some hidden lines so that we are allocated whole MiB. FIXME for non-1080p
+  // Despite a line of 1920 pixels being about 8k, the allocated amount varies enormously
+  // 1088 results in 0x7f8000 (32KiB less than 8 MiB)
+  // 1089 results in 0x816000 (88KiB more than 8 MiB)
+  // 1093 is, by definition more than 8MB, so qemu, returning a closer size than the real hardware, will still work
+  // It's safer to map in less than is allocated than more, since the ARM could corrupt GPU memory in the latter case
+  // Mapping 0x800000 of the 0x816000 simply means 88KiB of memory won't be accessable by anyone.
+  // Maybe we can use some of it for mouse pointers or something, as long as the GPU isn't used to clear the screen?
+  dma_tags[index++] = 0x00040001;    // Allocate buffer
+  dma_tags[index++] = 8;
+  dma_tags[index++] = 0;
+  int buffer_tag = index;
+  dma_tags[index++] = alignment;
+  dma_tags[index++] = 0;
+  dma_tags[index++] = 0;             // End tag
 
   asm volatile ( "dsb sy" );
   asm ( "svc 0xff" : : : "lr", "cc" );
 
   uint32_t request = 8 | tag_memory.pa;
 
-  mailbox[8] = request;
+  while (dma_tags[buffer_tag] == alignment) {
+    mailbox[8] = request;
+    asm volatile ( "dsb" );
 
-  //workspace->gpio[0x28/4] = (1 << 22); // Clr
-  workspace->gpio[0x1c/4] = (1 << 22); // Set
-  asm volatile ( "dsb" );
+    //workspace->gpio[0x28/4] = (1 << 22); // Clr
+    workspace->gpio[0x1c/4] = (1 << 22); // Set
+    asm volatile ( "dsb" );
 
-  uint32_t response;
+    uint32_t response;
 
-  do {
-    while ((mailbox[6] & (1 << 30)) != 0) { } // Empty?
+    do {
+      uint32_t countdown = 0x10000;
+      while ((mailbox[6] & (1 << 30)) != 0 && --countdown > 0) { asm volatile ( "dsb" ); } // Empty?
+      if (countdown == 0) break;
 
-    response = mailbox[0];
-  } while (response != request);
+      response = mailbox[0];
+      if (response != request) stop_and_blink( workspace );
+    } while (response != request);
 
-  asm ( "svc 0xff" : : : "lr", "cc" );
-while (dma_tags[5] == (2 << 20)) {
-int offset = 0x28;
-for (int c = 0; c < 6; c++) {
-  for (int i = 0; i < 0x10000000; i++) { asm volatile( "" ); }
-  workspace->gpio[offset/4] = (1 << 22);
-  offset = (0x1c + 0x28) - offset;
-}
-  for (int i = 0; i < 0x10000000; i++) { asm volatile( "" ); }
-  for (int i = 0; i < 0x10000000; i++) { asm volatile( "" ); }
-}
+    asm ( "svc 0xff" : : : "lr", "cc" );
+  }
 
   workspace->gpio[0x28/4] = (1 << 22); // Clr
   asm volatile ( "dsb" );
 
-  return (dma_tags[5] & ~0xc0000000);
+// Just so the values can be displayed:
+  workspace->frame_buffer = map_screen_into_memory( (dma_tags[buffer_tag] & ~0xc0000000) );
+  //memset( workspace->frame_buffer, bg, width*height*4 );
+  show_word( 4, 10, dma_tags[buffer_tag], White, workspace );
+  show_word( 4, 20, dma_tags[buffer_tag+1], White, workspace );
+// end
+
+  return (dma_tags[buffer_tag] & ~0xc0000000);
+}
+
+static void WriteNum( uint32_t number )
+{
+  for (int nibble = 8; nibble >= 0; nibble--) {
+    char c = '0' + ((number >> (nibble*4)) & 0xf);
+    if (c > '9') c += ('a' - '0' - 10);
+    register uint32_t r0 asm( "r0" ) = c;
+    asm( "svc 0": : "r" (r0) : "lr", "cc" );
+  }
 }
 
 void init( uint32_t this_core, uint32_t number_of_cores )
@@ -408,7 +467,7 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   // Preserve r12, in case we make a function call
   asm volatile ( "mov %[private_word], r12" : [private_word] "=r" (private) );
 
-  bool first_entry = *private == 0;
+  bool first_entry = (*private == 0);
 
   struct workspace *workspace;
 
@@ -421,40 +480,17 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   // Map this addresses into all cores
   workspace->mbox = map_device_page( 0x3f00b000 );
 
-  // Temporary?
-  //workspace->uart = map_device_page( 0x3f020000 );
-  //workspace->uart[0x40] = 'W';
-
   workspace->gpio = map_device_page( 0x3f200000 );
 
-  uint32_t *gpio = workspace->gpio;
-  gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6); // Output, pin 22
-  asm volatile ( "dsb" );
-  //gpio[0x28/4] = (1 << 22); // Clr
-  gpio[0x1c/4] = (1 << 22); // Set
-  asm volatile ( "dsb" );
-
   if (first_entry) {
+    uint32_t *gpio = workspace->gpio;
+    gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6); // Output, pin 22
+    asm volatile ( "dsb" );
+
     workspace->fb_physical_address = initialise_frame_buffer( workspace );
-
-    register uint32_t r0 asm ( "r0" ) = 30;
-    register uint32_t r1 asm ( "r1" ) = workspace->fb_physical_address;
-    register uint32_t r2 asm ( "r2" ) = 8 << 20;  // Allows access to slightly more RAM than needed, FIXME (1920x1080x4 = 0x7e9000)
-    // TODO Add a few more virtual lines, so that we're allocated the full 8MiB.
-    register void *base asm ( "r1" );
-
-    asm ( "svc %[os_dynamicarea]" : "=r" (base) : [os_dynamicarea] "i" (0x66), "r" (r0), "r" (r1), "r" (r2) : "lr", "cc" );
-
-    workspace->frame_buffer = base;
   }
 
-  if (first_entry) {
-    for (int y = 0; y < 1080; y++) {
-      for (int x = 0; x < 1920; x++) {
-        set_pixel( x, y, 0xff000033, workspace );
-      }
-    }
-  }
+  workspace->frame_buffer = map_screen_into_memory( workspace->fb_physical_address );
 
   workspace->core_specific[this_core].shared = workspace;
   workspace->core_specific[this_core].x = 0;
@@ -470,6 +506,9 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
   asm ( "svc 0x2001f" : : "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
 
-  WriteS( "HAL obtained WrchV\\n" );
+  WriteS( "HAL obtained WrchV\\n\\r" );
+  if (first_entry) { WriteS( "HAL initialised frame buffer\\n\\r" ); }
+  WriteNum( (uint32_t) private );
+  WriteNum( (uint32_t) workspace );
 }
 

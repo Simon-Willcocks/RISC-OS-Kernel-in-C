@@ -187,3 +187,15 @@ static inline void *rma_allocate( uint32_t size, svc_registers *regs )
   return result;
 }
 
+typedef struct {
+  uint32_t code;
+  char desc[];
+} error_block;
+
+static inline bool error_nomem( svc_registers *regs )
+{
+    static const error_block nomem = { 0x101, "The area of memory reserved for relocatable modules is full" };
+    regs->r[0] = (uint32_t) &nomem;
+    return false;
+}
+
