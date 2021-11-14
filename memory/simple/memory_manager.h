@@ -29,6 +29,7 @@ struct Memory_manager_shared_workspace {
   uint32_t os_heap_lock; // Should only be needed for shared heaps, and possibly one lock per heap (maybe invert the magic word, but be aware of interrupt handlers using OS_Heap - how is that dealt with today?).
   // Might be best in a shares.swis struct instead of here...
 
+  uint32_t dynamic_areas_setup_lock; // This has to be separate from dynamic_areas_lock, because OS_Heap uses OS_DynamicArea
   uint32_t dynamic_areas_lock;
   free_block free_blocks[16]; // This is the real free memory, not what we tell the applications!
   DynamicArea *dynamic_areas;
@@ -36,9 +37,13 @@ struct Memory_manager_shared_workspace {
   uint32_t last_da_address;
   uint32_t user_da_number;
 
+  uint32_t os_memory_active_state; // FIXME Just a toggle, at the moment
 
-  // For an early display, probably using the DrawMod...
-  uint32_t TEMPORARY_screen;
+  uint32_t device_page_lock;
+  struct {
+    uint32_t pages:12;
+    uint32_t page_number:20;
+  } device_pages[63];
 };
 
 void Initialise_system_DAs();

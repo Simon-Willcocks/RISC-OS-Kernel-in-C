@@ -208,308 +208,313 @@ struct __attribute__(( packed )) OsbyteVars {
 
 
 typedef struct {
-uint32_t vectors_and_fiq[0x40];
+  uint32_t vectors_and_fiq[0x40];
 
-union {
-struct {
-uint32_t IRQ1V; //  &100
-uint8_t  ESC_Status; //  &104
-uint8_t  LatchBSoftCopy; //  &105
-uint8_t  IOCControlSoftCopy; //  &106
-uint8_t  CannotReset; //  &107
-uint32_t IRQsema; //  &108
-uint32_t MetroGnome; //  &10C
-uint32_t MemorySpeed; //  &110
-uint32_t MEMC_CR_SoftCopy; //  &114
-uint32_t ResetIndirection; //  &118
-// Now all internal definitions
-// Up to here is initialized on reset
-// Next come handler variables
-uint32_t MemLimit;
-uint32_t UndHan;
-uint32_t PAbHan;
-uint32_t DAbHan;
-uint32_t AdXHan;
-uint32_t ErrHan;
-uint32_t ErrBuf;
-uint32_t ErrHan_ws;
-uint32_t CallAd_ws; //  smart Rs ordering:
-uint32_t CallAd; //  can do LDMIA of r12, pc
-uint32_t CallBf;
-uint32_t BrkAd_ws;
-uint32_t BrkAd;
-uint32_t BrkBf;
-uint32_t EscHan_ws;
-uint32_t EscHan;
-uint32_t EvtHan_ws;
-uint32_t EvtHan;
-// The next lot of workspace is in the space vacated by the small soft CAM map area
-// (256 words) which is no longer adequate, so we can reuse it
-// JordanWS        #       0
-uint32_t Serv_SysChains; // anchor for block handling 'system' service numbers, in range 1 to 255
-uint32_t Serv_UsrChains; // anchor for block handling 'user' service numbers, > 255
-uint32_t Serv_AwkwardChain; // anchor for chain handling non-compliant modules (no service table)
-uint32_t DAList; //  Pointer to first node on dynamic area list
-                // AlignSpace 16
-uint32_t al[3]; // align
-uint32_t AMBControl_ws; //  workspace anchor word for AMBControl
-uint32_t DynArea_ws; //  workspace anchor word for data structures to accelerate OS SWIs for dynamic areas
-uint32_t Oscli_CmdHashSum; // for hashed command lookup
-uint32_t Oscli_CmdHashLists; // anchor for hashed command lists structure
+  union {
+    struct {
+      uint32_t IRQ1V; //  &100
+      uint8_t  ESC_Status; //  &104
+      uint8_t  LatchBSoftCopy; //  &105
+      uint8_t  IOCControlSoftCopy; //  &106
+      uint8_t  CannotReset; //  &107
+      uint32_t IRQsema; //  &108
+      uint32_t MetroGnome; //  &10C
+      uint32_t MemorySpeed; //  &110
+      uint32_t MEMC_CR_SoftCopy; //  &114
+      uint32_t ResetIndirection; //  &118
+      // Now all internal definitions
+      // Up to here is initialized on reset
+      // Next come handler variables
+      uint32_t MemLimit;
+      uint32_t UndHan;
+      uint32_t PAbHan;
+      uint32_t DAbHan;
+      uint32_t AdXHan;
+      uint32_t ErrHan;
+      uint32_t ErrBuf;
+      uint32_t ErrHan_ws;
+      uint32_t CallAd_ws; //  smart Rs ordering:
+      uint32_t CallAd; //  can do LDMIA of r12, pc
+      uint32_t CallBf;
+      uint32_t BrkAd_ws;
+      uint32_t BrkAd;
+      uint32_t BrkBf;
+      uint32_t EscHan_ws;
+      uint32_t EscHan;
+      uint32_t EvtHan_ws;
+      uint32_t EvtHan;
+      // The next lot of workspace is in the space vacated by the small soft CAM map area
+      // (256 words) which is no longer adequate, so we can reuse it
+      // JordanWS        #       0
+      uint32_t Serv_SysChains; // anchor for block handling 'system' service numbers, in range 1 to 255
+      uint32_t Serv_UsrChains; // anchor for block handling 'user' service numbers, > 255
+      uint32_t Serv_AwkwardChain; // anchor for chain handling non-compliant modules (no service table)
+      uint32_t DAList; //  Pointer to first node on dynamic area list
+                      // AlignSpace 16
+      uint32_t al[3]; // align
+      uint32_t AMBControl_ws; //  workspace anchor word for AMBControl
+      uint32_t DynArea_ws; //  workspace anchor word for data structures to accelerate OS SWIs for dynamic areas
+      uint32_t Oscli_CmdHashSum; // for hashed command lookup
+      uint32_t Oscli_CmdHashLists; // anchor for hashed command lists structure
 
-               // AlignSpace 16   ; skipped bit must start on 16-byte boundary (ClearPhysRAM does 4 words at a time for skipped areas)
+                     // AlignSpace 16   ; skipped bit must start on 16-byte boundary (ClearPhysRAM does 4 words at a time for skipped areas)
 
-uint32_t VideoPhysAddr; //  Address of video RAM (in the case of DRAM-only machines,
-uint32_t VideoSizeFlags; //  this is actually a chunk out of DRAM)
-uint32_t DRAMPhysAddrA; //  Next the DRAM
-uint32_t DRAMSizeFlagsA;
-uint32_t PhysRamTable[32]; // ??
+      uint32_t VideoPhysAddr; //  Address of video RAM (in the case of DRAM-only machines,
+      uint32_t VideoSizeFlags; //  this is actually a chunk out of DRAM)
+      uint32_t DRAMPhysAddrA; //  Next the DRAM
+      uint32_t DRAMSizeFlagsA;
+      uint32_t PhysRamTable[32]; // ??
 
-uint32_t LxPTUsed; //  Amount of memory used for L2PT (short desc) or L3PT (long desc)
-uint32_t SoftCamMapSize; //  Amount of memory (in bytes) used for soft CAM map
-                                // (whole number of pages)
-                // AlignSpace
-uint32_t HAL_StartFlags;
-uint32_t HAL_Descriptor;
-uint32_t HAL_Workspace;
-uint32_t HAL_WsSize;
+      uint32_t LxPTUsed; //  Amount of memory used for L2PT (short desc) or L3PT (long desc)
+      uint32_t SoftCamMapSize; //  Amount of memory (in bytes) used for soft CAM map
+                                      // (whole number of pages)
+                      // AlignSpace
+      uint32_t HAL_StartFlags;
+      uint32_t HAL_Descriptor;
+      uint32_t HAL_Workspace;
+      uint32_t HAL_WsSize;
 
-uint32_t ICache_NSets;
-uint32_t ICache_Size;
-uint8_t  ICache_LineLen;
-uint8_t  ICache_Associativity;
-uint8_t  Cache_Type;
-uint8_t  Cache_Flags;
+      uint32_t ICache_NSets;
+      uint32_t ICache_Size;
+      uint8_t  ICache_LineLen;
+      uint8_t  ICache_Associativity;
+      uint8_t  Cache_Type;
+      uint8_t  Cache_Flags;
 
-uint32_t DCache_NSets;
-uint32_t DCache_Size;
-uint8_t  DCache_LineLen;
-uint8_t  DCache_Associativity;
-uint8_t  ProcessorArch;
-uint8_t  ProcessorType; //  Processor type (handles 600 series onwards)
-uint32_t DCache_IndexBit;
-uint32_t DCache_IndexSegStart;
-uint32_t DCache_RangeThreshold;
-                // AlignSpace
-uint32_t ProcessorFlags; //  Processor flags (IMB, Arch4 etc)
-                // AlignSpace
-uint32_t MMU_PPLTrans;
-uint32_t MMU_PCBTrans;
-uint32_t MMU_PPLAccess;
-uint32_t Proc_Cache_CleanInvalidateAll;
-uint32_t Proc_Cache_CleanInvalidateRange;
-uint32_t Proc_Cache_CleanAll;
-uint32_t Proc_Cache_CleanRange;
-uint32_t Proc_Cache_InvalidateAll;
-uint32_t Proc_Cache_InvalidateRange;
-uint32_t Proc_Cache_RangeThreshold;
-uint32_t Proc_Cache_Examine;
-uint32_t Proc_ICache_InvalidateAll;
-uint32_t Proc_ICache_InvalidateRange;
-uint32_t Proc_TLB_InvalidateAll;
-uint32_t Proc_TLB_InvalidateEntry;
-uint32_t Proc_DSB_ReadWrite;
-uint32_t Proc_DSB_Write;
-uint32_t Proc_DSB_Read;
-uint32_t Proc_DMB_ReadWrite;
-uint32_t Proc_DMB_Write;
-uint32_t Proc_DMB_Read;
-uint32_t Proc_IMB_Full;
-uint32_t Proc_IMB_Range;
-uint32_t Proc_IMB_List;
-uint32_t Proc_MMU_Changing;
-uint32_t Proc_MMU_ChangingEntry;
-uint32_t Proc_MMU_ChangingUncached;
-uint32_t Proc_MMU_ChangingUncachedEntry;
-uint32_t Proc_MMU_ChangingEntries;
-uint32_t Proc_MMU_ChangingUncachedEntries;
-uint32_t Cache_Lx_Info; //  Cache level ID register
-uint32_t DCache[2];
-uint32_t ICache[2];
-uint32_t Cache_HALDevice; //  Pointer to any HAL cache device we're using
-uint32_t IOAllocPtr; //  current lowpoint of mapped I/O space (also upper limit on DAs)
-uint32_t IOAllocLimit; //  current lowest allowed I/O space (DA creation may move this up)
-uint32_t IOAllocTop; //  high end of I/O space
-uint32_t PhysIllegalMask; //  mask of invalid bits in upper word of physical addresses
-};
-uint32_t block1[0x80];
-};
+      uint32_t DCache_NSets;
+      uint32_t DCache_Size;
+      uint8_t  DCache_LineLen;
+      uint8_t  DCache_Associativity;
+      uint8_t  ProcessorArch;
+      uint8_t  ProcessorType; //  Processor type (handles 600 series onwards)
+      uint32_t DCache_IndexBit;
+      uint32_t DCache_IndexSegStart;
+      uint32_t DCache_RangeThreshold;
+                      // AlignSpace
+      uint32_t ProcessorFlags; //  Processor flags (IMB, Arch4 etc)
+                      // AlignSpace
+      uint32_t MMU_PPLTrans;
+      uint32_t MMU_PCBTrans;
+      uint32_t MMU_PPLAccess;
+      uint32_t Proc_Cache_CleanInvalidateAll;
+      uint32_t Proc_Cache_CleanInvalidateRange;
+      uint32_t Proc_Cache_CleanAll;
+      uint32_t Proc_Cache_CleanRange;
+      uint32_t Proc_Cache_InvalidateAll;
+      uint32_t Proc_Cache_InvalidateRange;
+      uint32_t Proc_Cache_RangeThreshold;
+      uint32_t Proc_Cache_Examine;
+      uint32_t Proc_ICache_InvalidateAll;
+      uint32_t Proc_ICache_InvalidateRange;
+      uint32_t Proc_TLB_InvalidateAll;
+      uint32_t Proc_TLB_InvalidateEntry;
+      uint32_t Proc_DSB_ReadWrite;
+      uint32_t Proc_DSB_Write;
+      uint32_t Proc_DSB_Read;
+      uint32_t Proc_DMB_ReadWrite;
+      uint32_t Proc_DMB_Write;
+      uint32_t Proc_DMB_Read;
+      uint32_t Proc_IMB_Full;
+      uint32_t Proc_IMB_Range;
+      uint32_t Proc_IMB_List;
+      uint32_t Proc_MMU_Changing;
+      uint32_t Proc_MMU_ChangingEntry;
+      uint32_t Proc_MMU_ChangingUncached;
+      uint32_t Proc_MMU_ChangingUncachedEntry;
+      uint32_t Proc_MMU_ChangingEntries;
+      uint32_t Proc_MMU_ChangingUncachedEntries;
+      uint32_t Cache_Lx_Info; //  Cache level ID register
+      uint32_t DCache[2];
+      uint32_t ICache[2];
+      uint32_t Cache_HALDevice; //  Pointer to any HAL cache device we're using
+      uint32_t IOAllocPtr; //  current lowpoint of mapped I/O space (also upper limit on DAs)
+      uint32_t IOAllocLimit; //  current lowest allowed I/O space (DA creation may move this up)
+      uint32_t IOAllocTop; //  high end of I/O space
+      uint32_t PhysIllegalMask; //  mask of invalid bits in upper word of physical addresses
+    };
+    uint32_t block1[0x80];
+  };
 
-uint32_t  CompatibilityPageEnabled; //  0 or 1 as appropriate, a byte, but use a word to align
-                // AlignSpace
-// IICBus_Count       *    5 ; 5 buses is enough for all current machines
-uint32_t IICBus_Base[5][3];        // #    IICBus_Size*IICBus_Count
-uint32_t PageTable_PageFlags; //  Page flags used for page tables. L2PT uses this directly, L1PT adds in PageFlags_Unavailable.
-                // AlignSpace 16   ; skipped bit must end on 16-byte boundary (ClearPhysRAM does 4 words at a time for skipped areas)
-// SkippedTablesEnd #      0
-// NVRAM support
-uint8_t  NVRamSize; //  Size of NVRam (E2ROM & CMOS) fitted in 256byte units
-uint8_t  NVRamBase; //  Base of NVRam
-uint8_t  NVRamSpeed; //  Clock hold time in 0.5us units
-uint8_t  NVRamPageSize; //  Page size for writing (log2)
-uint8_t  NVRamWriteSize; //  Size of writable region (256byte units)
-                   // AlignSpace
-struct DANode AppSpaceDANode; // Dummy area node for application space (not on list)
-struct DANode FreePoolDANode; // Area node for free pool
-struct DANode SysHeapDANode; // Area node for system heap
-uint32_t CDASemaphore; //  Semaphore for OS_ChangeDynamicArea - non-zero => routine threaded
-uint32_t MMUControlSoftCopy; //  Soft copy of ARM control register
-uint32_t IRQMax; //  from HAL_IRQMax
-uint32_t DeviceCount; //  size of our table of devices in the system heap
-uint32_t DeviceTable; //  pointer to table
+  // (0x40 + 0x80) * sizeof(uint32_t) = &300
 
-// Unused
-uint32_t ProcVec_Branch0; //  Branch through zero
-uint32_t ProcVec_UndInst; //  Undefined instruction vector
-uint32_t ProcVec_SWI; //  SWI vector
-uint32_t ProcVec_PrefAb; //  Prefetch abort vector
-uint32_t ProcVec_DataAb; //  Data abort vector
-uint32_t ProcVec_AddrEx; //  not used (was Address exception vector on 26-bit-only ARMs)
-uint32_t ProcVec_IRQ; //  IRQ vector
-uint32_t ProcVecPreVeneers[4];
+  uint32_t  CompatibilityPageEnabled; //  0 or 1 as appropriate, a byte, but use a word to align
+                  // AlignSpace
+  // IICBus_Count       *    5 ; 5 buses is enough for all current machines
+  uint32_t IICBus_Base[5][3];        // #    IICBus_Size*IICBus_Count
+  uint32_t PageTable_PageFlags; //  Page flags used for page tables. L2PT uses this directly, L1PT adds in PageFlags_Unavailable.
+                  // AlignSpace 16   ; skipped bit must end on 16-byte boundary (ClearPhysRAM does 4 words at a time for skipped areas)
+  // SkippedTablesEnd #      0
+  // NVRAM support
+  uint8_t  NVRamSize; //  Size of NVRam (E2ROM & CMOS) fitted in 256byte units
+  uint8_t  NVRamBase; //  Base of NVRam
+  uint8_t  NVRamSpeed; //  Clock hold time in 0.5us units
+  uint8_t  NVRamPageSize; //  Page size for writing (log2)
+  uint8_t  NVRamWriteSize; //  Size of writable region (256byte units)
+                     // AlignSpace
+  struct DANode AppSpaceDANode; // Dummy area node for application space (not on list)
+  struct DANode FreePoolDANode; // Area node for free pool
+  struct DANode SysHeapDANode; // Area node for system heap
+  uint32_t CDASemaphore; //  Semaphore for OS_ChangeDynamicArea - non-zero => routine threaded
+  uint32_t MMUControlSoftCopy; //  Soft copy of ARM control register
+  uint32_t IRQMax; //  from HAL_IRQMax
+  uint32_t DeviceCount; //  size of our table of devices in the system heap
+  uint32_t DeviceTable; //  pointer to table
 
-uint32_t ExtendedROMFooter; //  Pointer to the extended ROM footer structure. 0 if not initialised, -1 if not found.
-uint32_t CPUFeatures[2];
+  // Unused
+  uint32_t ProcVec_Branch0; //  Branch through zero
+  uint32_t ProcVec_UndInst; //  Undefined instruction vector
+  uint32_t ProcVec_SWI; //  SWI vector
+  uint32_t ProcVec_PrefAb; //  Prefetch abort vector
+  uint32_t ProcVec_DataAb; //  Data abort vector
+  uint32_t ProcVec_AddrEx; //  not used (was Address exception vector on 26-bit-only ARMs)
+  uint32_t ProcVec_IRQ; //  IRQ vector
+  uint32_t ProcVecPreVeneers[4];
 
-uint8_t free[0xb4]; // e0]; // Kernel/hdr/ExportVals/values
+  uint32_t ExtendedROMFooter; //  Pointer to the extended ROM footer structure. 0 if not initialised, -1 if not found.
+  uint32_t CPUFeatures[2];
 
-uint32_t CamMapCorruptDebugBlock[16]; // somewhere to dump registers in case of emergency
-uint32_t MaxCamEntry32; //  maximum index into the cam map which has a
-                                // 32bit physical address, for easy detection by
-                                // page number (all RAM banks with 32bit
-                                // addresses come first)
-uint8_t padding[0x24]; // Kernel/hdr/ExportVals/values
+  uint8_t free[0xb4]; // e0]; // Kernel/hdr/ExportVals/values
 
-uint32_t CamEntriesPointer; //  points to where CAM soft copy is
-uint32_t MaxCamEntry; //  maximum index into the cam map, ie
-                                // 511 for 16MByte machines, 383 for 12MBytes
-                                // 255 for 8MBytes, otherwise 127
-uint32_t RAMLIMIT; //  Number of pages of RAM
-uint32_t ROMPhysAddr;
-uint32_t HiServ_ws;
-uint32_t HiServ;
-uint32_t SExitA;
-uint32_t SExitA_ws;
-uint32_t UpCallHan_ws;
-uint32_t UpCallHan;
-uint32_t ROMModuleChain; //  pointer to head of ROM module chain
-// now a section that it's handy to have in simply loadable places
-             // AlignSpace 16
-uint8_t KeyWorkSpace[0x200];
+  uint32_t CamMapCorruptDebugBlock[16]; // somewhere to dump registers in case of emergency
+  uint32_t MaxCamEntry32; //  maximum index into the cam map which has a
+                                  // 32bit physical address, for easy detection by
+                                  // page number (all RAM banks with 32bit
+                                  // addresses come first)
+  uint8_t padding[0x24]; // Kernel/hdr/ExportVals/values
 
-uint32_t ChocolateCBBlocks; //  -> array of quick access blocks for Callback
-uint32_t ChocolateSVBlocks; //  -> array of quick access blocks for software vectors
-uint32_t ChocolateTKBlocks; //  -> array of quick access blocks for tickers
-uint32_t ChocolateMRBlocks; //  -> array of blocks for ROM module nodes (reduces no. of individual blocks in heap)
-uint32_t ChocolateMABlocks; //  -> array of blocks for active module nodes (reduces no. of individual blocks in heap)
-uint32_t ChocolateMSBlocks; //  -> array of blocks for module SWI hash nodes (reduces no. of individual blocks in heap)
-// !!!! Free Space (40 bytes)
-uint8_t OldSWIHashspace[10];
-uint32_t Module_List;
-uint32_t Curr_Active_Object;
-// Vector Claim & Release tables etc
-uint32_t VecPtrTab[96];
-uint32_t ExceptionDump;
-uint8_t spare[68];
-            // AlignSpace  16 ; Ensures we can MOV rn, #OsbyteVars if <=&1000
-struct OsbyteVars OsbyteVars;
-                            // (and stored in) OS_Bytes &A6,&A7. SKS
+  uint32_t CamEntriesPointer; //  points to where CAM soft copy is
+  uint32_t MaxCamEntry; //  maximum index into the cam map, ie
+                                  // 511 for 16MByte machines, 383 for 12MBytes
+                                  // 255 for 8MBytes, otherwise 127
+  uint32_t RAMLIMIT; //  Number of pages of RAM
+  uint32_t ROMPhysAddr;
+  uint32_t HiServ_ws;
+  uint32_t HiServ;
+  uint32_t SExitA;
+  uint32_t SExitA_ws;
+  uint32_t UpCallHan_ws;
+  uint32_t UpCallHan;
+  uint32_t ROMModuleChain; //  pointer to head of ROM module chain
+  // now a section that it's handy to have in simply loadable places
+               // AlignSpace 16
+  uint8_t KeyWorkSpace[0x200];
 
-uint32_t BuffInPtrs[10];
-uint32_t BuffOutPtrs[10];
+  uint32_t ChocolateCBBlocks; //  -> array of quick access blocks for Callback
+  uint32_t ChocolateSVBlocks; //  -> array of quick access blocks for software vectors
+  uint32_t ChocolateTKBlocks; //  -> array of quick access blocks for tickers
+  uint32_t ChocolateMRBlocks; //  -> array of blocks for ROM module nodes (reduces no. of individual blocks in heap)
+  uint32_t ChocolateMABlocks; //  -> array of blocks for active module nodes (reduces no. of individual blocks in heap)
+  uint32_t ChocolateMSBlocks; //  -> array of blocks for module SWI hash nodes (reduces no. of individual blocks in heap)
+  // !!!! Free Space (40 bytes)
+  uint8_t OldSWIHashspace[10];
+  uint32_t Module_List;
+  uint32_t Curr_Active_Object;
+  // Vector Claim & Release tables etc
+  uint32_t VecPtrTab[96];
+  uint32_t ExceptionDump;
+  uint8_t spare[68+12]; // 12 is AlignSpace
+              // AlignSpace  16 ; Ensures we can MOV rn, #OsbyteVars if <=&1000
+  struct OsbyteVars OsbyteVars;
+                              // (and stored in) OS_Bytes &A6,&A7. SKS
 
-uint32_t VariableList;
-// Oscli stuff
-uint32_t OscliCBtopUID;
-uint32_t OscliCBbotUID;
-uint32_t OscliCBcurrend;
-uint32_t ReturnCode;
-uint32_t RCLimit;
-uint32_t SpriteSize; //  saved on startup for Sprite code
-uint32_t TickNodeChain;
-uint32_t PIRQ_Chain;
-uint32_t PFIQasIRQ_Chain;
-// Workspace
-uint8_t  EnvTime[5];
-uint8_t  RedirectInHandle;
-uint8_t  RedirectOutHandle;
-uint8_t  MOShasFIQ;
-uint8_t  FIQclaim_interlock;
-uint8_t  CallBack_Flag;
+  uint32_t BuffInPtrs[10];
+  uint32_t BuffOutPtrs[10];
 
-uint8_t  MonitorLeadType; //  some function of the monitor lead inputs, as yet undetermined
-uint8_t  MentionCMOSReset; //  non zero reports CMOS resets prior to the start banner
-                // AlignSpace
-uint32_t DUMPER[17];
-uint32_t removed_PxxxIRQ_Chain;
-uint32_t Page_Size;
-uint8_t CMOSRAMCache[256];
+  uint32_t VariableList;
+  // Oscli stuff
+  uint32_t OscliCBtopUID;
+  uint32_t OscliCBbotUID;
+  uint32_t OscliCBcurrend;
+  uint32_t ReturnCode;          // ac4
+  uint32_t RCLimit;
+  uint32_t SpriteSize; //  saved on startup for Sprite code
+  uint32_t TickNodeChain;
+  uint32_t PIRQ_Chain;
+  uint32_t PFIQasIRQ_Chain;
+  // Workspace
+  uint8_t  EnvTime[5];
+  uint8_t  RedirectInHandle;
+  uint8_t  RedirectOutHandle;
+  uint8_t  MOShasFIQ;
+  uint8_t  FIQclaim_interlock;
+  uint8_t  CallBack_Flag;
 
-uint8_t ModuleSHT_Padding0[12];
-uint32_t ModuleSWI_HashTab[128];
-uint32_t SysVars_StickyPointers[11];
+  uint8_t  MonitorLeadType; //  some function of the monitor lead inputs, as yet undetermined
+  uint8_t  MentionCMOSReset; //  non zero reports CMOS resets prior to the start banner
+                  // AlignSpace
+  uint32_t DUMPER[17];
+  uint32_t removed_PxxxIRQ_Chain;
 
-uint32_t Abort32_dumparea[6]; // ;info for OS_ReadSysInfo 7 - 32-bit PSR, fault address, 32-bit PC (room for two copies)
+  uint32_t Page_Size;
 
-uint32_t Help_guard; // for *help, guard against foreground re-entrancy (multiple taskwindows)
-uint32_t Help_msgdescr[4]; // for *help, 4 words MessageTrans descriptor
-uint32_t PCI_status; // bit 0 = 1 if PCI exists or 0 if PCI does not exist, bits 1..31 reserved (0)
-uint32_t IOMD_NoInterrupt; // no. of irq devices for extant IOMD
-uint32_t IOMD_DefaultIRQ1Vcode; // default irq code start address (ROM) for extant IOMD
-uint32_t IOMD_DefaultIRQ1Vcode_end; // default irq code end address (ROM)
-uint32_t IOMD_Devices; // default irq devices table address (ROM)
+  uint8_t CMOSRAMCache[256];
 
-uint8_t ModuleSHT_Padding1[752-12-4*128-11*4-6*4-5*4-4-4*4];
-//was:
-//OldIRQ1Vspace       # 752
-uint32_t CallBack_Vector;
-// interruptible heap manager workspace
-uint32_t HeapSavedReg_R0;
-uint32_t HeapSavedReg_R1;
-uint32_t HeapSavedReg_R2;
-uint32_t HeapSavedReg_R3;
-uint32_t HeapSavedReg_R4;
-uint32_t HeapSavedReg_R5;
-uint32_t HeapSavedReg_R13;
-uint32_t HeapReturnedReg_R0;
-uint32_t HeapReturnedReg_R1;
-uint32_t HeapReturnedReg_R2;
-uint32_t HeapReturnedReg_R3;
-uint32_t HeapReturnedReg_R4;
-uint32_t HeapReturnedReg_R5;
-uint32_t HeapReturnedReg_R13;
-uint32_t HeapReturnedReg_PSR; //  also acts as interlock
-uint8_t RawMachineID[8];//        #  8                ; 64 bits for unique machine ID
-uint8_t KernelMessagesBlock[20]; //               ; 5 Words for messagetrans message block.
-uint8_t  ErrorSemaphore; //  Error semaphore to avoid looping on error translation.
-uint8_t  PortableFlags; // 
-        // AlignSpace
-uint8_t MOSConvertBuffer[12]; //               ; Enough romm for 8 hex digits.
-uint32_t AbortIndirection; //  Pointer to list of addresses and trap routines
-uint32_t PreVeneerRegDump[17]; //    #  17*4             ; room for r0-r15, spsr
-uint32_t CachedErrorBlocks; //  pointer to sysheap node holding the error block cache
-uint32_t PrinterBufferAddr; //  holds address of printer buffer
-uint32_t PrinterBufferSize; //  size of printer buffer - not to be confused with PrintBuffSize
-                            // which is the (constant) default size for the MOS's smallish buffer
+  uint8_t ModuleSHT_Padding0[12];
+  uint32_t ModuleSWI_HashTab[128];
+  uint32_t SysVars_StickyPointers[11];
 
-uint8_t pad_to_fe8[0xfe8 - 0xfd8];
+  uint32_t Abort32_dumparea[6]; // ;info for OS_ReadSysInfo 7 - 32-bit PSR, fault address, 32-bit PC (room for two copies)
 
-// Words for old tools of assorted varieties
-// Don't move the following as their positions are assumed by other modules
-//                        ^       &FE8
-uint8_t  CLibCounter; //  Counter for Shared C Library tmpnam function
-        // AlignSpace
-// ECN 17-Feb-92
-// Added RISCOSLibWord and CLibWord. The ROM RISCOSLib and CLib must continue
-// to work even when they are killed since ROM apps are hard linked to the
-// ROM libraries. They cannot use the private word since the block pointed
-// to by this will be freed.
-uint32_t RISCOSLibWord;
-uint32_t CLibWord;
-uint32_t FPEAnchor;
-uint32_t DomainId; //  SKS added for domain identification
-uint32_t Modula2_Private; //  MICK has FFC and uses it it in USR mode
-uint8_t VduDriverWorkSpace[0x3000];
-uint32_t DebuggerSpace[1024]; 
+  uint32_t Help_guard; // for *help, guard against foreground re-entrancy (multiple taskwindows)
+  uint32_t Help_msgdescr[4]; // for *help, 4 words MessageTrans descriptor
+  uint32_t PCI_status; // bit 0 = 1 if PCI exists or 0 if PCI does not exist, bits 1..31 reserved (0)
+  uint32_t IOMD_NoInterrupt; // no. of irq devices for extant IOMD
+  uint32_t IOMD_DefaultIRQ1Vcode; // default irq code start address (ROM) for extant IOMD
+  uint32_t IOMD_DefaultIRQ1Vcode_end; // default irq code end address (ROM)
+  uint32_t IOMD_Devices; // default irq devices table address (ROM)
+
+  uint8_t ModuleSHT_Padding1[752-12-4*128-11*4-6*4-5*4-4-4*4];
+
+  //was:
+  //OldIRQ1Vspace       # 752
+  uint32_t CallBack_Vector;
+  // interruptible heap manager workspace  (a) Yuk. (b) 0xf28
+  uint32_t HeapSavedReg_R0;
+  uint32_t HeapSavedReg_R1;
+  uint32_t HeapSavedReg_R2;
+  uint32_t HeapSavedReg_R3;
+  uint32_t HeapSavedReg_R4;
+  uint32_t HeapSavedReg_R5;
+  uint32_t HeapSavedReg_R13;
+  uint32_t HeapReturnedReg_R0;
+  uint32_t HeapReturnedReg_R1;
+  uint32_t HeapReturnedReg_R2;
+  uint32_t HeapReturnedReg_R3;
+  uint32_t HeapReturnedReg_R4;
+  uint32_t HeapReturnedReg_R5;
+  uint32_t HeapReturnedReg_R13;
+  uint32_t HeapReturnedReg_PSR; //  also acts as interlock
+  uint8_t RawMachineID[8];//        #  8                ; 64 bits for unique machine ID
+  uint8_t KernelMessagesBlock[20]; //               ; 5 Words for messagetrans message block.
+  uint8_t  ErrorSemaphore; //  Error semaphore to avoid looping on error translation.
+  uint8_t  PortableFlags; // 
+          // AlignSpace
+  uint8_t MOSConvertBuffer[12]; //               ; Enough romm for 8 hex digits.
+  uint32_t AbortIndirection; //  Pointer to list of addresses and trap routines
+  uint32_t PreVeneerRegDump[17]; //    #  17*4             ; room for r0-r15, spsr
+  uint32_t CachedErrorBlocks; //  pointer to sysheap node holding the error block cache
+  uint32_t PrinterBufferAddr; //  holds address of printer buffer
+  uint32_t PrinterBufferSize; //  size of printer buffer - not to be confused with PrintBuffSize
+                              // which is the (constant) default size for the MOS's smallish buffer
+
+  uint8_t pad_to_fe8[0xfe8 - 0xfd8];
+
+  // Words for old tools of assorted varieties
+  // Don't move the following as their positions are assumed by other modules
+  //                        ^       &FE8
+  uint8_t  CLibCounter; //  Counter for Shared C Library tmpnam function
+          // AlignSpace
+  // ECN 17-Feb-92
+  // Added RISCOSLibWord and CLibWord. The ROM RISCOSLib and CLib must continue
+  // to work even when they are killed since ROM apps are hard linked to the
+  // ROM libraries. They cannot use the private word since the block pointed
+  // to by this will be freed.
+  uint32_t RISCOSLibWord;
+  uint32_t CLibWord;
+  uint32_t FPEAnchor;
+  uint32_t DomainId; //  SKS added for domain identification
+  uint32_t Modula2_Private; //  MICK has FFC and uses it it in USR mode
+  uint8_t VduDriverWorkSpace[0x3000];
+  uint32_t DebuggerSpace[1024]; 
 } LegacyZeroPage;
 

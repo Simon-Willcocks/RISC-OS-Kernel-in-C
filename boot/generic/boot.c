@@ -51,7 +51,8 @@ static inline void wait_for_cores_to_reach( volatile uint32_t *states, int max_c
 }
 
 // Minimum RAM, to start with. More can be added to pool later, if available.
-static const uint32_t top_of_ram = 128 << 20;
+extern const uint32_t minimum_ram;
+static const uint32_t top_of_ram = (uint32_t) &minimum_ram;
 extern int rom_size;
 static const uint32_t size_of_rom = (uint32_t) &rom_size; // 5 << 20;
 

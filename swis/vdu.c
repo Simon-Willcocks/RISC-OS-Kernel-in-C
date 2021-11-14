@@ -15,9 +15,9 @@
 
 #include "inkernel.h"
 
-void __attribute__(( naked )) default_os_writec( uint32_t r0, uint32_t r1, uint32_t r2 )
+void default_os_writec( uint32_t r0, uint32_t r1, uint32_t r2 )
 {
-  for (;;) asm ( "wfi" );
+  // Do nothing
 }
 
 bool do_OS_ChangedBox( svc_registers *regs )

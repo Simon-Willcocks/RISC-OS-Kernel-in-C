@@ -31,9 +31,57 @@ bool Kernel_Error_UnimplementedSWI( svc_registers *regs )
   return false;
 }
 
+bool Kernel_Error_TooManyDevicePages( svc_registers *regs )
+{
+  static error_block error = { 0x555, "Too many device pages have been requested" }; // FIXME allocated number
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
+
+bool Kernel_Error_NonMatchingDevicePagingRequest( svc_registers *regs )
+{
+  static error_block error = { 0x555, "The device memory has been previously assigned, but with a different size" }; // FIXME allocated number
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
+
 static uint32_t word_align( void *p )
 {
   return (((uint32_t) p) + 3) & ~3;
+}
+
+static bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
+{
+  clear_VF();
+
+  extern uint32_t JTABLE;
+  uint32_t *jtable = &JTABLE;
+
+  register uint32_t non_kernel_code asm( "r10" ) = jtable[svc];
+  register uint32_t result asm( "r0" );
+
+  asm (
+      "\n  push { %[regs] }"
+      "\n  ldm %[regs], { r0-r9 }"
+      "\n  adr lr, return"
+      "\n  push { lr } // return address"
+      "\n  mov lr, #0 // Clear all flags - this may be wrong"
+      "\n  bx r10"
+      "\nreturn:"
+      "\n  pop { r10 }"
+      "\n  stm r10, { r0-r9 }"
+      "\n  ldr r0, [r10, %[spsr]]"
+      "\n  bic r0, #0xf0000000"
+      "\n  and r2, lr, #0xf0000000"
+      "\n  orr r0, r0, r2"
+      "\n  str r0, [r10, %[spsr]]"
+      : [result] "=r" (result)
+      : [regs] "r" (regs)
+      , "r" (non_kernel_code)
+      , [spsr] "i" (4 * (&regs->spsr - &regs->r[0]))
+      : "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r11", "r12", "lr" );
+
+  return (result & VF) == 0;
 }
 
 static bool do_OS_WriteS( svc_registers *regs )
@@ -42,13 +90,17 @@ static bool do_OS_WriteS( svc_registers *regs )
   uint32_t r0 = regs->r[0];
   bool result = true;
 
-  while (*s != '\0' && result) {
+  while (*s != '\0') {
     regs->r[0] = *s++;
-    result = do_OS_WriteC( regs );
+    // We have to work through the whole string, or returning an error is meaningless
+    if (!do_OS_WriteC( regs )) {
+      result = false;
+      r0 = regs->r[0];
+    }
   }
 
   regs->lr = word_align( s );
-  if (result) regs->r[0] = r0;
+  regs->r[0] = r0;
 
   return result;
 }
@@ -120,6 +172,7 @@ static bool do_OS_SetCallBack( svc_registers *regs ) { return Kernel_Error_Unimp
 
 static bool do_OS_ReadUnsigned( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
+#if 0
 static bool gs_space_is_terminator( uint32_t flags )
 {
   return (0 != (flags & (1 << 29)));
@@ -169,6 +222,21 @@ static bool Error_BadString( svc_registers *regs )
 
 static bool do_OS_GSRead( svc_registers *regs )
 {
+  // This routine is entered with two registers, r0 and r2, containging
+  // the result of the previous OS_GSRead or initial OS_GSInit.
+  // There is necessarily some nesting of calls, because variables may
+  // contain references to other variables, which may, in turn, do the same.
+
+  // The kernel workspace contains a stack to accommodate this.
+
+  // God knows what would happen if a code variable started using these routines.
+
+  // "I am currently processing a string (next character pointed to by r0)"
+  // "I am currently processing a variable, from a parent string (the character after the closing >)."
+  // Numbers are one character, decoded in a single call.
+
+  // r2 = flags, type, digit, parent
+  // r0 = pointer
   uint32_t flags = regs->r[2] & 0xe0000000;
   //const char *var = regs->r[2] & ~0xe0000000;
   const char *string = (void*) regs->r[0];
@@ -219,24 +287,80 @@ bool do_OS_GSTrans( svc_registers *regs )
   uint32_t translated = 0;
   regs->r[2] &= 0xe0000000;     // flags
   bool result = do_OS_GSInit( regs );
-  while (result && 0 == (regs->spsr & CF) && translated < maxsize) {
+  while (result && 0 == (regs->spsr & CF)) {
     result = do_OS_GSRead( regs );
-    if (result && buffer != 0) {
+
+    if (result && buffer != 0 && translated < maxsize) {
       buffer[translated] = regs->r[1];
     }
+
     translated++;
   }
-  if (buffer != 0) *buffer++ = '\0';
+
   regs->r[1] = (uint32_t) buffer;
   regs->r[2] = translated;
 
-  if (translated == maxsize)
+  if (translated >= maxsize) {
     regs->spsr |=  CF;
+    translated = maxsize;
+  }
   else
     regs->spsr &= ~CF;
 
   return result;
 }
+#else
+
+// GSInit, from Kernel/s/Arthur2 can be found using 'push\>[^\n]*\n[^\n]*ldrb\tr1, \[r0], #1[^\n]*\n[^\n]*cmp'
+// fc0206c4
+// GSRead, 'bne\>[^\n]*\n[^\n]*ldrb\tr1, \[r0], #1[^\n]*\n[^\n]*cmp' (then look back to the cpsie before the bic
+// fc02073c
+// GSTrans, the following 'bic\tlr, lr, #.*0x20000000'
+// fc020a50
+
+bool do_OS_GSTrans( svc_registers *regs )
+{
+  WriteS( "GSTrans (in) \\\"" ); Write0( (char*) regs->r[0] ); WriteS( "\\\"\\n\\r" );
+  bool result = run_risos_code_implementing_swi( regs, OS_GSTrans );
+  WriteS( "GSTrans (out) \\\"" );
+  if (regs->r[1] != 0) {
+    Write0( (char*) regs->r[1] );
+  } else {
+    WriteS( "NULL" );
+  }
+  WriteS( "\\\"\\n\\r" );
+  return result;
+}
+
+// They access memory around faff3364, as do a number of modules.
+// See hack in ./memory/simple/memory_manager.c
+// Kernel/Docs/HAL/Notes has a memory map:
+/*
+00000000 16K        Kernel workspace
+00004000 16K        Scratch space
+00008000 Mem-32K    Application memory
+0xxxxxxx 3840M-Mem  Dynamic areas
+F0000000 160M       I/O space (growing downwards if necessary)
+FA000000 1M         HAL workspace
+FA100000 8K         IRQ stack
+FA200000 32K        SVC stack
+FA300000 8K         ABT stack
+FA400000 8K         UND stack
+FAE00000 1M         Reserved for physical memory accesses
+FAF00000 256k       reserved for DCache cleaner address space (eg. StrongARM)
+FAF40000 64k        kernel buffers (for long command lines, size defined by KbuffsMaxSize)
+FAFE8000 32K        HAL workspace
+FAFF0000 32K        "Cursor/System/Sound" block (probably becoming just "System")
+FAFF8000 32K        "Nowhere"
+FB000000 4M         L2PT
+FB400000 16K        L1PT
+FB404000 4M-16K     System heap
+FB800000 8M         Soft CAM
+FC000000 64M        ROM
+*/
+
+
+#endif
 
 static bool do_OS_BinaryToDecimal( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
@@ -246,17 +370,198 @@ static bool do_OS_ReadPalette( svc_registers *regs ) { return Kernel_Error_Unimp
 
 static bool do_OS_SWINumberToString( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SWINumberFromString( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ValidateAddress( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_CallAfter( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ValidateAddress( svc_registers *regs )
+{
+  // FIXME (not all memory checks are going to pass!)
+  regs->spsr &= ~CF;
+  return true;
+}
 
-static bool do_OS_CallEvery( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_RemoveTickerEvent( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+// Ticker events
+
+// Future possibility: Store the TaskSlot associated with the callback
+// (transient callbacks, too), and swap it in and out again as needed.
+static ticker_event *allocate_ticker_event()
+{
+  ticker_event *result = workspace.kernel.ticker_event_pool;
+  if (result == 0) {
+    svc_registers regs;
+    result = rma_allocate( sizeof( transient_callback ), &regs );
+  }
+  else {
+    workspace.kernel.ticker_event_pool = result->next;
+  }
+  return result;
+}
+
+static void find_place_in_queue( ticker_event *new )
+{
+  ticker_event **queue = &workspace.kernel.ticker_queue;
+  while (*queue != 0 && (*queue)->remaining >= new->remaining) {
+    new->remaining -= (*queue)->remaining;
+    queue = &(*queue)->next;
+  }
+  new->next = (*queue)->next;
+  *queue = new;
+}
+
+static void run_handler( uint32_t code, uint32_t private )
+{
+  // Very trustingly, run module code
+  register uint32_t p asm ( "r12" ) = private;
+  register uint32_t c asm ( "r14" ) = code;
+  asm volatile ( "blx r14" : : "r" (p), "r" (c) : "cc", "memory" );
+}
+
+static void run_ticker_events()
+{
+  asm ( "push { r0-r12, r14 }" );
+  while (workspace.kernel.ticker_queue->remaining == 0) {
+    ticker_event *e = workspace.kernel.ticker_queue;
+    workspace.kernel.ticker_queue = e->next;
+    run_handler( e->code, e->private_word );
+    if (e->reload != 0) {
+      e->remaining = e->reload;
+      find_place_in_queue( e );
+    }
+    else {
+      e->next = workspace.kernel.ticker_event_pool;
+      workspace.kernel.ticker_event_pool = e->next;
+    }
+  }
+  asm ( "pop { r0-r12, pc }" );
+}
+
+static void __attribute__(( naked )) TickerV_handler();
+
+static void release_TickerV()
+{
+  register uint32_t vector asm( "r0" ) = 0x1c;
+  register void *code asm( "r1" ) = TickerV_handler;
+  register uint32_t private asm( "r2" ) = 0;
+  // Private word not used
+  asm ( "svc %[swi]"
+           :
+           : [swi] "i" (OS_Release | 0x20000)
+           , "r" (vector)
+           , "r" (code)
+           , "r" (private) );
+}
+
+static void claim_TickerV()
+{
+  register uint32_t vector asm( "r0" ) = 0x1c;
+  register void *code asm( "r1" ) = TickerV_handler;
+  register uint32_t private asm( "r2" ) = 0;
+  // Private word not used
+  asm ( "svc %[swi]"
+           :
+           : [swi] "i" (OS_Claim | 0x20000)
+           , "r" (vector)
+           , "r" (code)
+           , "r" (private) );
+}
+
+static void __attribute__(( noinline )) C_TickerV_handler()
+{
+  if (workspace.kernel.ticker_queue != 0) {
+    workspace.kernel.ticker_queue->remaining--;
+    if (workspace.kernel.ticker_queue->remaining == 0) {
+      run_ticker_events();
+    }
+  }
+
+  if (workspace.kernel.ticker_queue == 0) {
+    release_TickerV();
+  }
+}
+
+static void __attribute__(( naked )) TickerV_handler()
+{
+  // C will ensure the callee saved registers are preserved.
+  // We don't care about the private word.
+  asm ( "push { r0, r1, r2, r3, r12 }" );
+  C_TickerV_handler();
+  asm ( "pop { r0, r1, r2, r3, r12 }" );
+}
+
+static bool insert_into_timer_queue( uint32_t code, uint32_t private, uint32_t timeout, uint32_t reload )
+{
+  if (workspace.kernel.ticker_queue == 0) {
+    claim_TickerV();
+  }
+
+  ticker_event *new = allocate_ticker_event();
+  if (new == 0)
+    return false;
+
+  new->remaining = timeout;
+  new->reload = reload;
+  new->code = code;
+  new->private_word = private;
+
+  find_place_in_queue( new );
+
+  return true;
+}
+
+static bool do_OS_CallAfter( svc_registers *regs ) 
+{
+  if (!insert_into_timer_queue( regs->r[1], regs->r[2], regs->r[0], 0 ))
+    return error_nomem( regs );
+  return true;
+}
+
+static bool do_OS_CallEvery( svc_registers *regs )
+{
+  if (!insert_into_timer_queue( regs->r[1], regs->r[2], regs->r[0], regs->r[0] ))
+    return error_nomem( regs );
+  return true;
+}
+
+static bool do_OS_RemoveTickerEvent( svc_registers *regs )
+{
+  ticker_event **queue = &workspace.kernel.ticker_queue;
+
+  uint32_t code = regs->r[0];
+  uint32_t private_word = regs->r[1];
+
+  while (*queue != 0) {
+    ticker_event *e = *queue;
+    if (e->code == code && e->private_word == private_word) {
+      if (e->next != 0) {
+        e->next->remaining += e->remaining;
+      }
+      *queue = e->next;
+      e->next = workspace.kernel.ticker_event_pool;
+      workspace.kernel.ticker_event_pool = e;
+      break;
+    }
+    queue = &e->next;
+  }
+
+  if (workspace.kernel.ticker_queue == 0) {
+    release_TickerV();
+  }
+
+  return true;
+}
+
+
+
 static bool do_OS_InstallKeyHandler( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_CheckModeValid( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 
 static bool do_OS_ClaimScreenMemory( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ReadMonotonicTime( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool do_OS_ReadMonotonicTime( svc_registers *regs )
+{
+  regs->r[0] = workspace.kernel.monotonic_time;
+  workspace.kernel.monotonic_time++; // FIXME! ASAP!
+  return true;
+}
+
 static bool do_OS_SubstituteArgs( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_PrettyPrint( svc_registers *regs )
@@ -291,11 +596,23 @@ static bool do_OS_PrettyPrint( svc_registers *regs )
 
 static bool do_OS_WriteEnv( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadArgs( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ReadRAMFsLimits( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadRAMFsLimits( svc_registers *regs )
+{
+  regs->r[0] = 5;
+  if (do_OS_ReadDynamicArea( regs )) {
+    regs->r[1] = regs->r[1] + regs->r[1] + 1;
+    return true;
+  }
+  else {
+    return false;
+  }
+}
+
 static bool do_OS_ClaimDeviceVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ReleaseDeviceVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
+/* Untested
 static bool comparison_routine_says_less( uint32_t v1, uint32_t v2, uint32_t workspace, uint32_t routine )
 {
   register uint32_t r0 asm( "r0" ) = v1;
@@ -311,12 +628,13 @@ static bool comparison_routine_says_less( uint32_t v1, uint32_t v2, uint32_t wor
 less:
   return true;
 }
+*/
 
 static bool do_OS_HeapSort( svc_registers *regs )
 {
   // Not the proper implementation FIXME
   int elements = regs->r[0];
-  uint32_t *array = (void*) (regs->r[1] & ~0xe0000000);
+  //uint32_t *array = (void*) (regs->r[1] & ~0xe0000000);
   uint32_t flags = regs->r[1] >> 29;
   switch (regs->r[2]) {
   case 3: // Pointers to integers (DrawMod)
@@ -495,8 +813,8 @@ static const uint32_t SysInfo[] = {
   [OSRSI6_L2PT]                                    = 14,
   [OSRSI6_UNDSTK]                                  = 
         sizeof( workspace.kernel.undef_stack ) + (uint32_t) &workspace.kernel.undef_stack,
-  [OSRSI6_SVCSTK]                                  = 
-        sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack,
+  [OSRSI6_SVCSTK]                                  = 0x73273273, // A trap! Why does FileSwitch need to know this?
+        //sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack,
   [OSRSI6_SysHeapStart]                            = 17,
 
 // Safe versions of the danger allocations
@@ -508,11 +826,11 @@ static const uint32_t SysInfo[] = {
   [OSRSI6_DevicesEnd]                              = 66, // Relocated end of IRQ device head nodes
   [OSRSI6_IRQSTK]                                  = 67,
   [OSRSI6_SoundWorkSpace]                          = 68, // workspace (8K) and buffers (2*4K)
-  [OSRSI6_IRQsema]                                 = &workspace.vectors.zp.IRQsema,
+  [OSRSI6_IRQsema]                                 = (uint32_t) &workspace.vectors.zp.IRQsema,
 
 // New ROOL allocations
 
-  [OSRSI6_DomainId]                                = 0x66600666, // current Wimp task handle
+  [OSRSI6_DomainId]                                = (uint32_t) &workspace.vectors.zp.DomainId, // current Wimp task handle
   [OSRSI6_OSByteVars]                              = 71, // OS_Byte vars (previously available via OS_Byte &A6/VarStart)
   [OSRSI6_FgEcfOraEor]                             = 72,
   [OSRSI6_BgEcfOraEor]                             = 73,
@@ -563,8 +881,16 @@ static bool do_OS_ReadSysInfo( svc_registers *regs )
       return true;
     }
   case 6: return read_kernel_value( regs );
+  case 8:
+    {
+      regs->r[0] = 5;
+      regs->r[1] = 0x14; // Multiple processors supported, OS runs from RAM
+      regs->r[2] = 0;
+      return true;
+    }
+    break;
 
-  default: { return Kernel_Error_UnknownSWI( regs ); }
+  default: { WriteS( "OS_ReadSysInfo: " ); WriteNum( regs->r[0] ); NewLine; return Kernel_Error_UnknownSWI( regs ); }
   }
 
   regs->r[0] = (uint32_t) &error;
@@ -637,7 +963,6 @@ static bool do_OS_SetColour( svc_registers *regs )
 static bool do_OS_Pointer( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ScreenMode( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_Memory( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ClaimProcessorVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_Reset( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
@@ -677,7 +1002,7 @@ static bool do_OS_ConvertDateAndTime( svc_registers *regs )
   return true;
 }
 
-static const char hex[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
+const char hex[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
 
 static bool hex_convert( svc_registers *regs, int digits )
 {
@@ -815,6 +1140,122 @@ static bool do_OS_ConvertFixedNetStation( svc_registers *regs ) { return Kernel_
 static bool do_OS_ConvertNetStation( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
+static bool duplicate_page( uint32_t pa, uint32_t i )
+{
+  // This physical address has already been mapped (possibly by a different core, or even a different module)
+  return (pa >> 12) == shared.memory.device_pages[i].page_number;
+}
+
+// FIXME Move to TaskSlot
+static bool do_OS_ReleaseDMALock( svc_registers *regs )
+{
+  // On entry
+  //    R0 = Virtual address that was locked
+  //    R1 = Number of bytes that were locked
+
+  // On exit
+  //    R0,R1  preserved
+
+  // Use
+  //    For use by the HAL and other modules to communicate with devices that can directly access memory.
+  //
+  //    While there is a DMA lock in place in a TaskSlot, the memory manager will not be permitted to
+  //    resize or rearrange the slot for efficiency.
+
+  // FIXME FIXME FIXME Implement this! (TaskSlot related.)
+
+  return true;
+}
+
+// FIXME Move to TaskSlot
+static bool do_OS_LockForDMA( svc_registers *regs )
+{
+  // On entry
+  //    R0 = Virtual address to be locked
+  //    R1 = Number of bytes to be locked
+
+  // On exit
+  //    R0 = Physical address of locked memory
+  //    R1   preserved
+
+  // Use
+  //    For use by the HAL and other modules to communicate with devices that can directly access memory.
+  //
+  //    Virtual addresses will be allocated first come first served, multiple requests for the same physical
+  //    address will receive the same virtual address, independent of the active core.
+
+  // FIXME FIXME FIXME Needs a proper implementation! At the moment, the RMA is a single block of contiguous
+  // memory, and that's the only area that will be used for this purpose until a proper implementation is put
+  // in place for TaskSlots.
+  // Check number of bytes to ensure it doesn't go over into another page.
+  // Worst case for this is that a two (or four) megabyte block of memory will have to replace two smaller ones, and
+  // all the memory copied from one to the other... Or we could just report an error, and they'll have to allocate
+  // different areas of memory until one is practical.
+
+  regs->r[0] = regs->r[0] - (uint32_t) &rma_heap + shared.memory.rma_memory;
+
+  return true;
+}
+
+bool do_OS_MapDevicePages( svc_registers *regs )
+{
+  // On entry
+  //    R0 = Physical address to be mapped, must be on a page boundary
+  //    R1 = Number of pages to be mapped
+
+  // On exit
+  //    R0 = Virtual address of device memory, accessible only in privileged modes, on the current core
+  //    R1   preserved
+
+  // Use
+  //    For use by the HAL and other modules to map devices to virtual addresses for use by drivers.
+  //
+  //    This should be used in the initialisation routine of a device driver module, it may be repeated for
+  //    each core, if access is required from more than one core (it is up to the module to protect the device
+  //    from simultaneous accesses).
+  //
+  //    Virtual addresses will be allocated first come first served, multiple requests for the same physical
+  //    address will receive the same virtual address, independent of the active core.
+
+  extern uint32_t devices; // Linker symbol
+
+  claim_lock( &shared.memory.device_page_lock );
+  uint32_t va = (uint32_t) &devices;
+  uint32_t pa = regs->r[0];
+
+  uint32_t i = 0;
+  while (i < number_of( shared.memory.device_pages )
+      && !duplicate_page( pa, i )
+      && shared.memory.device_pages[i].pages != 0) {
+    va += 4096 * shared.memory.device_pages[i].pages;
+    i++;
+  }
+
+  if (i >= number_of( shared.memory.device_pages )) {
+    release_lock( &shared.memory.device_page_lock );
+    return Kernel_Error_TooManyDevicePages( regs );
+  }
+
+  if (duplicate_page( pa, i )) {
+    if (shared.memory.device_pages[i].pages != regs->r[1]) {
+      release_lock( &shared.memory.device_page_lock );
+      return Kernel_Error_NonMatchingDevicePagingRequest( regs );
+    }
+  }
+  else {
+    shared.memory.device_pages[i].pages = regs->r[1];
+    shared.memory.device_pages[i].page_number = pa >> 12;
+  }
+
+  MMU_map_device_shared_at( (void*) va, pa, 4096 * shared.memory.device_pages[i].pages );
+
+  regs->r[0] = va;
+
+  release_lock( &shared.memory.device_page_lock );
+
+  return true;
+}
+
 static bool do_OS_FlushCache( svc_registers *regs )
 {
   claim_lock( &shared.mmu.lock );
@@ -824,6 +1265,18 @@ static bool do_OS_FlushCache( svc_registers *regs )
 }
 
 static bool do_OS_ConvertFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+
+bool do_OS_Heap( svc_registers *regs )
+{
+  // Note: This could possibly be improved by having a lock per heap, one bit in the header, say.
+  // I would hope this is never called from an interrupt handler, but if so, we should probably return an error,
+  // if shared.memory.os_heap_lock is non-zero. Masking interrupts is no longer a guarantee of atomicity.
+  // OS_Heap appears to call itself, even without interrupts...
+  bool reclaimed = claim_lock( &shared.memory.os_heap_lock );
+  bool result = run_risos_code_implementing_swi( regs, 0x1d );
+  if (!reclaimed) release_lock( &shared.memory.os_heap_lock );
+  return result;
+}
 
 typedef bool (*swifn)( svc_registers *regs );
 
@@ -871,11 +1324,15 @@ static swifn os_swis[256] = {
   [OS_Release] =  do_OS_Release,
   [OS_ReadUnsigned] =  do_OS_ReadUnsigned,
   [OS_GenerateEvent] =  do_OS_GenerateEvent,
-  [OS_ReadVarVal] =  do_OS_ReadVarVal,
 
+  [OS_ReadVarVal] =  do_OS_ReadVarVal,
   [OS_SetVarVal] =  do_OS_SetVarVal,
+/*
+  Using existing RISC OS code for the time being
   [OS_GSInit] =  do_OS_GSInit,
   [OS_GSRead] =  do_OS_GSRead,
+  // Except Trans, which will output the initial string...
+*/
   [OS_GSTrans] =  do_OS_GSTrans,
 
   [OS_BinaryToDecimal] =  do_OS_BinaryToDecimal,
@@ -1001,20 +1458,24 @@ static swifn os_swis[256] = {
   [OS_ConvertNetStation] =  do_OS_ConvertNetStation,
   [OS_ConvertFixedFileSize] =  do_OS_ConvertFixedFileSize,
 
+  [OS_LockForDMA] = do_OS_LockForDMA,
+  [OS_ReleaseDMALock] = do_OS_ReleaseDMALock,
+  [OS_MapDevicePages] = do_OS_MapDevicePages,
   [OS_FlushCache] = do_OS_FlushCache, // This could be called by each core on centisecond interrupts, maybe?
 
   [OS_ConvertFileSize] =  do_OS_ConvertFileSize
 };
 
-static bool Kernel_go_svc( svc_registers *regs, uint32_t svc )
+static bool __attribute__(( noinline )) Kernel_go_svc( svc_registers *regs, uint32_t svc )
 {
   switch (svc & ~Xbit) {
   case 0 ... 255:
-    if (os_swis[svc & ~Xbit] != 0)
+    if (os_swis[svc & ~Xbit] != 0) {
       return os_swis[svc & ~Xbit]( regs );
-    else
-      return Kernel_Error_UnknownSWI( regs );
-
+    }
+    else {
+      return run_risos_code_implementing_swi( regs, svc & ~Xbit );
+    }
   case OS_WriteI ... OS_WriteI+255:
     {
       uint32_t r0 = regs->r[0];
@@ -1031,26 +1492,69 @@ static bool Kernel_go_svc( svc_registers *regs, uint32_t svc )
   return do_module_swi( regs, svc );
 }
 
-static void do_svc_and_transient_callbacks( svc_registers *regs, uint32_t lr )
+static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t lr )
 {
   regs->spsr &= ~VF;
   uint32_t number = get_swi_number( lr );
+
+  if (0 && number > 3) {
+    WriteS( "SWI " );
+    WriteNum( number );
+    WriteS( " " );
+  }
+
+  uint32_t r0 = regs->lr;
+
   if (Kernel_go_svc( regs, number )) {
     // Worked
     regs->spsr &= ~VF;
   }
   else if ((number & Xbit) != 0) {
-    // Error
-    // for (;;) { asm ( "wfi" ); }
+    // Error, should be returned to caller, no GenerateError
+    error_block *e = (void*) regs->r[0];
+
+    if (e == 0) {
+      WriteS( "Error indicated, but NULL error block\n\r" );
+      asm ( "bkpt 1" );
+    }
+    else {
+      if (e->code != 0x124 && number != 0x61506) {
+        WriteNum( number );
+        WriteS( " " );
+        WriteNum( r0 );
+        WriteS( " " );
+        WriteNum( regs->r[1] );
+        WriteS( " " );
+        WriteNum( regs->r[2] );
+        WriteS( " \\x18" ); Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
+      }
+    }
+
+    if (0x999 == e->code || 0x1e6 == e->code) {
+      switch (number) {
+      case 0x61500 ... 0x6153f: // MessageTrans
+      case 0x63040 ... 0x6307f: // Territory
+        break;
+      default:
+        WriteS( "Unimplemented!" ); NewLine;
+        //asm ( "bkpt 1" ); // WindowManager initialisation uses OS_DynamicArea to get free pool, and OS_Memory to allocate from it; let them continue
+      }
+    }
     regs->spsr |= VF;
   }
   else {
     // Call error handler
-*(uint8_t*) 0x98989898 = 42; // Cause a data abort
+    WriteS( "SWI " );
+    WriteNum( number );
+    WriteS( " " );
+    Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
+    asm ( "bkpt 1" );
     for (;;) { asm ( "wfi" ); }
   }
+}
 
-uint32_t test = regs->spsr;
+void run_transient_callbacks()
+{
   while (workspace.kernel.transient_callbacks != 0) {
     transient_callback *callback = workspace.kernel.transient_callbacks;
 
@@ -1062,15 +1566,8 @@ uint32_t test = regs->spsr;
     workspace.kernel.transient_callbacks_pool = callback;
     workspace.kernel.transient_callbacks = latest.next;
 
-    // Callbacks preserve all registers and return by mov pc, lr
-    register uint32_t private_word asm ( "r12" ) = latest.private_word;
-    register uint32_t code asm ( "r14" ) = latest.code;
-    asm ( "blx r14" : : "r" (private_word), "r" (code) : "memory" );
+    run_handler( latest.code, latest.private_word );
   }
-
-if (test != regs->spsr) {
-*(uint8_t*) 0x94949494 = 42; // Cause a data abort
-}
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_svc()
@@ -1100,7 +1597,10 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
       , [lr] "=r" (lr)
       );
 
-  do_svc_and_transient_callbacks( regs, lr );
+  do_svc( regs, lr );
+  if (0 == (regs->spsr & 0x1f)) {
+    run_transient_callbacks();
+  }
 
   asm ( "pop { r0-r12 }"
     "\n  rfeia sp!" );

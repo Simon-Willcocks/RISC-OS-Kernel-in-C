@@ -378,7 +378,8 @@ typedef struct __attribute__(( packed )) {
   uint32_t spsr;
 } svc_registers;
 
-static void handle_data_abort( svc_registers *regs )
+// noinline attribute is required so that stack space is allocated for any local variables.
+static void __attribute__(( noinline )) handle_data_abort( svc_registers *regs )
 {
   if (0x807 == data_fault_type() && workspace.mmu.current != 0) {
     uint32_t fa = fault_address();
@@ -390,7 +391,11 @@ static void handle_data_abort( svc_registers *regs )
       return;
     }
   }
+/*
+  DynamicArea *da = shared.memory.dynamic_areas;
 
+  MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
+*/
   asm volatile ( "ldm sp, { r0-r12, r14 }\n  b Kernel_failed_data_abort" );
 
   __builtin_unreachable();

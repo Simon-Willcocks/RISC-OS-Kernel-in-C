@@ -36,26 +36,41 @@ typedef struct shared_workspace shared_workspace;
 #include "mmu.h"
 #include "memory_manager.h"
 
+typedef struct callback callback;
+
 typedef struct module module;
-typedef struct callback vector;
-typedef struct callback transient_callback;
+typedef callback vector;
+typedef callback transient_callback;
 typedef struct variable variable;
+
+typedef struct ticker_event ticker_event;
+struct ticker_event {
+  uint32_t code;
+  uint32_t private_word;
+  uint32_t remaining;
+  uint32_t reload;
+  ticker_event *next;
+};
 
 struct callback {
   uint32_t code;
   uint32_t private_word;
-  struct callback *next;
+  callback *next;
 };
 
-// Stacks are probably too large, I hope
+// Stacks sizes need to be checked (or use the zp memory)
 struct Kernel_workspace {
-  uint32_t svc_stack[1280]; // Most likely to overflow; causes a data abort, for testing.
+  uint32_t svc_stack[4*1024]; // Most likely to overflow; causes a data abort, for testing.
   uint32_t undef_stack[640];
   uint32_t abt_stack[640];
   uint32_t irq_stack[640];
   uint32_t fiq_stack[640];
   const char *env;
   uint64_t start_time;
+  uint32_t monotonic_time;
+
+  callback *callbacks_pool;
+
   module *module_list_head;
   module *module_list_tail;
   uint32_t DomainId;
@@ -66,6 +81,8 @@ struct Kernel_workspace {
   // implementation, yet, but it's probably also an efficient
   // approach:
   transient_callback *transient_callbacks_pool;
+  ticker_event *ticker_queue;
+  ticker_event *ticker_event_pool;
 };
 
 struct VDU_workspace {
@@ -91,6 +108,15 @@ typedef struct fs fs;
 struct Kernel_shared_workspace {
   fs *filesystems;
   uint32_t fscontrol_lock;
+
+  // Only one multiprocessing module can be initialised at at time (so the 
+  // first has a chance to initialise their shared workspace).
+  uint32_t mp_module_init_lock;
+
+  // The elements of this linked list won't be used directly, they're a place to hold the private word for
+  // multi-processing modules; all cores share the same private word.
+  module *module_list_head;
+  module *module_list_tail;
 
   uint32_t screen_lock; // Not sure if this will always be wanted; it might make sense to make the screen memory outer (only) sharable, and flush the L1 cache to it before releasing this lock.
 };
@@ -137,18 +163,19 @@ void __attribute__(( noreturn )) Boot();
 
 // microclib
 
-static inline int strlen( const char *left )
+static inline int strlen( const char *string )
 {
   int result = 0;
-  while (*left++ != '\0') result++;
+  while (*string++ != '\0') result++;
   return result;
 }
 
 static inline int strcmp( const char *left, const char *right )
 {
   int result = 0;
-  while (result == 0 && *left != 0 && *right != 0) {
+  while (result == 0) {
     result = *left++ - *right++;
+    if (*left == 0 || *right == 0) break;
   }
   return result;
 }
@@ -162,7 +189,4 @@ static inline char *strcpy( char *dest, const char *src )
   *dest = *src;
   return result;
 }
-
-void *memset(void *s, int c, uint32_t n);
-void *memcpy(void *d, const void *s, uint32_t n);
 

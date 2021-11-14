@@ -22,7 +22,7 @@
       else { asm volatile ( "mrc p15, 0, %[v], "reg"\n  bic %[v], %[b]\n  eor %[v], %[v], %[n]\n  mcr p15, 0, %[v], "reg"" : [v] "=&r" (s) : [b] "ir" (bits), [n] "Ir" (new_values) ); } }
 
 typedef struct {
-  uint32_t (*number_of_cores)();
+  uint32_t number_of_cores;
   void (*clean_cache_to_PoU)(); // All aspects of the PE will see the same
   void (*clean_cache_to_PoC)(); // All memory users will see the same
 
@@ -65,7 +65,6 @@ uint32_t pre_mmu_identify_processor();
 #define PROCESSOR_PROC( name ) static inline void name() { processor.name(); }
 #define PROCESSOR_FN( name ) static inline uint32_t name() { return processor.name(); }
 
-PROCESSOR_FN( number_of_cores )
 PROCESSOR_PROC( clean_cache_to_PoU )
 PROCESSOR_PROC( clean_cache_to_PoC )
 
@@ -143,38 +142,16 @@ void Initialise_privileged_mode_stack_pointers();
 // It requires that the memory containing the lock is normal memory and cached.
 // If a core avoids using AMP, it can still communicate with other cores using
 // uncached memory, mailboxes and careful cleaning and/or invalidation of caches.
-static inline void claim_lock( uint32_t volatile *lock )
-{
-  uint32_t failed;
-  uint32_t value;
 
-  do {
-    asm volatile ( "ldrex %[value], [%[lock]]"
-                   : [value] "=&r" (value)
-                   : [lock] "r" (lock) );
-    if (value == 0) {
-      // The failed and lock registers are not allowed to be the same, so
-      // pretend to gcc that the lock may be written as well as read.
+// Temporarily moved to C file, for tracing in qemu
+// claim_lock returns true if this core already owns the lock.
+// Suggested usage:
+//  bool reclaimed = claim_lock( &lock );
+//  ...
+//  if (!reclaimed) release_lock( &lock );
+bool claim_lock( uint32_t volatile *lock );
 
-      asm volatile ( "strex %[failed], %[value], [%[lock]]"
-                     : [failed] "=&r" (failed)
-                     , [lock] "+r" (lock)
-                     : [value] "r" (1) );
-    }
-    else {
-      asm ( "clrex" );
-      failed = true;
-    }
-  } while (failed);
-  asm ( "dmb sy" );
-}
-
-static inline void release_lock( uint32_t volatile *lock )
-{
-  // Ensure that any changes made while holding the lock are visible before the lock is seen to have been released
-  asm ( "dmb sy" );
-  *lock = 0;
-}
+void release_lock( uint32_t volatile *lock );
 
 static inline void flush_location( void *va )
 {
@@ -187,3 +164,7 @@ static inline void bzero( void *p, int length )
   char *cp = p;
   for (int i = 0; i < length; i++) cp[i] = 0;
 }
+
+void *memset(void *s, int c, uint32_t n);
+void *memcpy(void *d, const void *s, uint32_t n);
+
