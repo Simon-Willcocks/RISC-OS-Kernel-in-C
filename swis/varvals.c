@@ -52,14 +52,14 @@ static bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t start
 
 bool do_OS_ReadVarVal( svc_registers *regs )
 {
-  WriteS( "Reading " ); Write0( regs->r[0] ); NewLine; /// WriteS( ": \\\"" ); Write0( regs->r[1] ); WriteS( "\\\"\\n\\r" );
+  // WriteS( "Reading " ); Write0( regs->r[0] ); NewLine; /// WriteS( ": \\\"" ); Write0( regs->r[1] ); WriteS( "\\\"\\n\\r" );
   bool result = run_risos_code_implementing_swi( regs, 0xfc020ab4 );
   return result;
 }
 
 bool do_OS_SetVarVal( svc_registers *regs )
 {
-  WriteS( "Setting " ); Write0( regs->r[0] ); WriteS( " to \\\"" ); Write0( regs->r[1] ); WriteS( "\\\"\\n\\r" );
+  // WriteS( "Setting " ); Write0( regs->r[0] ); WriteS( " to \\\"" ); Write0( regs->r[1] ); WriteS( "\\\"\\n\\r" );
   bool result = run_risos_code_implementing_swi( regs, 0xfc020c58 );
   return result;
 }
@@ -75,7 +75,7 @@ bool do_OS_SetVarVal( svc_registers *regs )
 
 #else
 // TODO
-// Does anybody really use code variables?
+// Does anybody really use code variables? Yes!
 // GSTrans on Set or Read of value
 // Numbers, code, macros.
 

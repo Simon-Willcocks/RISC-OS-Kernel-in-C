@@ -318,6 +318,20 @@ bool do_OS_GSTrans( svc_registers *regs )
 // GSTrans, the following 'bic\tlr, lr, #.*0x20000000'
 // fc020a50
 
+bool do_OS_GSTrans( svc_registers *regs )
+{
+  WriteS( "GSTrans (in) \\\"" ); Write0( (char*) regs->r[0] ); WriteS( "\\\"\\n\\r" );
+  bool result = run_risos_code_implementing_swi( regs, OS_GSTrans );
+  WriteS( "GSTrans (out) \\\"" );
+  if (regs->r[1] != 0) {
+    Write0( (char*) regs->r[1] );
+  } else {
+    WriteS( "NULL" );
+  }
+  WriteS( "\\\"\\n\\r" );
+  return result;
+}
+
 // They access memory around faff3364, as do a number of modules.
 // See hack in ./memory/simple/memory_manager.c
 // Kernel/Docs/HAL/Notes has a memory map:
@@ -867,8 +881,16 @@ static bool do_OS_ReadSysInfo( svc_registers *regs )
       return true;
     }
   case 6: return read_kernel_value( regs );
+  case 8:
+    {
+      regs->r[0] = 5;
+      regs->r[1] = 0x14; // Multiple processors supported, OS runs from RAM
+      regs->r[2] = 0;
+      return true;
+    }
+    break;
 
-  default: { return Kernel_Error_UnknownSWI( regs ); }
+  default: { WriteS( "OS_ReadSysInfo: " ); WriteNum( regs->r[0] ); NewLine; return Kernel_Error_UnknownSWI( regs ); }
   }
 
   regs->r[0] = (uint32_t) &error;
@@ -941,7 +963,6 @@ static bool do_OS_SetColour( svc_registers *regs )
 static bool do_OS_Pointer( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ScreenMode( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_Memory( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ClaimProcessorVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_Reset( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
@@ -1250,9 +1271,10 @@ bool do_OS_Heap( svc_registers *regs )
   // Note: This could possibly be improved by having a lock per heap, one bit in the header, say.
   // I would hope this is never called from an interrupt handler, but if so, we should probably return an error,
   // if shared.memory.os_heap_lock is non-zero. Masking interrupts is no longer a guarantee of atomicity.
-  claim_lock( &shared.memory.os_heap_lock );
+  // OS_Heap appears to call itself, even without interrupts...
+  bool reclaimed = claim_lock( &shared.memory.os_heap_lock );
   bool result = run_risos_code_implementing_swi( regs, 0x1d );
-  release_lock( &shared.memory.os_heap_lock );
+  if (!reclaimed) release_lock( &shared.memory.os_heap_lock );
   return result;
 }
 
@@ -1309,8 +1331,10 @@ static swifn os_swis[256] = {
   Using existing RISC OS code for the time being
   [OS_GSInit] =  do_OS_GSInit,
   [OS_GSRead] =  do_OS_GSRead,
-  [OS_GSTrans] =  do_OS_GSTrans,
+  // Except Trans, which will output the initial string...
 */
+  [OS_GSTrans] =  do_OS_GSTrans,
+
   [OS_BinaryToDecimal] =  do_OS_BinaryToDecimal,
   [OS_FSControl] =  do_OS_FSControl,
   [OS_ChangeDynamicArea] =  do_OS_ChangeDynamicArea,
@@ -1473,6 +1497,12 @@ static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t lr
   regs->spsr &= ~VF;
   uint32_t number = get_swi_number( lr );
 
+  if (0 && number > 3) {
+    WriteS( "SWI " );
+    WriteNum( number );
+    WriteS( " " );
+  }
+
   uint32_t r0 = regs->lr;
 
   if (Kernel_go_svc( regs, number )) {
@@ -1480,29 +1510,43 @@ static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t lr
     regs->spsr &= ~VF;
   }
   else if ((number & Xbit) != 0) {
-    // Error, should be returned
-    WriteNum( number );
-    WriteS( " " );
-    WriteNum( r0 );
-    WriteS( " " );
-    WriteNum( regs->r[1] );
-    WriteS( " " );
-    WriteNum( regs->r[2] );
-    WriteS( " \\x18" ); Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
-    if (0x999 == *(uint32_t*)regs->r[0] || 0x1e6 == *(uint32_t*)regs->r[0]) {
+    // Error, should be returned to caller, no GenerateError
+    error_block *e = (void*) regs->r[0];
+
+    if (e == 0) {
+      WriteS( "Error indicated, but NULL error block\n\r" );
+      asm ( "bkpt 1" );
+    }
+    else {
+      if (e->code != 0x124 && number != 0x61506) {
+        WriteNum( number );
+        WriteS( " " );
+        WriteNum( r0 );
+        WriteS( " " );
+        WriteNum( regs->r[1] );
+        WriteS( " " );
+        WriteNum( regs->r[2] );
+        WriteS( " \\x18" ); Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
+      }
+    }
+
+    if (0x999 == e->code || 0x1e6 == e->code) {
       switch (number) {
       case 0x61500 ... 0x6153f: // MessageTrans
       case 0x63040 ... 0x6307f: // Territory
         break;
       default:
-        WriteS( "Unimplemented!" );
-        for (;;) { asm ( "wfi" ); }
+        WriteS( "Unimplemented!" ); NewLine;
+        //asm ( "bkpt 1" ); // WindowManager initialisation uses OS_DynamicArea to get free pool, and OS_Memory to allocate from it; let them continue
       }
     }
     regs->spsr |= VF;
   }
   else {
     // Call error handler
+    WriteS( "SWI " );
+    WriteNum( number );
+    WriteS( " " );
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
     asm ( "bkpt 1" );
     for (;;) { asm ( "wfi" ); }
@@ -1554,7 +1598,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
       );
 
   do_svc( regs, lr );
-  if (0 == regs->spsr & 0x1f) {
+  if (0 == (regs->spsr & 0x1f)) {
     run_transient_callbacks();
   }
 

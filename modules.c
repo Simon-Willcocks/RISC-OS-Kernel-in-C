@@ -237,20 +237,183 @@ bool do_module_swi( svc_registers *regs, uint32_t svc )
   return run_swi_handler_code( regs, svc, m );
 }
 
+static void describe_service_call( svc_registers *regs )
+{
+WriteS( "*** ServiceCall_" );
+switch (regs->r[1]) {
+
+case 0x00: Write0( "CallClaimed" ); break;
+case 0x04: Write0( "UKCommand" ); break;
+case 0x06: Write0( "Error" ); break;
+case 0x07: Write0( "UKByte" ); break;
+case 0x08: Write0( "UKWord" ); break;
+case 0x09: Write0( "Help" ); break;
+case 0x0B: Write0( "ReleaseFIQ" ); break;
+case 0x0C: Write0( "ClaimFIQ" ); break;
+case 0x11: Write0( "Memory" ); break;
+case 0x12: Write0( "StartUpFS" ); break;
+case 0x18: Write0( "PostHelp?" ); break;
+case 0x27: Write0( "PostReset" ); break;
+case 0x28: Write0( "UKConfig" ); break;
+case 0x29: Write0( "UKStatus" ); break;
+case 0x2A: Write0( "NewApplication" ); break;
+case 0x40: Write0( "FSRedeclare" ); break;
+case 0x41: Write0( "Print" ); break;
+case 0x42: Write0( "LookupFileType" ); break;
+case 0x43: Write0( "International" ); break;
+case 0x44: Write0( "KeyHandler" ); break;
+case 0x45: Write0( "PreReset" ); break;
+case 0x46: Write0( "ModeChange" ); break;
+case 0x47: Write0( "ClaimFIQinBackground" ); break;
+case 0x48: Write0( "ReAllocatePorts" ); break;
+case 0x49: Write0( "StartWimp" ); break;
+case 0x4A: Write0( "StartedWimp" ); break;
+case 0x4B: Write0( "StartFiler" ); break;
+case 0x4C: Write0( "StartedFiler" ); break;
+case 0x4D: Write0( "PreModeChange" ); break;
+case 0x4E: Write0( "MemoryMoved" ); break;
+case 0x4F: Write0( "FilerDying" ); break;
+case 0x50: Write0( "ModeExtension" ); break;
+case 0x51: Write0( "ModeTranslation" ); break;
+case 0x52: Write0( "MouseTrap" ); break;
+case 0x53: Write0( "WimpCloseDown" ); break;
+case 0x54: Write0( "Sound" ); break;
+case 0x55: Write0( "NetFS" ); break;
+case 0x56: Write0( "EconetDying" ); break;
+case 0x57: Write0( "WimpReportError" ); break;
+case 0x58: Write0( "MIDI" ); break;
+case 0x59: Write0( "ResourceFSStarted" ); break;
+case 0x5A: Write0( "ResourceFSDying" ); break;
+case 0x5B: Write0( "CalibrationChanged" ); break;
+case 0x5C: Write0( "WimpSaveDesktop" ); break;
+case 0x5D: Write0( "WimpPalette" ); break;
+case 0x5E: Write0( "MessageFileClosed" ); break;
+case 0x5F: Write0( "NetFSDying" ); break;
+case 0x60: Write0( "ResourceFSStarting" ); break;
+case 0x61: Write0( "NFS?" ); break;
+case 0x62: Write0( "DBoxModuleDying?" ); break;
+case 0x63: Write0( "DBoxModuleStarting?" ); break;
+case 0x64: Write0( "TerritoryManagerLoaded" ); break;
+case 0x65: Write0( "PDriverStarting" ); break;
+case 0x66: Write0( "PDumperStarting" ); break;
+case 0x67: Write0( "PDumperDying" ); break;
+case 0x68: Write0( "CloseFile: " ); Write0( (char*) regs->r[2] ); break;
+case 0x69: Write0( "IdentifyDisc" ); break;
+case 0x6A: Write0( "EnumerateFormats" ); break;
+case 0x6B: Write0( "IdentifyFormat" ); break;
+case 0x6C: Write0( "DisplayFormatHelp" ); break;
+case 0x6D: Write0( "ValidateAddress" ); break;
+case 0x6E: Write0( "FontsChanged" ); break;
+case 0x6F: Write0( "BufferStarting" ); break;
+case 0x70: Write0( "DeviceFSStarting" ); break;
+case 0x71: Write0( "DeviceFSDying" ); break;
+case 0x72: Write0( "SwitchingOutputToSprite" ); break;
+case 0x73: Write0( "PostInit" ); break;
+case 0x74: Write0( "BASICHelp?" ); break;
+case 0x75: Write0( "TerritoryStarted" ); break;
+case 0x76: Write0( "MonitorLeadTranslation" ); break;
+case 0x77: Write0( "SerialDevice?" ); break;
+case 0x78: Write0( "PDriverGetMessages" ); break;
+case 0x79: Write0( "DeviceDead" ); break;
+case 0x7A: Write0( "ScreenBlanked" ); break;
+case 0x7B: Write0( "ScreenRestored" ); break;
+case 0x7C: Write0( "DesktopWelcome" ); break;
+case 0x7D: Write0( "DiscDismounted" ); break;
+case 0x7E: Write0( "ShutDown" ); break;
+case 0x7F: Write0( "PDriverChanged" ); break;
+case 0x80: Write0( "ShutdownComplete" ); break;
+case 0x81: Write0( "DeviceFSCloseRequest" ); break;
+case 0x82: Write0( "InvalidateCache" ); break;
+case 0x83: Write0( "ProtocolDying" ); break;
+case 0x84: Write0( "FindNetworkDriver" ); break;
+case 0x85: Write0( "WimpSpritesMoved" ); break;
+case 0x86: Write0( "WimpRegisterFilters" ); break;
+case 0x87: Write0( "FilterManagerInstalled" ); break;
+case 0x88: Write0( "FilterManagerDying" ); break;
+case 0x89: Write0( "ModeChanging" ); break;
+case 0x8A: Write0( "Portable" ); break;
+case 0x8B: Write0( "NetworkDriverStatus" ); break;
+case 0x8C: Write0( "SyntaxError" ); break;
+case 0x8D: Write0( "EnumerateScreenModes" ); break;
+case 0x8E: Write0( "PagesUnsafe" ); break;
+case 0x8F: Write0( "PagesSafe" ); break;
+case 0x90: Write0( "DynamicAreaCreate" ); break;
+case 0x91: Write0( "DynamicAreaRemove" ); break;
+case 0x92: Write0( "DynamicAreaRenumber" ); break;
+case 0x93: Write0( "ColourPickerLoaded" ); break;
+case 0x94: Write0( "ModeFileChanged" ); break;
+case 0x95: Write0( "FreewayStarting" ); break;
+case 0x96: Write0( "FreewayTerminating" ); break;
+case 0x97: Write0( "ShareDStarting?" ); break;
+case 0x98: Write0( "ShareDTerminating?" ); break;
+case 0x99: Write0( "ModulePostInitialisation?" ); break;
+case 0x9A: Write0( "ModulePreFinalisation?" ); break;
+case 0x9B: Write0( "EnumerateNetworkDrivers?" ); break;
+case 0x9C: Write0( "PCMCIA?" ); break;
+case 0x9D: Write0( "DCIDriverStatus" ); break;
+case 0x9E: Write0( "DCIFrameTypeFree" ); break;
+case 0x9F: Write0( "DCIProtocolStatus" ); break;
+case 0xA7: Write0( "URI?" ); break;
+case 0xB0: Write0( "InternetStatus" ); break;
+case 0xB7: Write0( "UKCompression" ); break;
+case 0xB9: Write0( "ModulePreInit" ); break;
+case 0xC3: Write0( "PCI" ); break;
+case 0xD2: Write0( "USB" ); break;
+case 0xD9: Write0( "Hardware" ); break;
+case 0xDA: Write0( "ModulePostInit" ); break;
+case 0xDB: Write0( "ModulePostFinal" ); break;
+case 0xDD: Write0( "RTCSynchronised" ); break;
+case 0xDE: Write0( "DisplayChanged" ); break;
+case 0xDF: Write0( "DisplayStatus" ); break;
+case 0xE0: Write0( "NVRAM?" ); break;
+case 0xE3: Write0( "PagesUnsafe64" ); break;
+case 0xE4: Write0( "PagesSafe64" ); break;
+
+
+case 0x10800: Write0( "ADFSPodule" ); break;
+case 0x10801: Write0( "ADFSPoduleIDE" ); break;
+case 0x10802: Write0( "ADFSPoduleIDEDying" ); break;
+case 0x20100: Write0( "SCSIStarting" ); break;
+case 0x20101: Write0( "SCSIDying" ); break;
+case 0x20102: Write0( "SCSIAttached" ); break;
+case 0x20103: Write0( "SCSIDetached" ); break;
+case 0x400C0: Write0( "ErrorStarting?" ); break;
+case 0x400C1: Write0( "ErrorButtonPressed?" ); break;
+case 0x400C2: Write0( "ErrorEnding?" ); break;
+case 0x41580: Write0( "FindProtocols" ); break;
+case 0x41581: Write0( "FindProtocolsEnd" ); break;
+case 0x41582: Write0( "ProtocolNameToNumber" ); break;
+case 0x45540: Write0( "DrawObjectDeclareFonts" ); break;
+case 0x45541: Write0( "DrawObjectRender" ); break;
+case 0x4D480: Write0( "SafeAreaChanged?" ); break;
+case 0x81080: Write0( "TimeZoneChanged" ); break;
+case 0x810C0: Write0( "BootBootVarsSet?" ); break;
+case 0x810C1: Write0( "BootResourcesVarsSet?" ); break;
+case 0x810C2: Write0( "BootChoicesVarsSet?" ); break;
+case 0x81100: Write0( "IIC" ); break;
+
+default: WriteNum( regs->r[1] );
+}
+NewLine;
+}
+
 bool do_OS_ServiceCall( svc_registers *regs )
 {
   bool result = true;
   module *m = workspace.kernel.module_list_head;
 
-WriteS( "*** Service Call " ); WriteNum( regs->r[1] ); NewLine;
+describe_service_call( regs );
+
   uint32_t r12 = regs->r[12];
   while (m != 0 && regs->r[1] != 0 && result) {
     regs->r[12] = m->private_word;
     if (0 != m->header->offset_to_service_call_handler) {
+Write0( title_string( m->header ) ); WriteS( " " );
       result = run_service_call_handler_code( regs, m );
     }
     m = m->next;
   }
+  NewLine;
 
   regs->r[12] = r12;
 
@@ -365,7 +528,7 @@ static void pre_init_service( module_header *m, uint32_t size_plus_4 )
 
 static void post_init_service( module_header *m, uint32_t size_plus_4 )
 {
-  svc_registers serviceregs = { .r = { [0] = (uint32_t) m, [1] = 0xda, [2] = (uint32_t) "FIXME", [7] = 0x22222222 } };
+  svc_registers serviceregs = { .r = { [0] = (uint32_t) m, [1] = 0xda, [2] = (uint32_t) title_string( m ), [7] = 0x22222222 } };
   do_OS_ServiceCall( &serviceregs );
 }
 
@@ -463,16 +626,13 @@ static bool do_Module_InsertFromMemory( svc_registers *regs )
   }
 
   if (success && 0 != new_mod->offset_to_initialisation) {
+    // "This means that any SWIs etc provided by the module are available
+    // (in contrast, during any service calls issued by the module’s own
+    // initialisation code, the module is not yet linked into the chain)."
     post_init_service( new_mod, ((uint32_t*) new_mod)[-1] );
   }
 
   return success;
-
-nomem:
-  error_nomem( regs );
-
-fail:
-  return false;
 }
 
 static bool do_Module_InsertAndRelocateFromMemory( svc_registers *regs )
@@ -534,7 +694,16 @@ Write0( __func__ ); for (;;) {};
 
 static bool do_Module_LookupModuleName( svc_registers *regs )
 {
-Write0( __func__ ); for (;;) {};
+  // Actually Lookup Module BY Name
+
+Write0( __func__ ); Write0( regs->r[1] ); // Initially called by Wimp during init, just to find ROM location
+  const char *name = regs->r[1];
+  if (name[0] == 'U' && name[7] == 'M' && name[13] == 0) { // FIXME
+    WriteS( "Returning UtilityModule address (hack) \\x06 " );
+    extern uint32_t va_base;
+    regs->r[3] = (uint32_t) &va_base;
+    return true;
+  }
   regs->r[0] = (uint32_t) &UnknownCall;
   return false;
 }
@@ -812,7 +981,12 @@ bool excluded( const char *name )
   // These modules fail on init, at the moment.
   static const char *excludes[] = { "PCI"               // Data abort fc01ff04 prob. pci_handles
 
-                                  , "WindowManager"
+                                  //, "WindowManager"
+                                  , "Portable"          // Uses OS_MMUControl
+                                  , "SoundDMA"          // Uses OS_Memory
+                                  , "SoundChannels"     // ???
+                                  , "SoundScheduler"    // Sound_Tuning
+                                  , "SpriteExtend" // ReadSysInfo
                                   , "Debugger"
                                   , "BCMSupport"        // Doesn't return, afaics
                                   , "RTSupport"         // Doesn't return, afaics
@@ -1020,12 +1194,12 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
   register uint32_t *regs;
   asm ( "push { r0-r11, lr }\n  mov %[regs], sp" : [regs] "=r" (regs) );
 
-  WriteS( "OS_Byte " ); WriteNum( r0 );
+  WriteS( "OS_Byte " );
 
   switch (r0) {
   case 0xa1:
     {
-    WriteS( " CMOS byte " ); WriteNum( r1 );
+    WriteS( "Read CMOS " ); WriteNum( r1 ); WriteS( " " ); WriteNum( r2 );
     switch (r1) {
 
     // No loud beep, scrolling allowed, no boot from disc, serial data format code 0
@@ -1053,14 +1227,32 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     // Alarm flags/DST ???
     case 0xdc: regs[2] = 0; break;
 
+    default: WriteS( " CMOS byte " ); WriteNum( r1 ); asm ( "bkpt 1" );
+    }
+    WriteS( " = " ); WriteNum( regs[2] );
+    }
+    break;
+  case 0xa2:
+    {
+    WriteS( "Write CMOS " ); WriteNum( r1 ); WriteS( " " ); WriteNum( r2 );
+    switch (r1) {
+    case 0x10: WriteS( "Misc flags" ); break;
     default: asm ( "bkpt 1" );
     }
     }
     break;
   case 0xa8 ... 0xff:
     {
-    WriteS( " " ); WriteNum( r1 );
-    WriteS( " " ); WriteNum( r2 );
+    if (r1 == 0 && r2 == 255) {
+      WriteS( " read " );
+    }
+    else if (r2 == 0) {
+      WriteS( " write " ); WriteNum( r1 );
+    }
+    else {
+      WriteS( " " ); WriteNum( r1 );
+      WriteS( " " ); WriteNum( r2 );
+    }
     // All treated the same, a place for storing a byte.
     // "; All calls &A8 to &FF are implemented together."
     // "; <NEW VALUE> = (<OLD VALUE> AND R2 ) EOR R1"
@@ -1070,6 +1262,12 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     uint8_t *v = ((uint8_t*) &workspace.vectors.zp.OsbyteVars) - 0xa6 + r0;
     regs[1] = *v;
     *v = ((*v) & r2) ^ r1;
+
+    switch (r0) {
+    case 0xc6: WriteS( " Exec handle" ); break;
+    case 0xc7: WriteS( " Spool handle" ); break;
+    default: asm( "bkpt 1" ); // Catch used variables I haven't identified yet
+    }
     }
     break;
   default: asm ( "bkpt 1" );
@@ -1358,6 +1556,11 @@ void Boot()
   workspace.kernel.vectors[3] = &default_WrchV;
 
   SetInitialVduVars();
+
+  // PMF/osinit replacement:
+  // Avoid "Buffer too small" error from BufferManager, which seems not to be returned in r0
+  workspace.vectors.zp.PrinterBufferAddr = 0xfaff2c98; // Where from?
+  workspace.vectors.zp.PrinterBufferSize = 0x1000; // 
 
   // This is obviously becoming the boot sequence, to be refactored when something's happening...
 

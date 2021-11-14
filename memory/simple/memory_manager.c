@@ -156,6 +156,25 @@ memcpy( (void*) 0xfaff3358, slvk, sizeof( slvk ) );
 
   // Now the non-shared DAs, can be done in parallel
 
+  { // "Free Pool" - hopefully obsolete, expected by WindowManager init, at least
+  // TODO Add names, handlers to DAs
+    extern uint32_t free_pool;
+
+    DynamicArea *da = rma_allocate( sizeof( DynamicArea ), &regs );
+    if (da == 0) goto nomem;
+    da->number = 6;
+    da->permissions = 6; // rw-
+    da->shared = 0;
+    da->virtual_page = ((uint32_t) &free_pool) >> 12;
+    da->pages = 256;
+    da->start_page = Kernel_allocate_pages( da->pages << 12, da->pages << 12 ) >> 12;
+
+    da->next = workspace.memory.dynamic_areas;
+    workspace.memory.dynamic_areas = da;
+
+    MMU_map_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
+  }
+
   { // System heap, one per core (I think)
     extern uint32_t system_heap;
 
@@ -374,8 +393,50 @@ do_not_grow:
       regs->r[1] = (uint32_t) &frame_buffer;
     }
     break;
+  case Info:
+    {
+      DynamicArea *da = shared.memory.dynamic_areas;
+      while (da != 0 && da->number != regs->r[1]) {
+        da = da->next;
+      }
+      if (da == 0) da = workspace.memory.dynamic_areas;
+      while (da != 0 && da->number != regs->r[1]) {
+        da = da->next;
+      }
+
+      if (da == 0) {
+WriteS( "OS_DynamicArea " ); WriteNum( regs->r[0] ); WriteS( " " ); WriteNum( regs->r[1] ); NewLine;
+        static error_block error = { 0x997, "Unknown Dynamic Area" };
+        regs->r[0] = (uint32_t) &error;
+        result = false;
+      }
+      else {
+/*
+R0 	Preserved
+R1 	Preserved
+R2 	Current size of area, in bytes
+R3 	Base logical address of area
+R4 	Area flags
+R5 	Maximum size of area in bytes
+R6 	Pointer to dynamic area handler routine, or 0 if no routine
+R7 	Pointer to workspace for handler
+R8 	Pointer to name of area 
+*/
+        regs->r[2] = da->pages << 12;
+        regs->r[3] = da->start_page << 12;
+        regs->r[4] = 0; // FIXME
+        regs->r[5] = da->pages << 12; // FIXME
+        regs->r[6] = 0; // FIXME
+        regs->r[7] = 0; // FIXME
+        regs->r[8] = (uint32_t) "Need to name DAs"; // FIXME
+      }
+    }
+    break;
   default:
     {
+
+WriteS( "OS_DynamicArea " ); WriteNum( regs->r[0] ); WriteS( " " ); WriteNum( regs->r[1] ); NewLine;
+for (;;) { asm ( "wfi" ); }
       static error_block error = { 0x997, "Cannot do anything to DAs" };
       regs->r[0] = (uint32_t) &error;
       result = false;
@@ -388,9 +449,27 @@ do_not_grow:
   return result;
 
 nomem:
-  for (;;) { asm ( "wfi" ); }
+  for (;;) { asm ( "bkpt 1" ); }
   release_lock( &shared.memory.dynamic_areas_lock );
   return false;
+}
+
+bool do_OS_Memory( svc_registers *regs )
+{
+  switch (regs->r[0] & 0xff) {
+  case 10:
+    {
+    // Free pool lock (as in, affect the lock on the free pool).
+    // Bit 8 -> Call is being made by the Wimp
+    regs->r[1] = shared.memory.os_memory_active_state;
+    shared.memory.os_memory_active_state = 1 - shared.memory.os_memory_active_state;
+    return true;
+    }
+    break;
+  default:
+    WriteS( "OS_Memory: " ); WriteNum( regs->r[0] ); WriteS( " " ); WriteNum( regs->r[1] ); NewLine;
+  }
+  return Kernel_Error_UnimplementedSWI( regs );
 }
 
 

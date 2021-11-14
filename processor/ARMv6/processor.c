@@ -277,3 +277,46 @@ void *memcpy(void *d, const void *s, uint32_t n)
   return d;
 }
 
+
+
+// Temporarily in C file for tracing in QEMU
+
+
+bool claim_lock( uint32_t volatile *lock )
+{
+  uint32_t failed;
+  uint32_t value;
+  uint32_t core = workspace.core_number+1;
+
+  do {
+    asm volatile ( "ldrex %[value], [%[lock]]"
+                   : [value] "=&r" (value)
+                   : [lock] "r" (lock) );
+
+    if (value == core) return true;
+
+    if (value == 0) {
+      // The failed and lock registers are not allowed to be the same, so
+      // pretend to gcc that the lock may be written as well as read.
+
+      asm volatile ( "strex %[failed], %[value], [%[lock]]"
+                     : [failed] "=&r" (failed)
+                     , [lock] "+r" (lock)
+                     : [value] "r" (core) );
+    }
+    else {
+      asm ( "clrex" );
+      failed = true;
+    }
+  } while (failed);
+  asm ( "dmb sy" );
+
+  return false;
+}
+
+void release_lock( uint32_t volatile *lock )
+{
+  // Ensure that any changes made while holding the lock are visible before the lock is seen to have been released
+  asm ( "dmb sy" );
+  *lock = 0;
+}

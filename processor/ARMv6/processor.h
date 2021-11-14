@@ -142,38 +142,16 @@ void Initialise_privileged_mode_stack_pointers();
 // It requires that the memory containing the lock is normal memory and cached.
 // If a core avoids using AMP, it can still communicate with other cores using
 // uncached memory, mailboxes and careful cleaning and/or invalidation of caches.
-static inline void claim_lock( uint32_t volatile *lock )
-{
-  uint32_t failed;
-  uint32_t value;
 
-  do {
-    asm volatile ( "ldrex %[value], [%[lock]]"
-                   : [value] "=&r" (value)
-                   : [lock] "r" (lock) );
-    if (value == 0) {
-      // The failed and lock registers are not allowed to be the same, so
-      // pretend to gcc that the lock may be written as well as read.
+// Temporarily moved to C file, for tracing in qemu
+// claim_lock returns true if this core already owns the lock.
+// Suggested usage:
+//  bool reclaimed = claim_lock( &lock );
+//  ...
+//  if (!reclaimed) release_lock( &lock );
+bool claim_lock( uint32_t volatile *lock );
 
-      asm volatile ( "strex %[failed], %[value], [%[lock]]"
-                     : [failed] "=&r" (failed)
-                     , [lock] "+r" (lock)
-                     : [value] "r" (1) );
-    }
-    else {
-      asm ( "clrex" );
-      failed = true;
-    }
-  } while (failed);
-  asm ( "dmb sy" );
-}
-
-static inline void release_lock( uint32_t volatile *lock )
-{
-  // Ensure that any changes made while holding the lock are visible before the lock is seen to have been released
-  asm ( "dmb sy" );
-  *lock = 0;
-}
+void release_lock( uint32_t volatile *lock );
 
 static inline void flush_location( void *va )
 {

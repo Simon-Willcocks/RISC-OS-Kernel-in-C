@@ -335,6 +335,8 @@ typedef struct {
     uint32_t block1[0x80];
   };
 
+  // (0x40 + 0x80) * sizeof(uint32_t) = &300
+
   uint32_t  CompatibilityPageEnabled; //  0 or 1 as appropriate, a byte, but use a word to align
                   // AlignSpace
   // IICBus_Count       *    5 ; 5 buses is enough for all current machines
@@ -410,7 +412,7 @@ typedef struct {
   // Vector Claim & Release tables etc
   uint32_t VecPtrTab[96];
   uint32_t ExceptionDump;
-  uint8_t spare[68];
+  uint8_t spare[68+12]; // 12 is AlignSpace
               // AlignSpace  16 ; Ensures we can MOV rn, #OsbyteVars if <=&1000
   struct OsbyteVars OsbyteVars;
                               // (and stored in) OS_Bytes &A6,&A7. SKS
@@ -423,7 +425,7 @@ typedef struct {
   uint32_t OscliCBtopUID;
   uint32_t OscliCBbotUID;
   uint32_t OscliCBcurrend;
-  uint32_t ReturnCode;
+  uint32_t ReturnCode;          // ac4
   uint32_t RCLimit;
   uint32_t SpriteSize; //  saved on startup for Sprite code
   uint32_t TickNodeChain;
@@ -442,7 +444,9 @@ typedef struct {
                   // AlignSpace
   uint32_t DUMPER[17];
   uint32_t removed_PxxxIRQ_Chain;
+
   uint32_t Page_Size;
+
   uint8_t CMOSRAMCache[256];
 
   uint8_t ModuleSHT_Padding0[12];
@@ -460,10 +464,11 @@ typedef struct {
   uint32_t IOMD_Devices; // default irq devices table address (ROM)
 
   uint8_t ModuleSHT_Padding1[752-12-4*128-11*4-6*4-5*4-4-4*4];
+
   //was:
   //OldIRQ1Vspace       # 752
   uint32_t CallBack_Vector;
-  // interruptible heap manager workspace
+  // interruptible heap manager workspace  (a) Yuk. (b) 0xf28
   uint32_t HeapSavedReg_R0;
   uint32_t HeapSavedReg_R1;
   uint32_t HeapSavedReg_R2;

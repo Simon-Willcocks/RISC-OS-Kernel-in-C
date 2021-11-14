@@ -119,6 +119,7 @@ bool do_OS_SerialOp( svc_registers *regs );
 bool do_OS_ChangeDynamicArea( svc_registers *regs );
 bool do_OS_ReadDynamicArea( svc_registers *regs );
 bool do_OS_DynamicArea( svc_registers *regs );
+bool do_OS_Memory( svc_registers *regs );
 
 // swis/vdu.c
 void default_os_writec( uint32_t r0, uint32_t r1, uint32_t r2 );
