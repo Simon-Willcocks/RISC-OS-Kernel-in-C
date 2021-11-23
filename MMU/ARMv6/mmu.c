@@ -30,6 +30,10 @@ extern uint32_t translation_tables;
 static uint32_t *const L1TT = (&translation_tables);
 static uint32_t *const top_MiB_tt = (&translation_tables) + 4096;
 static uint32_t *const bottom_MiB_tt = (&translation_tables) + 4096 + 256; // Offsets in words, not bytes!
+// In anticipation...
+// I intend a slot's memory to be bottom pages, multiple full MiB blocks, then 1 or 2 MiB of flexible pages
+static uint32_t *const slot_top_MiB_tt = (&translation_tables) + 4096 + 512;
+static uint32_t *const slot_mid_MiB_tt = (&translation_tables) + 4096 + 768;
 
 typedef union {
   struct {
@@ -370,14 +374,6 @@ static void map_block( physical_memory_block block )
   memory_remapped();
 }
 
-// Taken from swis.h, perhaps integer_context might be more appropriate?
-// Or, for aborts, we don't really need to save all the registers, just the scratch registers
-typedef struct __attribute__(( packed )) {
-  uint32_t r[13];
-  uint32_t lr;
-  uint32_t spsr;
-} svc_registers;
-
 // noinline attribute is required so that stack space is allocated for any local variables.
 static void __attribute__(( noinline )) handle_data_abort( svc_registers *regs )
 {
@@ -424,6 +420,15 @@ void __attribute__(( naked, noreturn )) Kernel_default_data_abort()
 void MMU_switch_to( TaskSlot *slot )
 {
   claim_lock( &shared.mmu.lock );
+  // FIXME Only clear what's used
+  // FIXME deal with slots that go over the first MiB
+  // Note: My idea is to try to keep memory as contiguous as possible, and have
+  // two or possibly three sub-MiB translation tables for the first MiB (bottom_MiB_tt)
+  // and the slot's top MiB (and possibly the one below it, in case a task regularly
+  // modifies its memory by small amounts above and below a MiB boundary).
+  for (int i = 0x8000 >> 12; i < 0x100000 >> 12; i++) {
+    bottom_MiB_tt[i] = 0;
+  }
   workspace.mmu.current = slot;
   // Set CONTEXTIDR
   asm ( "mcr p15, 0, %[asid], c13, c0, 1" : : [asid] "r" (TaskSlot_asid( slot )) );

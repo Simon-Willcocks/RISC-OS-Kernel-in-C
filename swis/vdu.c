@@ -15,11 +15,6 @@
 
 #include "inkernel.h"
 
-void default_os_writec( uint32_t r0, uint32_t r1, uint32_t r2 )
-{
-  // Do nothing
-}
-
 bool do_OS_ChangedBox( svc_registers *regs )
 {
   workspace.vdu.ChangedBox.enabled = workspace.vdu.changed_box_tracking_enabled;

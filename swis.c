@@ -89,6 +89,8 @@ static bool do_OS_WriteS( svc_registers *regs )
   char *s = (void*) regs->lr;
   uint32_t r0 = regs->r[0];
   bool result = true;
+  uint32_t *old_sp;
+  asm volatile ( "mov %[sp], sp" : [sp] "=r" (old_sp) );
 
   while (*s != '\0') {
     regs->r[0] = *s++;
@@ -99,6 +101,11 @@ static bool do_OS_WriteS( svc_registers *regs )
     }
   }
 
+  uint32_t *new_sp;
+  asm volatile ( "mov %[sp], sp" : [sp] "=r" (new_sp) );
+  if (new_sp != old_sp) {
+    asm ( "bkpt #1" );
+  }
   regs->lr = word_align( s );
   regs->r[0] = r0;
 
@@ -445,7 +452,8 @@ static void release_TickerV()
            : [swi] "i" (OS_Release | 0x20000)
            , "r" (vector)
            , "r" (code)
-           , "r" (private) );
+           , "r" (private)
+           : "lr", "cc" );
 }
 
 static void claim_TickerV()
@@ -459,7 +467,8 @@ static void claim_TickerV()
            : [swi] "i" (OS_Claim | 0x20000)
            , "r" (vector)
            , "r" (code)
-           , "r" (private) );
+           , "r" (private) 
+           : "lr", "cc" );
 }
 
 static void __attribute__(( noinline )) C_TickerV_handler()
@@ -580,7 +589,7 @@ static bool do_OS_PrettyPrint( svc_registers *regs )
   while (*s != '\0' && result) {
     if (*s == '\x1b') {
       s++;
-      regs->r[0] = (uint32_t) "!!!PrettyPrint needs implementing!!!";
+      regs->r[0] = (uint32_t) "PrettyPrint needs implementing";
       result = do_OS_WriteS( regs );
     }
     else {
@@ -710,8 +719,6 @@ typedef struct {
     uint32_t value;
   } mode_variables[];
 } mode_selector_block;
-
-static const mode_selector_block only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 32, .frame_rate = 60, { { -1, 0 } } };
 
 
 // OS_ReadSysInfo 6 values
@@ -875,6 +882,8 @@ static bool do_OS_ReadSysInfo( svc_registers *regs )
   switch (regs->r[0]) {
   case 1:
     {
+      static const mode_selector_block only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 32, .frame_rate = 60, { { -1, 0 } } };
+
       regs->r[0] = (uint32_t) &only_one_mode;
       regs->r[1] = 7;
       regs->r[2] = 0;
@@ -1322,7 +1331,7 @@ static swifn os_swis[256] = {
   [OS_Claim] =  do_OS_Claim,
 
   [OS_Release] =  do_OS_Release,
-  [OS_ReadUnsigned] =  do_OS_ReadUnsigned,
+//  [OS_ReadUnsigned] =  do_OS_ReadUnsigned,
   [OS_GenerateEvent] =  do_OS_GenerateEvent,
 
   [OS_ReadVarVal] =  do_OS_ReadVarVal,
@@ -1492,16 +1501,9 @@ static bool __attribute__(( noinline )) Kernel_go_svc( svc_registers *regs, uint
   return do_module_swi( regs, svc );
 }
 
-static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t lr )
+static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t number )
 {
   regs->spsr &= ~VF;
-  uint32_t number = get_swi_number( lr );
-
-  if (0 && number > 3) {
-    WriteS( "SWI " );
-    WriteNum( number );
-    WriteS( " " );
-  }
 
   uint32_t r0 = regs->lr;
 
@@ -1548,8 +1550,8 @@ static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t lr
     WriteNum( number );
     WriteS( " " );
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
-    asm ( "bkpt 1" );
     for (;;) { asm ( "wfi" ); }
+    asm ( "bkpt 1" );
   }
 }
 
@@ -1568,6 +1570,52 @@ void run_transient_callbacks()
 
     run_handler( latest.code, latest.private_word );
   }
+}
+
+static void __attribute__(( noinline )) do_something_else( svc_registers *regs )
+{
+  while (0 == workspace.task_slot.running) {
+    if (0 != shared.task_slot.runnable) { // Checking outside lock
+      claim_lock( &shared.task_slot.lock );
+
+      if (0 != shared.task_slot.runnable) { // Safe check
+        workspace.task_slot.running->regs = shared.task_slot.runnable->regs;
+        shared.task_slot.runnable = shared.task_slot.runnable->next;
+        *regs = workspace.task_slot.running->regs;
+        MMU_switch_to( workspace.task_slot.running->slot );
+      }
+
+      release_lock( &shared.task_slot.lock );
+    }
+    else {
+      asm ( "wfe" ); // Maybe this should be WFI?
+    }
+  }
+}
+
+static void __attribute__(( noinline )) bottleneck_reopened( svc_registers *regs )
+{
+  claim_lock( &shared.task_slot.lock );
+
+  assert( workspace.task_slot.running == shared.task_slot.bottleneck_owner );
+
+  Task *freed = shared.task_slot.next_to_own;
+
+  shared.task_slot.bottleneck_owner = freed;
+
+  if (freed != 0) {
+    shared.task_slot.next_to_own = freed->next;
+    if (freed->next == 0) {
+      assert( shared.task_slot.last_to_own == freed );
+      shared.task_slot.last_to_own = 0;
+    }
+    // The freed task goes to the top of the list, since it's been waiting for
+    // so long, but doesn't preempt the finished task... Debatable. TODO
+    freed->next = shared.task_slot.runnable;
+    shared.task_slot.runnable = freed;
+  }
+
+  release_lock( &shared.task_slot.lock );
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_svc()
@@ -1597,7 +1645,70 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
       , [lr] "=r" (lr)
       );
 
-  do_svc( regs, lr );
+  uint32_t number = get_swi_number( lr );
+  
+  switch (number & ~Xbit) {
+    case OS_File:
+    case OS_Args:
+    case OS_BGet:
+    case OS_BPut:
+    case OS_GBPB:
+    case OS_Find:
+    case OS_ReadLine:
+    case OS_FSControl:
+      {
+        // These SWIs expect only a single program running on a single processor
+        Task *blocked = 0;
+
+        claim_lock( &shared.task_slot.lock );
+
+        bool already_owner = (shared.task_slot.bottleneck_owner == workspace.task_slot.running);
+        if (already_owner || shared.task_slot.bottleneck_owner == 0) {
+          // We're IN! (Possibly recursing)
+          if (!already_owner) {
+            shared.task_slot.bottleneck_owner = workspace.task_slot.running;
+            assert (shared.task_slot.next_to_own == 0);
+            assert (shared.task_slot.last_to_own == 0);
+          }
+        }
+        else {
+          // First come, first served, and we're not first!
+          blocked = workspace.task_slot.running;
+
+          // Save context
+          workspace.task_slot.running->regs = *regs;
+          workspace.task_slot.running = 0; // we're not running any more
+
+          if (shared.task_slot.last_to_own == 0) {
+            shared.task_slot.next_to_own = blocked;
+          }
+          else {
+            shared.task_slot.last_to_own->next = blocked;
+          }
+
+          shared.task_slot.last_to_own = blocked;
+        }
+
+        release_lock( &shared.task_slot.lock );
+
+        if (0 == blocked) { // This task owns the filesystem
+          do_svc( regs, number );
+          if (!already_owner) {
+            bottleneck_reopened( regs );
+          }
+        }
+        else {
+          // When this routine returns, there is a thread in the mapped in slot
+          // that can be run by this core
+          do_something_else( regs );
+        }
+      }
+      break;
+    default:
+      do_svc( regs, number );
+      break;
+  }
+
   if (0 == (regs->spsr & 0x1f)) {
     run_transient_callbacks();
   }

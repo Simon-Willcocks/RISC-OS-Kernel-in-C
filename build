@@ -77,7 +77,8 @@ arm-linux-gnueabi-gcc-8 -Wall -I . \
   -g \
   -march=armv8-a+nofp \
   -T rom.script -Os \
-  -o rom.elf &&
+  -o rom.elf \
+  $* &&
 
 arm-linux-gnueabi-objcopy -R .ignoring -O binary rom.elf rom.bin &&
 arm-linux-gnueabi-objdump -x --disassemble-all rom.elf > rom.dump &&

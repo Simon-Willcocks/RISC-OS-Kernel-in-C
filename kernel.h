@@ -35,6 +35,7 @@ typedef struct shared_workspace shared_workspace;
 #include "boot.h"
 #include "mmu.h"
 #include "memory_manager.h"
+#include "task_slot.h"
 
 typedef struct callback callback;
 
@@ -151,12 +152,14 @@ extern struct core_workspace {
   struct VDU_workspace vdu;
   struct Kernel_workspace kernel;
   struct Memory_manager_workspace memory;
+  struct TaskSlot_workspace task_slot;
 } workspace;
 
 extern struct shared_workspace {
   struct MMU_shared_workspace mmu;
   struct Kernel_shared_workspace kernel;
   struct Memory_manager_shared_workspace memory;
+  struct TaskSlot_shared_workspace task_slot;
 } volatile shared;
 
 void __attribute__(( noreturn )) Boot();
@@ -174,8 +177,10 @@ static inline int strcmp( const char *left, const char *right )
 {
   int result = 0;
   while (result == 0) {
-    result = *left++ - *right++;
-    if (*left == 0 || *right == 0) break;
+    char l = *left++;
+    char r = *right++;
+    result = l - r;
+    if (l == 0 || r == 0) break;
   }
   return result;
 }

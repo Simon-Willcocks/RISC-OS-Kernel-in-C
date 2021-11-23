@@ -124,8 +124,48 @@ failed:
   return false;
 }
 
+static error_block *run_command( module *m, uint32_t code_offset, const char *params, uint32_t count )
+{
+WriteNum( code_offset + (uint32_t) m->header ); // 22504
+  error_block *error = 0;
+  register uint32_t non_kernel_code asm( "r14" ) = code_offset + (uint32_t) m->header;
+  register uint32_t *private_word asm( "r12" ) = m->private_word;
+  register const char *p asm( "r0" ) = params;
+  register uint32_t c asm( "r1" ) = count;
+
+  asm (
+      "\n  blx r14"
+      "\n  strvs r0, %[error]"
+      :
+      : "r" (p)
+      , "r" (c)
+      , "r" (non_kernel_code)
+      , "r" (private_word)
+      , [error] "m" (error)
+      : "r2", "r3", "r4", "r5", "r6" );
+
+  return error;
+}
+
 static bool run_swi_handler_code( svc_registers *regs, uint32_t svc, module *m )
 {
+if (svc == 0x41b40 || svc == 0x61b40) {
+  struct rfs {
+    uint32_t offset;
+    uint32_t load;
+    uint32_t exec;
+    uint32_t size;
+    uint32_t attr;
+    char name[];
+  } *rf = (void*) regs->r[0];
+  do {
+    WriteS( "New file: " );
+    Write0( rf->name );
+    WriteS( " " ); WriteNum( rf->offset );
+    rf = (void*) (((char*)rf)+rf->offset);
+    NewLine;
+  } while (rf->offset != 0);
+}
   clear_VF();
 
   register uint32_t non_kernel_code asm( "r10" ) = m->header->offset_to_swi_handler + (uint32_t) m->header;
@@ -156,50 +196,47 @@ static bool run_swi_handler_code( svc_registers *regs, uint32_t svc, module *m )
   return (regs->spsr & VF) == 0;
 }
 
-// Returns true unless intercepted by vector code
-static bool run_vector_code( svc_registers *regs, vector *v )
-{
-  register uint32_t non_kernel_code asm( "r14" ) = v->code;
-  register uint32_t private_word asm( "r12" ) = v->private_word;
-
-  // FIXME I don't think this handles errors well, if at all
-
-  asm goto (
-      "\n  push { %[regs] }"
-      "\n  adr r0, intercepted"
-      "\n  push { r0 } // Push address to stack, in case vector intercepts"
-      "\n  ldm %[regs], { r0-r9 }"
-      "\n  blx r14"
-      "\n  add sp, sp, #4 // Remove unused intercepted address from stack"
-      "\n  pop { r14 }"
-      "\n  stm r14, { r0-r9 }"
-      "\n  b %l[pass_on]"
-      "\nintercepted:"
-      "\n  pop { r14 }"
-      "\n  stm r14, { r0-r9 }"
-      :
-      : [regs] "r" (regs)
-      , "r" (non_kernel_code)
-      , "r" (private_word)
-      : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"
-      : pass_on );
-
-  return false;
-
-pass_on:
-  return true;
-}
-
 static bool run_vector( int vec, svc_registers *regs )
 {
+  // "If your routine passes the call on, you can deliberately alter some of
+  // the registers values to change the effect of the call, however, you must
+  // arrange for control to return to your routine again to restore to those
+  // that the original routine would have returned. It should then return
+  // control back to the calling program."
+  // The only way I can see this working is if the code:
+  //    Stores the intercept return point (and its private word?)
+  //    Replaces it with an address in its own code
+  //    Returns with mov pc, lr (allowing other handlers to execute)
+  // AND the final, default, action of every vector handler is pop {pc}.
+  bool success;
   vector *v = workspace.kernel.vectors[vec];
-  bool result = true;
 
-  while (v != 0 && run_vector_code( regs, v )) {
-    v = v->next;
-  }
+  asm volatile (
+      "\n  adr r0, intercepted  // Interception address, to go onto stack"
+      "\n  push { r0, %[regs] } // Save location of register storage at sp+4"
+      "\n  ldm %[regs], { r0-r9 }"
+      "\n0:"
+      "\n  ldr r14, [%[v], %[code]]"
+      "\n  ldr r12, [%[v], %[private]]"
+      "\n  blx r14"
+      "\n  ldr %[v], [%[v], %[next]]"
+      "\n  b 0b"
+      "\nintercepted:"
+      "\n  pop { r14 } // regs (intercepted already popped)"
+      "\n  stm r14, { r0-r9 }"
+      "\n  movvs %[success], %[f]"
+      "\n  movvc %[success], %[t]"
+      : [success] "=r" (success)
+      : [regs] "r" (regs)
+      , [t] "i" (true)
+      , [f] "i" (false)
+      , [next] "i" ((char*) &((vector*) 0)->next)
+      , [private] "i" ((char*) &((vector*) 0)->private_word)
+      , [code] "i" ((char*) &((vector*) 0)->code)
+      , [v] "r" (v)
+      : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r12", "r14" );
 
-  return result;
+  return success;
 }
 
 static inline uint32_t swi_decoding_table_code( module_header *header )
@@ -235,6 +272,27 @@ bool do_module_swi( svc_registers *regs, uint32_t svc )
   }
 
   return run_swi_handler_code( regs, svc, m );
+}
+
+static inline int riscoscmp( const char *left, const char *right, bool space_terminates )
+{
+  int result = 0;
+  while (result == 0) {
+    char l = *left++;
+    char r = *right++;
+
+    if ((l == 0 || l == 10 || l == 13 || (space_terminates && l == ' '))
+     && (r == 0 || r == 10 || r == 13 || (space_terminates && r == ' '))) break;
+
+    result = l - r;
+    if (result == 'a'-'A') {
+      result = (l >= 'a' && l <= 'z');
+    }
+    else if (result == 'A'-'a') {
+      result = (r >= 'a' && r <= 'z');
+    }
+  }
+  return result;
 }
 
 static void describe_service_call( svc_registers *regs )
@@ -406,7 +464,7 @@ describe_service_call( regs );
 
   uint32_t r12 = regs->r[12];
   while (m != 0 && regs->r[1] != 0 && result) {
-    regs->r[12] = m->private_word;
+    regs->r[12] = (uint32_t) m->private_word;
     if (0 != m->header->offset_to_service_call_handler) {
 Write0( title_string( m->header ) ); WriteS( " " );
       result = run_service_call_handler_code( regs, m );
@@ -862,6 +920,9 @@ static callback *get_a_callback()
 
 bool do_OS_Claim( svc_registers *regs )
 {
+  WriteS( "New vector " ); WriteNum( regs->r[0] );
+  WriteS( " Code " ); WriteNum( regs->r[1] );
+  WriteS( " Private " ); WriteNum( regs->r[2] ); NewLine;
   int number = regs->r[0];
   if (number > number_of( workspace.kernel.vectors )) {
     return error_InvalidVector( regs );
@@ -946,6 +1007,18 @@ bool do_OS_GetEnv( svc_registers *regs )
   return true;
 }
 
+static void show_module_commands( module_header *header )
+{
+  const char *cmd = (void*) (header->offset_to_help_and_command_keyword_table + (uint32_t) header);
+  while (cmd[0] != '\0') {
+    NewLine; Write0( cmd );
+    int len = strlen( cmd );
+    len = (len + 4) & ~3;
+    cmd = &cmd[len + 16];
+  }
+  NewLine;
+}
+
 void init_module( const char *name )
 {
   uint32_t *rom_modules = &_binary_AllMods_start;
@@ -953,6 +1026,9 @@ void init_module( const char *name )
 
   workspace.kernel.env = name;
   workspace.kernel.start_time = 0x0101010101ull;
+
+  WriteS( "\x09NIT: " );
+  Write0( name );
 
   // UtilityModule isn't a real module
   // PCI calls XOS_Hardware (and XOS_Heap 8)
@@ -966,7 +1042,9 @@ void init_module( const char *name )
     module_header *header = (void*) (rom_module+1);
     register const char *title = title_string( header );
     if (0 == strcmp( title, name )) {
-Write0( name ); NewLine;
+WriteS( " found " ); Write0( name ); NewLine;
+
+show_module_commands( header );
 
       register uint32_t code asm( "r0" ) = 10;
       register module_header *module asm( "r1" ) = header;
@@ -981,7 +1059,7 @@ bool excluded( const char *name )
   // These modules fail on init, at the moment.
   static const char *excludes[] = { "PCI"               // Data abort fc01ff04 prob. pci_handles
 
-                                  //, "WindowManager"
+                                  , "WindowManager"
                                   , "Portable"          // Uses OS_MMUControl
                                   , "SoundDMA"          // Uses OS_Memory
                                   , "SoundChannels"     // ???
@@ -998,6 +1076,67 @@ bool excluded( const char *name )
                                   , "TaskManager"       // Initialisation returns an error
                                   , "ScreenModes"       // Doesn't return, afaics
                                   , "BCMVideo"          // Tries to use OS_MMUControl
+                                  , "FilterManager"     // Uses Wimp_ReadSysInfo
+                                  , "WaveSynth"         // throws exception
+                                  , "StringLib"         // ?
+                                  , "Percussion"         // ?
+                                  , "IIC"         // ? 0xe200004d
+                                  , "SharedSound"       // 0xe200004d
+                                  , "DOSFS"             // 0x8600003f
+                                  , "SCSIDriver"        // 0x8600003f
+                                  , "SCSISoftUSB"       // 0x8600003f
+                                  , "SCSIFS"            // 0xe2000001
+                                  , "SDIODriver"        // 0x8600003f
+                                  , "SDFS"              // 0x8600003f
+                                  , "SDCMOS"              // 0x8600003f
+                                  , "ColourPicker"      // 0x8600003f
+                                  , "DrawFile"          // 0x8600003f - are these SharedCLib users?
+                                  , "BootCommands"      // 0x8600003f
+                                  , "WindowScroll"      // 0x8600003f
+                                  , "Internet"          // 0x8600003f
+                                  , "Resolver"          // 0x8600003f
+                                  , "Net"               // 0x8600003f
+
+// Not checked:
+                                  , "BootNet"
+                                  , "Freeway"
+                                  , "ShareFS"
+                                  , "MimeMap"
+                                  , "LanManFS"
+                                  , "EtherGENET"
+                                  , "EtherUSB"
+                                  , "DHCP"
+                                  , "!Edit"
+                                  , "!Draw"
+                                  , "!Paint"
+                                  , "!Alarm"
+                                  , "!Chars"
+                                  , "!Help"
+                                  , "Toolbox"
+                                  , "Window"
+                                  , "ToolAction"
+                                  , "Menu"
+                                  , "Iconbar"
+                                  , "ColourDbox"
+                                  , "ColourMenu"
+                                  , "DCS"
+                                  , "FileInfo"
+                                  , "FontDbox"
+                                  , "FontMenu"
+                                  , "PrintDbox"
+                                  , "ProgInfo"
+                                  , "SaveAs"
+                                  , "Scale"
+                                  , "TextGadgets"
+                                  , "CDFSDriver"
+                                  , "CDFSSoftSCSI"
+                                  , "CDFS"
+                                  , "CDFSFiler"
+                                  , "UnSqueezeAIF"
+                                  , "GPIO"
+
+
+                                  , "MbufManager"       // 0xe200004d
 
                                   , "DMAManager"    // 
   //                                , "DisplayManager"    // Accesses memory at 0x210184bb - Outside RMA?
@@ -1006,7 +1145,7 @@ bool excluded( const char *name )
                                   , "RamFS"             // Tries to use OS_MMUControl
                                   , "Filer"             // Doesn't return, afaics
                                   , "FSLock"             // Doesn't return, afaics
-                                  , "FontManager"        // Doesn't return, afaics
+                                  //, "FontManager"        // Doesn't return, afaics
                                   , "FPEmulator"        // Undefined instruction fc277a00
                                   , "VFPSupport"        // Init returned with V set
                                   , "Hourglass"        // OS_ReadPalette
@@ -1145,6 +1284,7 @@ void Draw_Stroke( uint32_t *path, uint32_t *transformation_matrix )
         : "lr" );
 }
 
+// Warning: does not return error status (although a "handle" > 255 is certainly an error)
 static inline uint32_t Font_FindFont( const char *name, uint32_t xpoints, uint32_t ypoints, uint32_t xdpi, uint32_t ydpi )
 {
   register uint32_t result asm( "r0" );
@@ -1163,6 +1303,7 @@ static inline uint32_t Font_FindFont( const char *name, uint32_t xpoints, uint32
         , "r" (rydpi)
         , [swi] "i" (0x20000 | 0x40081)
         : "lr" );
+
   return result;
 }
 
@@ -1190,13 +1331,25 @@ void Font_Paint( uint32_t font, const char *string, uint32_t type, uint32_t star
 
 static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, uint32_t r2 )
 {
-  // Always does a simple return to caller, never intercepting because there's no lower call.
+  // Always intercepting because there's no lower call.
   register uint32_t *regs;
-  asm ( "push { r0-r11, lr }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+  asm ( "push { r0-r11 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
 
   WriteS( "OS_Byte " );
 
   switch (r0) {
+  case 0x47: // Read/Write alphabet or keyboard
+    {
+    switch (r1) {
+    case 127: // Read alphabet
+      regs[2] = 1; break;
+    case 255: // Read keyboard
+      regs[2] = 1; break;
+    default:
+      WriteS( "Setting alphabet/keyboard not supported" );
+    }
+    }
+    break;
   case 0xa1:
     {
     WriteS( "Read CMOS " ); WriteNum( r1 ); WriteS( " " ); WriteNum( r2 );
@@ -1221,8 +1374,8 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     // Time zone (15 mins as signed)
     case 0x8b: regs[2] = 0; break;
 
-    // FontMax 1-5
-    case 0xc8 ... 0xcc: regs[2] = 32; break;
+    // FontMax, FontMax1-5
+    case 0xc8 ... 0xcd: regs[2] = 32; break;
 
     // Alarm flags/DST ???
     case 0xdc: regs[2] = 0; break;
@@ -1275,9 +1428,6 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
   NewLine;
   asm ( "pop { r0-r11, pc }" );
 }
-
-static vector default_ByteV = { .next = 0, .code = (uint32_t) default_os_byte, .private_word = 0 };
-static vector default_WrchV = { .next = 0, .code = (uint32_t) default_os_writec, .private_word = 0 };
 
 bool do_OS_GenerateError( svc_registers *regs )
 {
@@ -1550,10 +1700,175 @@ static void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint
 
 static void user_mode_code();
 
+static const char *discard_leading_characters( const char *command )
+{
+  const char *c = command;
+  while (*c == ' ' || *c == '*') c++;
+  return c;
+}
+
+static bool terminator( char c )
+{
+  return c == '\0' || c == '\r' || c == '\n';
+}
+
+static uint32_t count_params( const char *p )
+{
+  uint32_t result = 0;
+
+  while (!terminator( *p )) {
+    while (*p == ' ') p++;
+
+    result ++;
+    if ('"' == *p) {
+      do {
+        p ++;
+      } while (!terminator( *p ) && *p != '"');
+      if (*p != '"') return -1; // Mistake
+    }
+    else {
+      while (!terminator( *p ) && *p != ' ') p++;
+    }
+  }
+
+  return result;
+}
+
+static error_block *run_module_command( const char *command )
+{
+  module *m = workspace.kernel.module_list_head;
+  while (m != 0) {
+    module_header *header = m->header;
+WriteS( "Looking for command " ); Write0( command ); WriteS( " in " ); Write0( title_string( m->header ) ); NewLine;
+    const char *cmd = (void*) (header->offset_to_help_and_command_keyword_table + (uint32_t) header);
+    while (cmd[0] != '\0') {
+      int len = strlen( cmd );
+      if (0 == riscoscmp( cmd, command, true )) {
+        struct {
+          uint32_t code_offset;
+          uint32_t info_word;
+          uint32_t invalid_syntax_offset;
+          uint32_t help_offset;
+        } *c = (void*) &cmd[(len+4)&~3]; // +4 because len is strlen, not including terminator
+
+        if (c->code_offset != 0) {
+          const char *params = command + len;
+          while (*params == ' ') params++;
+          uint32_t count = count_params( params );
+
+          if (count == -1) {
+            static error_block mistake = { 4, "Mistake" };
+            return &mistake;
+          }
+
+          WriteS( "Running command " ); Write0( command ); WriteS( " in " ); Write0( title_string( header ) ); WriteS( " at " ); WriteNum( c->code_offset ); NewLine;
+          return run_command( m, c->code_offset, params, count );
+        }
+      }
+      cmd = &cmd[(len+20)&~3]; // +4 for terminator and alignment, +16 for words
+    }
+    m = m->next;
+  }
+
+  static error_block not_found = { 214, "Command not found" };
+
+  return &not_found;
+}
+
+static void __attribute__(( noinline )) do_CLI( const char *command )
+{
+  WriteS( "CLI: " ); Write0( command ); NewLine;
+  // PRM 1-958
+  command = discard_leading_characters( command );
+  if (*command == '|') return; // Comment, nothing to do
+  bool run = (*command == '/');
+  if (run) {
+    command++;
+  }
+  else {
+    run = run ||
+     ((command[0] == 'R' || command[0] == 'r') &&
+      (command[1] == 'U' || command[1] == 'u') &&
+      (command[2] == 'N' || command[2] == 'n') &&
+      (command[3] == ' ' || command[3] == '\0' || command[3] == '\n'));
+    if (run) {
+      command += 3;
+      command = discard_leading_characters( command );
+    }
+  }
+
+  if (command[0] == '%') {
+    // Skip alias checking
+    command++;
+  }
+  else {
+    char variable[256];
+    static const char alias[] = "Alias$";
+    strcpy( variable, alias );
+    int i = 0;
+    while (command[i] > ' ') {
+      variable[i + sizeof( alias ) - 1] = command[i];
+      i++;
+    }
+    variable[i + sizeof( alias ) - 1] = '\0';
+    WriteS( "Looking for " ); Write0( variable ); NewLine;
+    char result[256];
+    register const char *var_name asm( "r0" ) = variable;
+    register char *value asm( "r1" ) = result;
+    register uint32_t size asm( "r2" ) = sizeof( result );
+    register uint32_t context asm( "r3" ) = 0;
+    register uint32_t convert asm( "r4" ) = 0;
+    error_block *error;
+    asm ( "svc 0x20023\n  movvs %[err], r0\n  movvc %[err], #0"
+        : "=r" (size), [err] "=r" (error)
+        : "r" (var_name), "r" (value), "r" (size), "r" (context), "r" (convert)
+        : "lr", "cc" );
+    if (error == 0) {
+      Write0( variable ); WriteS( "Exists: " ); Write0( result );
+      asm ( "bkpt 1" );
+    }
+  }
+
+  error_block *error = run_module_command( command );
+
+  if (error != 0 && error->code == 214) {
+    // Not found in any module
+    asm( "bkpt 1" );
+  }
+}
+
+void __attribute__(( naked )) default_os_cli()
+{
+  register uint32_t *regs;
+  // Does r9 really have to be saved?
+  // Return address is already on stack, ignore lr
+  asm ( "push { r0-r3, r9, r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+
+  do_CLI( (const char *) regs[0] );
+
+  asm ( "pop { r0-r3, r9, r12, pc }" );
+}
+
+static void __attribute__(( naked )) finish_vector()
+{
+  asm volatile ( "pop {pc}" );
+}
+
+
 void Boot()
 {
-  workspace.kernel.vectors[6] = &default_ByteV;
-  workspace.kernel.vectors[3] = &default_WrchV;
+  static vector default_ByteV = { .next = 0, .code = (uint32_t) default_os_byte, .private_word = 0 };
+  static vector default_ChEnvV = { .next = 0, .code = (uint32_t) default_os_changeenvironment, .private_word = 0 };
+  static vector default_CliV = { .next = 0, .code = (uint32_t) default_os_cli, .private_word = 0 };
+  static vector do_nothing = { .next = 0, .code = (uint32_t) finish_vector, .private_word = 0 };
+
+  for (int i = 0; i < number_of( workspace.kernel.vectors ); i++) {
+    workspace.kernel.vectors[i] = &do_nothing;
+  }
+
+  workspace.kernel.vectors[0x05] = &default_CliV;
+  workspace.kernel.vectors[0x06] = &default_ByteV;
+  workspace.kernel.vectors[0x1e] = &default_ChEnvV;
 
   SetInitialVduVars();
 
@@ -1564,12 +1879,18 @@ void Boot()
 
   // This is obviously becoming the boot sequence, to be refactored when something's happening...
 
+  workspace.vdu.modevars[0] = 0x40; // Don't know what this means, but it's what the real thing returns
+  workspace.vdu.modevars[3] = -1;
+  workspace.vdu.modevars[4] = 1;
+  workspace.vdu.modevars[5] = 1;
   workspace.vdu.modevars[6] = 1920 * 4;
-
-  workspace.vdu.vduvars[128 - 128] = 0;
-  workspace.vdu.vduvars[129 - 128] = 0;
-  workspace.vdu.vduvars[130 - 128] = 1920 - 1;  // TODO set these from information from the HAL
-  workspace.vdu.vduvars[131 - 128] = 1080 - 1;
+  workspace.vdu.modevars[9] = 5;
+  workspace.vdu.modevars[12] = 1080-1;
+// TODO set these from information from the HAL
+  workspace.vdu.vduvars[128 - 128] = 0;         // VduExt_GWLCol
+  workspace.vdu.vduvars[129 - 128] = 0;         // VduExt_GWBRow
+  workspace.vdu.vduvars[130 - 128] = 1920 - 1;  // VduExt_GWRCol
+  workspace.vdu.vduvars[131 - 128] = 1080 - 1;  // VduExt_GWTRow
   extern uint32_t frame_buffer;
   workspace.vdu.vduvars[148 - 128] = (uint32_t) &frame_buffer;
   workspace.vdu.vduvars[149 - 128] = (uint32_t) &frame_buffer;
@@ -1590,6 +1911,23 @@ void Boot()
   }
 
   init_modules();
+/*
+  init_module( "UtilityModule" );
+
+  init_module( "FileSwitch" );
+  init_module( "ResourceFS" );
+  init_module( "TerritoryManager" );
+  init_module( "Messages" );
+  init_module( "MessageTrans" );
+  init_module( "UK" );
+  init_module( "BlendTable" );
+  init_module( "ColourTrans" );
+  init_module( "FontManager" );
+  init_module( "ROMFonts" );
+  init_module( "DrawMod" );
+*/
+  NewLine; WriteS( "All modules initialised, starting USR mode code" ); NewLine;
+
 
   TaskSlot *slot = MMU_new_slot();
   physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( 4096, 4096 ), .size = 4096 };
@@ -1637,9 +1975,11 @@ void show_string( uint32_t x, uint32_t y, const char *string, uint32_t colour )
     show_character( x, y, *string++, colour );
     x += 8;
   }
-  asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) : "cc" );
+  asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) : "lr", "cc" );
 }
 
+// None of the following will remain in the kernel, it is experimental user
+// mode code.
 
 static void user_mode_code( int core_number )
 {
@@ -1981,6 +2321,54 @@ static uint32_t path3[] = {
   int angle = odd ? 0 : 22; // Starting angle
   int step = 2;
 
+  {
+    char buffer[256];
+    const char var[] = "Font$Path";
+    WriteS( "Reading " ); Write0( var ); NewLine;
+
+    register const char *var_name asm( "r0" ) = var;
+    register char *value asm( "r1" ) = buffer;
+    register uint32_t size asm( "r2" ) = sizeof( buffer )-1;
+    register uint32_t context asm( "r3" ) = 0;
+    register uint32_t convert asm( "r4" ) = 0;
+    register error_block *error;
+    asm ( "svc 0x20023\n  movvs %[error], r0\n  movvc %[error], #0" : [error] "=r" (error), "=r" (size) : "r" (var_name), "r" (value), "r" (size), "r" (context), "r" (convert) : "lr", "cc" );
+    if (error != 0) {
+      WriteS( "Error: " ); Write0( error->desc ); NewLine;
+    }
+    else {
+      WriteS( "Value size = " ); WriteNum( size ); NewLine;
+      WriteS( "Value \\\"" ); buffer[size] = '\0'; Write0( buffer ); WriteS( "\\\"" ); NewLine;
+    }
+  }
+
+  { // Try a GSTrans, it fails in FindFont
+    char buffer[256];
+    const char var[] = "<Font$Path>";
+
+    register const char *var_name asm( "r0" ) = var;
+    register char *value asm( "r1" ) = buffer;
+    register uint32_t size asm( "r2" ) = sizeof( buffer )-1;
+    register error_block *error;
+    asm ( "svc 0x20027\n  movvs %[error], r0\n  movvc %[error], #0" : [error] "=r" (error), "=r" (size) : "r" (var_name), "r" (value), "r" (size) : "lr", "cc" );
+    if (error != 0) {
+      WriteS( "Error: " ); Write0( error->desc ); NewLine;
+    }
+    else {
+      WriteS( "Value size = " ); WriteNum( size ); NewLine;
+      WriteS( "Value \\\"" ); buffer[size] = '\0'; Write0( buffer ); WriteS( "\\\"" ); NewLine;
+    }
+  }
+
+WriteS( "Looking for Trinity.Medium" ); NewLine;
+uint32_t font = Font_FindFont( "Trinity.Medium", 12 * 16, 12 * 16, 96, 96 );
+if (font > 255) {
+  Write0( (const char*) (font + 4) );
+}
+  WriteS( "Found font " ); WriteNum( font ); NewLine;
+
+Font_Paint( font, "Hello world", (1 << 4), 500 * core_number, 200, 0 );
+
   for (int loop = 0;; loop++) {
 
     matrix[0] =  draw_cos( angle );
@@ -1995,7 +2383,7 @@ static uint32_t path3[] = {
     SetColour( 0, 0x4c0000 );
     Draw_Fill( path3, matrix );
 
-    asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) : "cc" );
+    asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) : "cc" ); // lr is not corrupted, in USR mode
 
     for (int i = 0; i < 0x800000; i++) { asm ( "" ); }
 

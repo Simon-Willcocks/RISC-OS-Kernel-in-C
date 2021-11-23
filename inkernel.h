@@ -31,8 +31,18 @@ void __attribute__(( naked, noreturn )) Kernel_default_data_abort();
 void __attribute__(( naked, noreturn )) Kernel_default_irq();
 void __attribute__(( naked, noreturn )) Kernel_default_svc();
 
+static inline error_block *OSCLI( const char *command )
+{
+  register const char *c asm( "r0" ) = command;
+  register error_block *result asm( "r0" );
+  asm volatile ( "svc 0x20005\n  movvc r0, #0" : [error] "=r" (result) : "r" (c) : "lr", "cc" );
+  return result;
+}
+
 
 // TEMPORARY!
+
+#define assert( x ) while (!(x)) { asm ( "bkpt 5" ); }
 
 #define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "cc", "lr" )
 

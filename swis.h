@@ -20,12 +20,6 @@ static const uint32_t VF = (1 << 28);
 
 static const uint32_t Xbit = (1 << 17);
 
-typedef struct __attribute__(( packed )) {
-  uint32_t r[13];
-  uint32_t lr;
-  uint32_t spsr;
-} svc_registers;
-
 enum {
 /* 00 */ OS_WriteC, OS_WriteS, OS_Write0, OS_NewLine,
 /* 04 */ OS_ReadC, OS_CLI, OS_Byte, OS_Word,
@@ -99,6 +93,8 @@ bool do_OS_ReadC( svc_registers *regs );
 bool do_OS_CLI( svc_registers *regs );
 bool do_OS_Byte( svc_registers *regs );
 bool do_OS_Word( svc_registers *regs );
+
+// These file-related SWIs will be serialised before accessing any file systems
 bool do_OS_File( svc_registers *regs );
 bool do_OS_Args( svc_registers *regs );
 bool do_OS_BGet( svc_registers *regs );
@@ -107,12 +103,16 @@ bool do_OS_GBPB( svc_registers *regs );
 bool do_OS_Find( svc_registers *regs );
 bool do_OS_ReadLine( svc_registers *regs );
 bool do_OS_FSControl( svc_registers *regs );
+
 bool do_OS_GenerateEvent( svc_registers *regs );
 bool do_OS_Mouse( svc_registers *regs );
 bool do_OS_UpCall( svc_registers *regs );
 bool do_OS_ChangeEnvironment( svc_registers *regs );
 bool do_OS_SpriteOp( svc_registers *regs );
 bool do_OS_SerialOp( svc_registers *regs );
+
+// TaskSlot
+void __attribute__(( naked )) default_os_changeenvironment();
 
 // memory/
 

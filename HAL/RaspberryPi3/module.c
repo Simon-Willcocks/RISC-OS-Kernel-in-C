@@ -28,13 +28,15 @@ NO_start;
 //NO_init;
 NO_finalise;
 NO_service_call;
-NO_title;
+//NO_title;
 NO_help;
 NO_keywords;
 NO_swi_handler;
 NO_swi_names;
 NO_swi_decoder;
 NO_messages_file;
+
+const char title[] = "HAL";
 
 static inline void clear_VF()
 {
@@ -88,8 +90,8 @@ struct workspace {
   uint32_t lock;
   uint32_t *mbox;
 
-  uint32_t *uart;
   uint32_t *gpio;
+  uint32_t *uart;
 
   void *mailbox_request;
   uint32_t fb_physical_address;
@@ -229,6 +231,8 @@ static void new_line( struct core_workspace *workspace )
 
 void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace *workspace )
 {
+if (core( workspace ) == 0) { workspace->shared->uart[0] = (c < ' ' && c != '\n' && c != '\r') ? (c + '@') : c; }
+
   if (workspace->x == 58 || c == '\n') {
     new_line( workspace );
   }
@@ -255,13 +259,13 @@ if (0 != workspace->shared->frame_buffer) {
   clear_VF();
 }
 
-static void WrchV_handler( char c )
+static void __attribute__(( naked )) WrchV_handler( char c )
 {
   // OS_WriteC must preserve all registers, C will ensure the callee saved registers are preserved.
   asm ( "push { r0, r1, r2, r3, r12 }" );
   register struct core_workspace *workspace asm( "r12" );
   C_WrchV_handler( c, workspace );
-  asm ( "pop { r0, r1, r2, r3, r12 }" );
+  asm ( "pop { r0, r1, r2, r3, r12, pc }" );
 }
 
 static void *map_device_page( uint32_t physical_address )
@@ -344,7 +348,7 @@ static uint32_t *map_screen_into_memory( uint32_t address )
   return base;
 }
 
-static inline stop_and_blink( struct workspace *workspace )
+static inline void stop_and_blink( struct workspace *workspace )
 {
   bool on = true;
   for (;;) {
@@ -481,6 +485,7 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   workspace->mbox = map_device_page( 0x3f00b000 );
 
   workspace->gpio = map_device_page( 0x3f200000 );
+  workspace->uart = map_device_page( 0x3f201000 );
 
   if (first_entry) {
     uint32_t *gpio = workspace->gpio;

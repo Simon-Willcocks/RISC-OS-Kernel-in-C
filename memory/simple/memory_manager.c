@@ -37,8 +37,8 @@ struct DynamicArea {
 
   uint32_t virtual_page;
   uint32_t start_page;
-  uint32_t pages;
-  uint32_t requested_pages; // This is the lie we tell any code that asks.
+  uint32_t pages;               // Implementation actually allocates MiBs at the moment
+  uint32_t actual_pages;        // This is how many there really are
   uint32_t handler_routine;
   uint32_t workarea;
   DynamicArea *next;
@@ -82,6 +82,15 @@ uint32_t slvk[] = {     0xe38ee201, // orr     lr, lr, #0x10000000      SLVK_set
                         };
 memcpy( (void*) 0xfaff3358, slvk, sizeof( slvk ) );
 
+// Now do it again for some other kernel workspace... (Specifically GSVarWSpace for GSTrans/GSRead/GSInit, fa645800)
+do {
+  for (int i = 0; i < 1000; i++) { asm ( "" ); }
+  memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
+} while (memory == 0xffffffff);
+
+MMU_map_at( (void*) 0xfa600000, memory, natural_alignment );
+memset( (void*) 0xfa600000, '\0', natural_alignment );
+
   if (shared.memory.dynamic_areas == 0) {
     // First core here (need not be core zero)
     uint32_t RMA = -1;
@@ -114,26 +123,9 @@ memcpy( (void*) 0xfaff3358, slvk, sizeof( slvk ) );
       da->virtual_page = ((uint32_t) &rma_base) >> 12;
       da->start_page = shared.memory.rma_memory >> 12;
       da->pages = initial_rma_size >> 12;
-      da->requested_pages = da->pages;
+      da->actual_pages = natural_alignment >> 12;
       da->next = shared.memory.dynamic_areas;
       shared.memory.dynamic_areas = da;
-    }
-
-    { // Font Cache - allow module to create it? - No: it creates it, then resizes it, and isn't MP safe
-      uint32_t memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
-      DynamicArea *da = rma_allocate( sizeof( DynamicArea ), &regs );
-      if (da == 0) goto nomem;
-      da->number = 4;
-      da->permissions = 6; // rw-
-      da->shared = 1;
-      da->virtual_page = 0x30000000 >> 12; // FIXME I don't know how DAs get allocated to virtual addresses!
-      da->start_page = memory >> 12;
-      da->pages = natural_alignment >> 12;
-      da->requested_pages = 128; // c.f. default_os_byte (FontSize CMOS byte)
-      da->next = shared.memory.dynamic_areas;
-      shared.memory.dynamic_areas = da;
-
-      MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
     }
 
     asm ( "dsb sy" );
@@ -167,7 +159,8 @@ memcpy( (void*) 0xfaff3358, slvk, sizeof( slvk ) );
     da->shared = 0;
     da->virtual_page = ((uint32_t) &free_pool) >> 12;
     da->pages = 256;
-    da->start_page = Kernel_allocate_pages( da->pages << 12, da->pages << 12 ) >> 12;
+    da->actual_pages = da->pages;
+    da->start_page = Kernel_allocate_pages( da->actual_pages << 12, 1 << 12 ) >> 12;
 
     da->next = workspace.memory.dynamic_areas;
     workspace.memory.dynamic_areas = da;
@@ -185,7 +178,8 @@ memcpy( (void*) 0xfaff3358, slvk, sizeof( slvk ) );
     da->shared = 0;
     da->virtual_page = ((uint32_t) &system_heap) >> 12;
     da->pages = 256;
-    da->start_page = Kernel_allocate_pages( da->pages << 12, da->pages << 12 ) >> 12;
+    da->actual_pages = da->pages;
+    da->start_page = Kernel_allocate_pages( da->actual_pages << 12, 1 << 12 ) >> 12;
 
     da->next = workspace.memory.dynamic_areas;
     workspace.memory.dynamic_areas = da;
@@ -206,25 +200,136 @@ nomem:
   asm ( "bkpt 1" );
 }
 
-bool do_OS_ChangeDynamicArea( svc_registers *regs )
-{
-  static error_block error = { 0x999, "Cannot change size of DAs" };
-  regs->r[0] = (uint32_t) &error;
-  return false;
-}
-
-bool do_OS_ReadDynamicArea( svc_registers *regs )
+static DynamicArea *find_DA( uint32_t n )
 {
   DynamicArea *da = workspace.memory.dynamic_areas;
-  while (da != 0 && da->number != regs->r[0]) {
+  while (da != 0 && da->number != n) {
     da = da->next;
   }
   if (da == 0) {
     da = shared.memory.dynamic_areas;
-    while (da != 0 && da->number != regs->r[0]) {
+    while (da != 0 && da->number != n) {
       da = da->next;
     }
   }
+  return da;
+}
+
+static inline bool Error_UnknownDA( svc_registers *regs )
+{
+  static error_block error = { 261, "Unknown dynamic area" };
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
+
+bool do_OS_ChangeDynamicArea( svc_registers *regs )
+{
+  DynamicArea *da = find_DA( regs->r[0] );
+  int32_t resize_by = (int32_t) regs->r[1];
+  int32_t resize_by_pages = resize_by >> 12;
+
+  if (da == 0) {
+    return Error_UnknownDA( regs );
+  }
+
+  if (resize_by == 0) { // Just reading size
+    regs->r[1] = da->pages << 12;
+    return true;
+  }
+
+  if (0 != (resize_by & 0xfff)) {
+    // FIXME Shrinking
+    resize_by_pages += (resize_by_pages >> 20); // +/- 1, or 0
+  }
+
+  WriteS( "Resizing DA " ); WriteNum( da->number ); WriteS( " from " ); WriteNum( da->pages<<12 ); WriteS( " by " ); WriteNum( resize_by ); WriteS( " (actual = " ); WriteNum( da->actual_pages << 12 ); WriteS( ")" ); NewLine;
+
+  if (da->actual_pages != 0 && (da->pages << 12) + resize_by > (da->actual_pages << 12)) {
+    static error_block error = { 999, "DA maximum size exceeded" };
+    regs->r[0] = (uint32_t) &error;
+    asm ( "bkpt 1" );
+    return false;
+  }
+
+  if (da->handler_routine != 0) {
+WriteS( "  Pre-grow" );
+    register uint32_t code asm ( "r0" ) = 0;
+    register uint32_t page_block asm ( "r1" ) = 0xbadf00d;
+    register uint32_t pages asm ( "r2" ) = resize_by >> 12;
+    register uint32_t grow_by asm ( "r3" ) = resize_by;
+    register uint32_t current_size asm ( "r4" ) = da->pages << 12;
+    register uint32_t page_size asm ( "r5" ) = 4096;
+    register uint32_t workspace asm ( "r12" ) = da->workarea;
+    register uint32_t error asm( "r0" );
+    asm ( "blx %[pregrow]"
+        : "=r" (error)
+        : "r" (code)
+        , "r" (page_block)
+        , "r" (pages)
+        , "r" (grow_by)
+        , "r" (current_size)
+        , "r" (page_size)
+        , "r" (workspace)
+        , [pregrow] "r" (da->handler_routine) );
+    if (error != 0) {
+      regs->r[0] = error;
+      return false;
+    }
+  } 
+
+  if (da->start_page == 0) {
+WriteS( " Allocate" );
+    // Give everything a MiB, for now
+    uint32_t memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
+    da->start_page = memory >> 12;
+    da->actual_pages = natural_alignment >> 12;
+WriteS( " Allocated " ); WriteNum( memory ); NewLine;
+
+WriteS( " Mapping" );
+    if (da->shared) {
+      MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->actual_pages << 12 );
+    }
+    else {
+      MMU_map_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->actual_pages << 12 );
+    }
+WriteS( " Mapped" );
+  }
+
+  da->pages = da->pages + (resize_by >> 12);
+
+  if (da->handler_routine != 0) {
+WriteS( " Post-grow" );
+    register uint32_t code asm ( "r0" ) = 1;
+    register uint32_t page_block asm ( "r1" ) = 0xbadf00d;
+    register uint32_t pages asm ( "r2" ) = resize_by >> 12;
+    register uint32_t grown_by asm ( "r3" ) = resize_by;
+    register uint32_t current_size asm ( "r4" ) = da->pages << 12;
+    register uint32_t page_size asm ( "r5" ) = 4096;
+    register uint32_t workspace asm ( "r12" ) = da->workarea;
+    register uint32_t error asm( "r0" );
+    asm ( "blx %[postgrow]"
+        : "=r" (error)
+        : "r" (code)
+        , "r" (page_block)
+        , "r" (pages)
+        , "r" (grown_by)
+        , "r" (current_size)
+        , "r" (page_size)
+        , "r" (workspace)
+        , [postgrow] "r" (da->handler_routine) );
+    if (error != 1) { // Changed
+      regs->r[0] = error;
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool do_OS_ReadDynamicArea( svc_registers *regs )
+{
+  DynamicArea *da = find_DA( regs->r[0] );
+
   if (da != 0) {
     regs->r[0] = da->virtual_page << 12;
     regs->r[1] = da->pages << 12;
@@ -241,7 +346,7 @@ bool do_OS_ReadDynamicArea( svc_registers *regs )
     }
   default:
     {
-    static error_block error = { 0x999, "Unknown DA" };
+    static error_block error = { 261, "Unknown dynamic area" };
     regs->r[0] = (uint32_t) &error;
     return false;
     }
@@ -271,6 +376,8 @@ bool do_OS_DynamicArea( svc_registers *regs )
   switch (regs->r[0]) {
   case New:
     { // Create new Dynamic Area
+      // Create, size 0 (with callback)
+      // Grow to minimum of requested size and maximum size (with callbacks)
       const char *name = (void*) regs->r[8];
 
       DynamicArea *da = rma_allocate( sizeof( DynamicArea ) + strlen( name ) + 1, regs );
@@ -293,71 +400,33 @@ bool do_OS_DynamicArea( svc_registers *regs )
         shared.memory.last_da_address += max_logical_size;
       }
 
+      da->virtual_page = va >> 12;
       da->handler_routine = regs->r[6];
       da->workarea = regs->r[7];
       if (da->workarea == -1) {
         da->workarea = da->virtual_page << 12;
       }
 
-      da->permissions = 6; // rw-
-      da->shared = 1;
-      da->virtual_page = shared.memory.last_da_address >> 12;
+      da->permissions = 6; // rw- FIXME: There's also privileged only...
+      // Only non-shared?
+      da->shared = 0;
+      da->pages = 0; // Initial state, then expand, as needed
+      da->next = workspace.memory.dynamic_areas;
+      workspace.memory.dynamic_areas = da;
 
+// TODO Service_DynamicAreaCreate 5a-50
 
-      {
-      // Should probably use OS_ChangeDynamicArea for this, move the code there FIXME
-      // No support for bit 8 set
-      uint32_t initial_size = regs->r[2];
-      register uint32_t code asm ( "r0" ) = 0;
-      register uint32_t grow_by asm ( "r3" ) = initial_size;
-      register uint32_t current_size asm ( "r4" ) = 0;
-      register uint32_t page_size asm ( "r5" ) = 4096;
-      register uint32_t workspace asm ( "r12" ) = da->workarea;
-      asm goto ( "blx %[pregrow]"
-             "\n  bvs %l[do_not_grow]"
-          : // asm goto does not allow output as at gcc-10, although the documentation pretends it does
-          : "r" (code)
-          , "r" (grow_by)
-          , "r" (current_size)
-          , "r" (page_size)
-          , "r" (workspace)
-          , [pregrow] "r" (da->handler_routine)
-          : /* clobbers */
-          : do_not_grow );
-
-      // assuming r0 = 0x56534552!
+      if (regs->r[2] > 0) {
+        svc_registers cda;
+        cda.r[0] = da->number;
+        cda.r[1] = regs->r[2];
+        if (!do_OS_ChangeDynamicArea( &cda )) {
+          regs->r[0] = cda.r[0];
+          return false;
+        }
       }
-      uint32_t memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
-      da->start_page = memory >> 12;
 
-      da->pages = natural_alignment >> 12;
-      da->next = shared.memory.dynamic_areas;
-      shared.memory.dynamic_areas = da;
-      shared.memory.last_da_address += 128 << 20; // FIXME Making this up as I go along...
-
-      MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
-
-      {
-      // Should probably use OS_ChangeDynamicArea for this, move the code there FIXME
-      // No support for bit 8 set
-      uint32_t initial_size = regs->r[2];
-      register uint32_t code asm ( "r0" ) = 1;
-      register uint32_t growth asm ( "r3" ) = initial_size;
-      register uint32_t current_size asm ( "r4" ) = da->pages << 12;
-      register uint32_t page_size asm ( "r5" ) = 4096;
-      register uint32_t workspace asm ( "r12" ) = da->workarea;
-      asm ( "blx %[postgrow]"
-          :
-          : "r" (code)
-          , "r" (growth)
-          , "r" (current_size)
-          , "r" (page_size)
-          , "r" (workspace)
-          , [postgrow] "r" (da->handler_routine) );
-      }
       break;
-do_not_grow:
-      for (;;) { asm( "bkpt 1\nwfi" ); }
     }
     break;
   case 30:
@@ -382,6 +451,7 @@ do_not_grow:
         da->virtual_page = ((uint32_t) &frame_buffer) >> 12;
         da->start_page = regs->r[1] >> 12;
         da->pages = regs->r[2] >> 12;
+        da->actual_pages = da->pages;
         da->next = shared.memory.dynamic_areas;
         shared.memory.dynamic_areas = da;
       }

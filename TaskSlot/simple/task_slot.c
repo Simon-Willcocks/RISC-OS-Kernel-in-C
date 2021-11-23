@@ -21,13 +21,83 @@
 #include "inkernel.h"
 
 // Initial version, using arrays rather than linked lists or similar.
+// A TaskSlot is essentially a user process, with blocks of RAM located at 0x8000
+// This can be extended to implement threads. TODO
+// Since the filing system in RO is aggressively attuned to a single processor
+// model, running a single program at a time, other than Wimp tasks, each TaskSlot will
+// need to store its idea of the filing system context (CSD, etc.) TODO rewrite that!
+// Also, it should probably create a Code Sys$ReturnCode that can update the
+// parent TaskSlot.
+
+typedef struct handler handler;
+
+struct handler {
+  uint32_t code;
+  uint32_t private_word;
+  uint32_t buffer;
+};
 
 struct TaskSlot {
   bool allocated;
   physical_memory_block blocks[10];
+  handler handlers[17];
+  Task task;
 };
 
 extern TaskSlot task_slots[];
+
+/* Handlers. Per slot, or per thread, I wonder? I'll go for per slot, to start with (matches with the idea of
+   cleaning up the handlers on exit).
+0 	Memory limit 	Memory limit 	Unused 	Unused
+1 	Undefined instruction 	Handler code 	Unused 	Unused
+2 	Prefetch abort 	Handler code 	Unused 	Unused
+3 	Data abort 	Handler code 	Unused 	Unused
+4 	Address exception 	Handler code 	Unused 	Unused
+5 	Other exceptions (reserved) 	Unused 	Unused 	Unused
+6 	Error 	Handler code 	Handler R0 	Error buffer
+7 	CallBack 	Handler code 	Handler R12 	Register dump buffer
+8 	BreakPoint? 	Handler code 	Handler R12 	Register dump buffer
+9 	Escape 	Handler code 	Handler R12 	Unused
+10 	Event? 	Handler code 	Handler R12 	Unused
+11 	Exit 	Handler code 	Handler R12 	Unused
+12 	Unused SWI? 	Handler code 	Handler R12 	Unused
+13 	Exception registers 	Register dump buffer 	Unused 	Unused
+14 	Application space 	Memory limit 	Unused 	Unused
+15 	Currently active object 	CAO pointer 	Unused 	Unused
+16 	UpCall 	Handler code 	Handler R12 	Unused
+*/
+
+void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
+{
+  if (regs[0] > 16) {
+    asm( "bkpt 1" );
+  }
+  handler *h = &workspace.task_slot.running->slot->handlers[regs[0]];
+  handler old = *h;
+  if (regs[1] != 0) {
+    h->code = regs[1];
+  }
+  if (regs[2] != 0) {
+    h->private_word = regs[2];
+  }
+  if (regs[3] != 0) {
+    h->buffer = regs[3];
+  }
+
+  regs[1] = old.code;
+  regs[2] = old.private_word;
+  regs[3] = old.buffer;
+}
+
+void __attribute__(( naked )) default_os_changeenvironment()
+{
+  register uint32_t *regs;
+  asm ( "push { r0-r3 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+
+  do_ChangeEnvironment( regs );
+
+  asm ( "pop { r0-r3, pc }" );
+}
 
 physical_memory_block Kernel_physical_address( TaskSlot *slot, uint32_t va )
 {
