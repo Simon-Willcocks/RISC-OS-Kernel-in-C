@@ -375,7 +375,8 @@ static void map_block( physical_memory_block block )
 }
 
 // noinline attribute is required so that stack space is allocated for any local variables.
-static void __attribute__(( noinline )) handle_data_abort( svc_registers *regs )
+// There is no need for this routine to examine the fault generating instruction or the registers.
+static void __attribute__(( noinline )) handle_data_abort()
 {
   if (0x807 == data_fault_type() && workspace.mmu.current != 0) {
     uint32_t fa = fault_address();
@@ -392,27 +393,23 @@ static void __attribute__(( noinline )) handle_data_abort( svc_registers *regs )
 
   MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
 */
-  asm volatile ( "ldm sp, { r0-r12, r14 }\n  b Kernel_failed_data_abort" );
+  asm volatile ( "b Kernel_failed_data_abort" );
 
   __builtin_unreachable();
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_data_abort()
 {
-  svc_registers *regs;
-  // Without volatile, this may be optimised out because regs is not used.
   asm volatile ( 
         "  sub lr, lr, #8"
-      "\n  srsdb sp!, #0x17"
-      "\n  push { r0-r12 }"
-      "\n  mov %[regs], sp"
-      : [regs] "=r" (regs)
+      "\n  srsdb sp!, #0x17 // Store return address and SPSR"
+      "\n  push { "C_CLOBBERED" }"
       );
 
-  handle_data_abort( regs );
+  handle_data_abort();
 
-  asm volatile ( "pop { r0-r12 }"
-    "\n  rfeia sp!" );
+  asm volatile ( "pop { "C_CLOBBERED" }"
+    "\n  rfeia sp! // Restore execution and SPSR" );
 
   __builtin_unreachable();
 }

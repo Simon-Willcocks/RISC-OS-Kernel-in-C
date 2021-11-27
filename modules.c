@@ -149,6 +149,7 @@ WriteNum( code_offset + (uint32_t) m->header ); // 22504
 
 static bool run_swi_handler_code( svc_registers *regs, uint32_t svc, module *m )
 {
+#ifdef DEBUG__SHOW_RESOURCE_FILES
 if (svc == 0x41b40 || svc == 0x61b40) {
   struct rfs {
     uint32_t offset;
@@ -166,16 +167,17 @@ if (svc == 0x41b40 || svc == 0x61b40) {
     NewLine;
   } while (rf->offset != 0);
 }
+#endif
   clear_VF();
 
-  register uint32_t non_kernel_code asm( "r10" ) = m->header->offset_to_swi_handler + (uint32_t) m->header;
+  register uint32_t non_kernel_code asm( "r14" ) = m->header->offset_to_swi_handler + (uint32_t) m->header;
   register uint32_t *private_word asm( "r12" ) = m->private_word;
   register uint32_t svc_index asm( "r11" ) = svc & 0x3f;
 
   asm (
       "\n  push { %[regs] }"
       "\n  ldm %[regs], { r0-r9 }"
-      "\n  blx r10"
+      "\n  blx r14"
       "\nreturn:"
       "\n  pop { %[regs] }"
       "\n  stm %[regs], { r0-r9 }"
@@ -208,9 +210,10 @@ static bool run_vector( int vec, svc_registers *regs )
   //    Replaces it with an address in its own code
   //    Returns with mov pc, lr (allowing other handlers to execute)
   // AND the final, default, action of every vector handler is pop {pc}.
-  bool success;
   vector *v = workspace.kernel.vectors[vec];
+  register uint32_t flags asm( "r1" );
 
+  // Code always exits via intercepted.
   asm volatile (
       "\n  adr r0, intercepted  // Interception address, to go onto stack"
       "\n  push { r0, %[regs] } // Save location of register storage at sp+4"
@@ -224,19 +227,25 @@ static bool run_vector( int vec, svc_registers *regs )
       "\nintercepted:"
       "\n  pop { r14 } // regs (intercepted already popped)"
       "\n  stm r14, { r0-r9 }"
-      "\n  movvs %[success], %[f]"
-      "\n  movvc %[success], %[t]"
-      : [success] "=r" (success)
+      "\n  ldr r1, [r14, %[spsr]] // Update spsr with cpsr flags"
+      "\n  mrs r2, cpsr"
+      "\n  bic r1, #0xf0000000"
+      "\n  and r2, r2, #0xf0000000"
+      "\n  orr r1, r1, r2"
+      "\n  str r1, [r14, %[spsr]]"
+      : "=r" (flags)
+
       : [regs] "r" (regs)
-      , [t] "i" (true)
-      , [f] "i" (false)
+      , [v] "r" (v)
+
       , [next] "i" ((char*) &((vector*) 0)->next)
       , [private] "i" ((char*) &((vector*) 0)->private_word)
       , [code] "i" ((char*) &((vector*) 0)->code)
-      , [v] "r" (v)
-      : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r12", "r14" );
+      , [spsr] "i" (4 * (&regs->spsr - &regs->r[0]))
 
-  return success;
+      : "r0", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r12", "r14" );
+
+  return (flags & VF) == 0;
 }
 
 static inline uint32_t swi_decoding_table_code( module_header *header )
@@ -542,8 +551,7 @@ static bool do_Module_Claim( svc_registers *regs )
     regs->r[1] = r1;
   }
   else {
-    static error_block nomem = { 0x101, "The area of memory reserved for relocatable modules is full" };
-    regs->r[0] = (uint32_t) &nomem;
+    result = error_nomem( regs );
   }
 
   return result;
@@ -913,6 +921,7 @@ static callback *get_a_callback()
   }
   else {
     svc_registers regs;
+    regs.spsr = 0; // OS_Heap fails if entered with V flag set
     result = rma_allocate( sizeof( callback ), &regs );
   }
   return result;
@@ -1027,8 +1036,10 @@ void init_module( const char *name )
   workspace.kernel.env = name;
   workspace.kernel.start_time = 0x0101010101ull;
 
+#ifdef DEBUG__SHOW_MODULE_INIT
   WriteS( "\x09NIT: " );
   Write0( name );
+#endif
 
   // UtilityModule isn't a real module
   // PCI calls XOS_Hardware (and XOS_Heap 8)
@@ -1042,9 +1053,10 @@ void init_module( const char *name )
     module_header *header = (void*) (rom_module+1);
     register const char *title = title_string( header );
     if (0 == strcmp( title, name )) {
-WriteS( " found " ); Write0( name ); NewLine;
 
-show_module_commands( header );
+#ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
+      show_module_commands( header );
+#endif
 
       register uint32_t code asm( "r0" ) = 10;
       register module_header *module asm( "r1" ) = header;
@@ -1059,6 +1071,8 @@ bool excluded( const char *name )
   // These modules fail on init, at the moment.
   static const char *excludes[] = { "PCI"               // Data abort fc01ff04 prob. pci_handles
 
+                                  , "BufferManager"     // Full RMA? Something odd, anyway.
+                                  , "ColourTrans"     // Full RMA? Something odd, anyway.
                                   , "WindowManager"
                                   , "Portable"          // Uses OS_MMUControl
                                   , "SoundDMA"          // Uses OS_Memory
@@ -1188,8 +1202,10 @@ void init_modules()
 
     workspace.kernel.env = title_string( header );
 
+#ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
     WriteS( "\x09NIT: " );
     Write0( workspace.kernel.env );
+#endif
     if (!excluded( workspace.kernel.env )) {
       NewLine;
       register uint32_t code asm( "r0" ) = 10;
@@ -1197,13 +1213,18 @@ void init_modules()
 
       asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
 
-      // Not in USR mode, but idling
+#ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
+      NewLine;
+#endif
+
+      // Not in USR mode, but we are idling
       run_transient_callbacks();
     }
     else {
+      Write0( workspace.kernel.env );
       WriteS( " - excluded" );
+      NewLine;
     }
-    NewLine;
     rom_module += (*rom_module)/4; // Includes size of length field
   }
 }
@@ -1380,7 +1401,7 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     // Alarm flags/DST ???
     case 0xdc: regs[2] = 0; break;
 
-    default: WriteS( " CMOS byte " ); WriteNum( r1 ); asm ( "bkpt 1" );
+    default: WriteS( " CMOS byte " ); WriteNum( r1 ); asm ( "bkpt 61" );
     }
     WriteS( " = " ); WriteNum( regs[2] );
     }
@@ -1390,7 +1411,7 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     WriteS( "Write CMOS " ); WriteNum( r1 ); WriteS( " " ); WriteNum( r2 );
     switch (r1) {
     case 0x10: WriteS( "Misc flags" ); break;
-    default: asm ( "bkpt 1" );
+    default: asm ( "bkpt 71" );
     }
     }
     break;
@@ -1419,18 +1440,25 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     switch (r0) {
     case 0xc6: WriteS( " Exec handle" ); break;
     case 0xc7: WriteS( " Spool handle" ); break;
-    default: asm( "bkpt 1" ); // Catch used variables I haven't identified yet
+    default: asm( "bkpt 81" ); // Catch used variables I haven't identified yet
     }
     }
     break;
-  default: asm ( "bkpt 1" );
+  default: asm ( "bkpt 91" );
   }
   NewLine;
   asm ( "pop { r0-r11, pc }" );
 }
 
+#ifdef DEBUG__SHOW_VECTOR_CALLS
+#define WriteFunc do { Write0( __func__ ); NewLine; for (int i = 0; i < 13; i++) { WriteNum( regs->r[i] ); asm ( "svc 0x100+' '" ); } WriteNum( regs->lr ); asm ( "svc 0x100+' '" ); WriteNum( regs->spsr ); NewLine; } while (false)
+#else
+#define WriteFunc
+#endif
+
 bool do_OS_GenerateError( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 1, regs );
 }
 
@@ -1438,38 +1466,44 @@ bool do_OS_WriteC( svc_registers *regs )
 {
 if (regs->r[0] == 0) {
   register int r0 asm( "r0" ) = regs->lr;
-  asm ( "bkpt 5" : : "r" (r0) );
+  asm ( "bkpt 15" : : "r" (r0) );
 }
   return run_vector( 3, regs );
 }
 
 bool do_OS_ReadC( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 4, regs );
 }
 
 bool do_OS_CLI( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 5, regs );
 }
 
 bool do_OS_Byte( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 6, regs );
 }
 
 bool do_OS_Word( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 7, regs );
 }
 
 bool do_OS_File( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 8, regs );
 }
 
 bool do_OS_Args( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 9, regs );
 }
 
@@ -1485,51 +1519,61 @@ bool do_OS_BPut( svc_registers *regs )
 
 bool do_OS_GBPB( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 12, regs );
 }
 
 bool do_OS_Find( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 13, regs );
 }
 
 bool do_OS_ReadLine( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 14, regs );
 }
 
 bool do_OS_FSControl( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 15, regs );
 }
 
 bool do_OS_GenerateEvent( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 16, regs );
 }
 
 bool do_OS_Mouse( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 26, regs );
 }
 
 bool do_OS_UpCall( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 29, regs );
 }
 
 bool do_OS_ChangeEnvironment( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 30, regs );
 }
 
 bool do_OS_SpriteOp( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 31, regs );
 }
 
 bool do_OS_SerialOp( svc_registers *regs )
 {
+WriteFunc;
   return run_vector( 36, regs );
 }
 
@@ -1739,7 +1783,7 @@ static error_block *run_module_command( const char *command )
   module *m = workspace.kernel.module_list_head;
   while (m != 0) {
     module_header *header = m->header;
-WriteS( "Looking for command " ); Write0( command ); WriteS( " in " ); Write0( title_string( m->header ) ); NewLine;
+
     const char *cmd = (void*) (header->offset_to_help_and_command_keyword_table + (uint32_t) header);
     while (cmd[0] != '\0') {
       int len = strlen( cmd );
@@ -1825,7 +1869,7 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
         : "lr", "cc" );
     if (error == 0) {
       Write0( variable ); WriteS( "Exists: " ); Write0( result );
-      asm ( "bkpt 1" );
+      asm ( "bkpt 41" );
     }
   }
 
@@ -1833,20 +1877,20 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
 
   if (error != 0 && error->code == 214) {
     // Not found in any module
-    asm( "bkpt 1" );
+    WriteS( "Command not found" );
+    asm( "bkpt 51" );
   }
 }
 
 void __attribute__(( naked )) default_os_cli()
 {
   register uint32_t *regs;
-  // Does r9 really have to be saved?
   // Return address is already on stack, ignore lr
-  asm ( "push { r0-r3, r9, r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+  asm ( "push { "C_CLOBBERED" }\n  mov %[regs], sp" : [regs] "=r" (regs) );
 
   do_CLI( (const char *) regs[0] );
 
-  asm ( "pop { r0-r3, r9, r12, pc }" );
+  asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
 static void __attribute__(( naked )) finish_vector()
@@ -1938,14 +1982,11 @@ void Boot()
   clean_cache_to_PoC();
 
   register uint32_t param asm ( "r0" ) = workspace.core_number;
+  // Remember: eret is unpredictable in System mode
   asm ( "isb"
-    "\n\tmsr cpsr, #0x17 // Abort mode: eret is unpredictable in System mode"
-    "\n\tdsb"
-    "\n\tisb"
     "\n\tmsr spsr, %[usermode]"
     "\n\tmov lr, %[usr]"
     "\n\tmsr sp_usr, %[stacktop]"
-
     "\n\tisb"
     "\n\teret" : : [stacktop] "r" (0x9000), [usr] "r" (user_mode_code), "r" (param), [usermode] "r" (0x10) );
 
@@ -1980,6 +2021,24 @@ void show_string( uint32_t x, uint32_t y, const char *string, uint32_t colour )
 
 // None of the following will remain in the kernel, it is experimental user
 // mode code.
+
+/*
+// Damnit, this breaks simple stuff...
+#undef Write0
+// ss is there in case the s parameter is even slightly complicated
+#define Write0( s ) do { const char *ss = s; register const char *string asm( "r0" ) = ss; asm ( "svc 2" : : "r" (string) ); } while (false)
+*/
+
+static uint32_t open_file_to_read( const char *name )
+{
+  // OS_Find
+  register uint32_t os_find_code asm( "r0" ) = 0x43 | (1 << 3);
+  register const char *filename asm( "r1" ) = name;
+  register uint32_t file_handle asm( "r0" );
+  asm ( "svc 0x0d" : "=r" (file_handle) : "r" (os_find_code), "r" (filename) ); // Doesn't corrupt lr because running usr
+
+  return file_handle;
+}
 
 static void user_mode_code( int core_number )
 {
@@ -2342,7 +2401,7 @@ static uint32_t path3[] = {
     }
   }
 
-  { // Try a GSTrans, it fails in FindFont
+  if (0) { // Try a GSTrans, it fails in FindFont
     char buffer[256];
     const char var[] = "<Font$Path>";
 
@@ -2360,6 +2419,25 @@ static uint32_t path3[] = {
     }
   }
 
+OSCLI( "Echo Hello" );
+// OSCLI( "Eval 1 + 1" ); Fails with data abort attempting to read from 0 
+// OSCLI( "ROMModules" ); Fails with lots of Buffer overflows.
+
+const char *filename = "Resources:$.Resources.Alarm.Messages";
+uint32_t file_handle = open_file_to_read( filename );
+
+WriteS( "Opened file " ); Write0( filename ); WriteS( " handle: " ); WriteNum( file_handle ); NewLine;
+
+register uint32_t handle asm( "r1" ) = file_handle;
+asm ( "0: svc 0x0a\n  svccc 0\n  bcc 0b" : : "r" (handle) );
+asm( "bkpt 99" );
+/*
+register uint32_t version asm( "r0" );
+register uint32_t size asm( "r2" );
+register uint32_t used asm( "r3" );
+asm ( "svc 0x40080" : "=r" (version), "=r" (size), "=r" (used) );
+WriteS( "Read 
+
 WriteS( "Looking for Trinity.Medium" ); NewLine;
 uint32_t font = Font_FindFont( "Trinity.Medium", 12 * 16, 12 * 16, 96, 96 );
 if (font > 255) {
@@ -2368,7 +2446,7 @@ if (font > 255) {
   WriteS( "Found font " ); WriteNum( font ); NewLine;
 
 Font_Paint( font, "Hello world", (1 << 4), 500 * core_number, 200, 0 );
-
+*/
   for (int loop = 0;; loop++) {
 
     matrix[0] =  draw_cos( angle );

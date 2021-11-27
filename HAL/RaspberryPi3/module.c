@@ -239,6 +239,7 @@ if (core( workspace ) == 0) { workspace->shared->uart[0] = (c < ' ' && c != '\n'
   if (c == '\r') {
     workspace->x = 0;
   }
+
   if (c != '\n' && c != '\r') {
     // This part is temporary, until the display update can be triggered by an interrupt FIXME
     // The whole "screen" will be displayed, with a cache flush, and the top line will be (workspace->y + 1) % 40
@@ -265,6 +266,8 @@ static void __attribute__(( naked )) WrchV_handler( char c )
   asm ( "push { r0, r1, r2, r3, r12 }" );
   register struct core_workspace *workspace asm( "r12" );
   C_WrchV_handler( c, workspace );
+  // Intercepting call (pops pc from the stack)
+  asm ( "bvc 0f\n  bkpt #2\n0:" );
   asm ( "pop { r0, r1, r2, r3, r12, pc }" );
 }
 

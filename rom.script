@@ -17,7 +17,7 @@
 ENTRY( _start )
 SECTIONS
 {
-  minimum_ram = 128 << 20 ; /* Boot configuration. */
+  minimum_ram = 256 << 20 ; /* Boot configuration. */
 
   /* Virtual addresses */
   free_pool = 0xc0000000 ; /* This will hopefully disappear (Wimp Sprites?) */

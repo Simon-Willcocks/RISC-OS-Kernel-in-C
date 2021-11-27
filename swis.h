@@ -13,6 +13,15 @@
  * limitations under the License.
  */
 
+// Copy of the registers stored for an SVC instruction; doesn't include
+// the user stack pointer, or link registers, which will be preserved
+// automatically (except if the SVC performs a task switch).
+typedef struct __attribute__(( packed )) {
+  uint32_t r[13];
+  uint32_t lr;
+  uint32_t spsr;
+} svc_registers;
+
 static const uint32_t NF = (1 << 31);
 static const uint32_t ZF = (1 << 30);
 static const uint32_t CF = (1 << 29);
@@ -195,6 +204,7 @@ typedef struct {
 
 static inline bool error_nomem( svc_registers *regs )
 {
+asm ( "bkpt 12" );
     static const error_block nomem = { 0x101, "The area of memory reserved for relocatable modules is full" };
     regs->r[0] = (uint32_t) &nomem;
     return false;

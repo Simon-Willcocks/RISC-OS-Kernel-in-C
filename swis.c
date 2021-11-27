@@ -50,6 +50,8 @@ static uint32_t word_align( void *p )
   return (((uint32_t) p) + 3) & ~3;
 }
 
+// This routine is for SWIs implemented in the legacy kernel, 0-511, not in
+// modules, in ROM or elsewhere. (i.e. routines that return using SLVK.)
 static bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
 {
   clear_VF();
@@ -59,27 +61,35 @@ static bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
 
   register uint32_t non_kernel_code asm( "r10" ) = jtable[svc];
   register uint32_t result asm( "r0" );
+  register uint32_t swi asm( "r11" ) = svc;
+  register uint32_t regs_in asm( "r12" ) = regs;
 
   asm (
-      "\n  push { %[regs] }"
-      "\n  ldm %[regs], { r0-r9 }"
+      "\n  push { r12 }"
+      "\n  ldm r12, { r0-r9 }"
       "\n  adr lr, return"
-      "\n  push { lr } // return address"
-      "\n  mov lr, #0 // Clear all flags - this may be wrong"
+      "\n  push { lr } // return address, popped by SLVK"
+
+      // Which SWIs use flags in r12 for input?
+      "\n  ldr r12, [r12, %[spsr]]"
+      "\n  bic lr, r12, #(1 << 18) // Clear V flags leaving original flags in r12"
+      // TODO re-enable interrupts if enabled in caller
+
       "\n  bx r10"
       "\nreturn:"
-      "\n  pop { r10 }"
-      "\n  stm r10, { r0-r9 }"
-      "\n  ldr r0, [r10, %[spsr]]"
+      "\n  pop { r12 } // regs"
+      "\n  stm r12, { r0-r9 }"
+      "\n  ldr r0, [r12, %[spsr]]"
       "\n  bic r0, #0xf0000000"
       "\n  and r2, lr, #0xf0000000"
       "\n  orr r0, r0, r2"
-      "\n  str r0, [r10, %[spsr]]"
-      : [result] "=r" (result)
-      : [regs] "r" (regs)
+      "\n  str r0, [r12, %[spsr]]"
+      : "=r" (result)
+      : "r" (regs_in)
       , "r" (non_kernel_code)
       , [spsr] "i" (4 * (&regs->spsr - &regs->r[0]))
-      : "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r11", "r12", "lr" );
+      , "r" (swi)
+      : "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "lr" );
 
   return (result & VF) == 0;
 }
@@ -104,7 +114,7 @@ static bool do_OS_WriteS( svc_registers *regs )
   uint32_t *new_sp;
   asm volatile ( "mov %[sp], sp" : [sp] "=r" (new_sp) );
   if (new_sp != old_sp) {
-    asm ( "bkpt #1" );
+    asm ( "bkpt 14" );
   }
   regs->lr = word_align( s );
   regs->r[0] = r0;
@@ -371,7 +381,13 @@ FC000000 64M        ROM
 
 static bool do_OS_BinaryToDecimal( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_ReadEscapeState( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadEscapeState( svc_registers *regs )
+{
+  // This can be called from interrupt routines, should probably make it more urgent.
+  regs->spsr &= ~(1 << 29); // Clear CC, no escape FIXME
+  return true;
+}
+
 static bool do_OS_EvaluateExpression( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadPalette( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
@@ -489,9 +505,9 @@ static void __attribute__(( naked )) TickerV_handler()
 {
   // C will ensure the callee saved registers are preserved.
   // We don't care about the private word.
-  asm ( "push { r0, r1, r2, r3, r12 }" );
+  asm ( "push { "C_CLOBBERED" }" );
   C_TickerV_handler();
-  asm ( "pop { r0, r1, r2, r3, r12 }" );
+  asm ( "pop { "C_CLOBBERED" }" );
 }
 
 static bool insert_into_timer_queue( uint32_t code, uint32_t private, uint32_t timeout, uint32_t reload )
@@ -1344,15 +1360,15 @@ static swifn os_swis[256] = {
 */
   [OS_GSTrans] =  do_OS_GSTrans,
 
-  [OS_BinaryToDecimal] =  do_OS_BinaryToDecimal,
+//  [OS_BinaryToDecimal] =  do_OS_BinaryToDecimal,
   [OS_FSControl] =  do_OS_FSControl,
   [OS_ChangeDynamicArea] =  do_OS_ChangeDynamicArea,
   [OS_GenerateError] =  do_OS_GenerateError,
 
   [OS_ReadEscapeState] =  do_OS_ReadEscapeState,
-  [OS_EvaluateExpression] =  do_OS_EvaluateExpression,
-  [OS_SpriteOp] =  do_OS_SpriteOp,
-  [OS_ReadPalette] =  do_OS_ReadPalette,
+//  [OS_EvaluateExpression] =  do_OS_EvaluateExpression,
+//  [OS_SpriteOp] =  do_OS_SpriteOp,
+//  [OS_ReadPalette] =  do_OS_ReadPalette,
 
   [OS_ServiceCall] =  do_OS_ServiceCall,
   [OS_ReadVduVariables] =  do_OS_ReadVduVariables,
@@ -1517,7 +1533,7 @@ static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t nu
 
     if (e == 0) {
       WriteS( "Error indicated, but NULL error block\n\r" );
-      asm ( "bkpt 1" );
+      asm ( "bkpt 15" );
     }
     else {
       if (e->code != 0x124 && number != 0x61506) {
@@ -1551,7 +1567,7 @@ static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t nu
     WriteS( " " );
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
     for (;;) { asm ( "wfi" ); }
-    asm ( "bkpt 1" );
+    asm ( "bkpt 16" );
   }
 }
 
@@ -1581,7 +1597,8 @@ static void __attribute__(( noinline )) do_something_else( svc_registers *regs )
       if (0 != shared.task_slot.runnable) { // Safe check
         workspace.task_slot.running->regs = shared.task_slot.runnable->regs;
         shared.task_slot.runnable = shared.task_slot.runnable->next;
-        *regs = workspace.task_slot.running->regs;
+        // *regs = workspace.task_slot.running->regs;
+        asm( "bkpt 17" ); // Do the above properly, still untested
         MMU_switch_to( workspace.task_slot.running->slot );
       }
 
@@ -1676,7 +1693,8 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
           blocked = workspace.task_slot.running;
 
           // Save context
-          workspace.task_slot.running->regs = *regs;
+          //workspace.task_slot.running->regs = *regs;
+          asm ( "bkpt 13" ); // FIXME
           workspace.task_slot.running = 0; // we're not running any more
 
           if (shared.task_slot.last_to_own == 0) {

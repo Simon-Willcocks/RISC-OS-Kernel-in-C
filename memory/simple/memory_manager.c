@@ -84,12 +84,16 @@ memcpy( (void*) 0xfaff3358, slvk, sizeof( slvk ) );
 
 // Now do it again for some other kernel workspace... (Specifically GSVarWSpace for GSTrans/GSRead/GSInit, fa645800)
 do {
-  for (int i = 0; i < 1000; i++) { asm ( "" ); }
   memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
 } while (memory == 0xffffffff);
 
 MMU_map_at( (void*) 0xfa600000, memory, natural_alignment );
 memset( (void*) 0xfa600000, '\0', natural_alignment );
+
+// Workspace for OS_EvaluateExpression, at least
+memory = Kernel_allocate_pages( 4096, 4096 );
+MMU_map_at( (void*) 0x7000, memory, 4096 );
+memset( (void*) 0x7000, '\0', 4096 );
 
   if (shared.memory.dynamic_areas == 0) {
     // First core here (need not be core zero)
@@ -97,7 +101,7 @@ memset( (void*) 0xfa600000, '\0', natural_alignment );
 
     // But there may not be any memory to allocate, yet...
     while (-1 == RMA) {
-      RMA = Kernel_allocate_pages( natural_alignment, natural_alignment );
+      RMA = Kernel_allocate_pages( 2*natural_alignment, 2*natural_alignment );
     }
 
     MMU_map_shared_at( &rma_heap, RMA, initial_rma_size );
@@ -169,6 +173,8 @@ memset( (void*) 0xfa600000, '\0', natural_alignment );
   }
 
   { // System heap, one per core (I think)
+    // This is where system variables are stored by the legacy code
+    // UtilityModule requires its presence on initialisation
     extern uint32_t system_heap;
 
     DynamicArea *da = rma_allocate( sizeof( DynamicArea ), &regs );
@@ -197,7 +203,7 @@ memset( (void*) 0xfa600000, '\0', natural_alignment );
   return;
 
 nomem:
-  asm ( "bkpt 1" );
+  asm ( "bkpt 11" );
 }
 
 static DynamicArea *find_DA( uint32_t n )
@@ -247,7 +253,7 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs )
   if (da->actual_pages != 0 && (da->pages << 12) + resize_by > (da->actual_pages << 12)) {
     static error_block error = { 999, "DA maximum size exceeded" };
     regs->r[0] = (uint32_t) &error;
-    asm ( "bkpt 1" );
+    asm ( "bkpt 21" );
     return false;
   }
 
@@ -519,7 +525,7 @@ for (;;) { asm ( "wfi" ); }
   return result;
 
 nomem:
-  for (;;) { asm ( "bkpt 1" ); }
+  for (;;) { asm ( "bkpt 31" ); }
   release_lock( &shared.memory.dynamic_areas_lock );
   return false;
 }
