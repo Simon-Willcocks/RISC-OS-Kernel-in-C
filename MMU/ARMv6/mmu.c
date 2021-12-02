@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-#include "kernel.h"
+#include "inkernel.h"
 
 // 4GiB (32-bit) address range
 // 16KiB -> 4096 (12 bits) of 1MiB sections
@@ -198,7 +198,11 @@ static void map_at( void *va, uint32_t pa, uint32_t size, bool shared )
     entry.S = shared ? 1 : 0;
 
     while (size > 0) {
-      L1TT[virt / natural_alignment] = entry.raw | pa;
+      // Not ideal. Why is the screen getting mapped twice?
+      assert( L1TT[virt / natural_alignment] == 0 
+       || (L1TT[virt / natural_alignment] == (entry.raw | pa)) );
+
+      L1TT[virt / natural_alignment] = (entry.raw | pa);
       size -= natural_alignment;
       virt += natural_alignment;
       pa += natural_alignment;
@@ -215,17 +219,19 @@ static void map_at( void *va, uint32_t pa, uint32_t size, bool shared )
     // FIXME: Obviously more areas of memory need finer granularity than just the
     // top and bottom megabytes.
     if ((uint32_t) va >= 0xfff00000) {
+      assert( 0 == top_MiB_tt[(virt & 0xff000)>>12] );
       top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
     }
     else if ((uint32_t) va < (1 << 20)) {
+      assert( 0 == bottom_MiB_tt[(virt & 0xff000)>>12] );
       bottom_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
     }
     else {
-      for (;;) { asm ( "wfi" ); }
+      for (;;) { asm ( "bkpt 101" ); }
     }
   }
   else {
-    for (;;) { asm ( "wfi" ); }
+    for (;;) { asm ( "bkpt 102" ); }
   }
 
   memory_remapped();
@@ -388,6 +394,7 @@ static void __attribute__(( noinline )) handle_data_abort()
       return;
     }
   }
+
 /*
   DynamicArea *da = shared.memory.dynamic_areas;
 
@@ -398,7 +405,7 @@ static void __attribute__(( noinline )) handle_data_abort()
   __builtin_unreachable();
 }
 
-void __attribute__(( naked, noreturn )) Kernel_default_data_abort()
+void __attribute__(( naked, optimize( 0 ), noreturn )) Kernel_default_data_abort()
 {
   asm volatile ( 
         "  sub lr, lr, #8"

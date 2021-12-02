@@ -4,12 +4,10 @@ typedef unsigned char uint8_t;
 #include "ZeroPage.h"
 #include <stdio.h>
 
-#define SHOW( e ) printf( #e"\t%04x\t0x%x\n", (uint32_t) (long) &lzp.e - (uint32_t) (long) &lzp, (uint32_t) sizeof( lzp.e ) );
+#define SHOW( e ) printf( #e"\t%08x\t0x%x\n", (uint32_t) (long) &((LegacyZeroPage*)0xffff0000)->e, (uint32_t) sizeof( lzp.e ) );
 
 int main()
-{
-LegacyZeroPage lzp;
-
+{LegacyZeroPage lzp;
 SHOW( IRQ1V );
 SHOW( ESC_Status );
 SHOW( LatchBSoftCopy );
@@ -280,6 +278,397 @@ SHOW( DomainId );
 SHOW( Modula2_Private );
 SHOW( VduDriverWorkSpace );
 SHOW( DebuggerSpace );
+
+SHOW( VduDriverWorkSpace.ws.FgEcf );
+SHOW( VduDriverWorkSpace.ws.BgEcf );
+SHOW( VduDriverWorkSpace.ws.GPLFMD );
+SHOW( VduDriverWorkSpace.ws.GPLBMD );
+SHOW( VduDriverWorkSpace.ws.GFCOL );
+SHOW( VduDriverWorkSpace.ws.GBCOL );
+
+SHOW( VduDriverWorkSpace.ws.GWLCol  );
+SHOW( VduDriverWorkSpace.ws.GWBRow  );
+SHOW( VduDriverWorkSpace.ws.GWRCol  );
+SHOW( VduDriverWorkSpace.ws.GWTRow  );
+
+SHOW( VduDriverWorkSpace.ws.qqqPad );
+SHOW( VduDriverWorkSpace.ws.QQ );
+SHOW( VduDriverWorkSpace.ws.QOffset );
+SHOW( VduDriverWorkSpace.ws.JVec      );
+
+      // Start of MODE table workspace
+
+SHOW( VduDriverWorkSpace.ws.ScreenSize  );
+
+SHOW( VduDriverWorkSpace.ws.XWindLimit  );
+
+      // LineLength must be immediately after YWindLimit
+
+SHOW( VduDriverWorkSpace.ws.YWindLimit  );
+
+SHOW( VduDriverWorkSpace.ws.LineLength  );
+
+SHOW( VduDriverWorkSpace.ws.NColour  );
+
+SHOW( VduDriverWorkSpace.ws.YShftFactor  );
+
+SHOW( VduDriverWorkSpace.ws.ModeFlags  );
+
+SHOW( VduDriverWorkSpace.ws.XEigFactor  );
+
+SHOW( VduDriverWorkSpace.ws.YEigFactor  );
+
+SHOW( VduDriverWorkSpace.ws.Log2BPC  );
+
+SHOW( VduDriverWorkSpace.ws.Log2BPP  );
+
+SHOW( VduDriverWorkSpace.ws.ScrRCol  );
+SHOW( VduDriverWorkSpace.ws.ScrBRow  );
+
+      // End of table-initialised workspace
+
+
+      // Next 3 must be together in this order !
+
+SHOW( VduDriverWorkSpace.ws.XShftFactor  );
+SHOW( VduDriverWorkSpace.ws.GColAdr  );
+
+SHOW( VduDriverWorkSpace.ws.ScreenStart  );
+
+SHOW( VduDriverWorkSpace.ws.NPix  );
+
+SHOW( VduDriverWorkSpace.ws.AspectRatio  );
+
+SHOW( VduDriverWorkSpace.ws.BitsPerPix  );
+
+SHOW( VduDriverWorkSpace.ws.BytesPerChar  );
+
+SHOW( VduDriverWorkSpace.ws.DisplayLineLength  );
+
+SHOW( VduDriverWorkSpace.ws.RowMult  );
+
+SHOW( VduDriverWorkSpace.ws.RowLength  );
+
+      // The following (up to and including NewPtY) must be together in this order
+      // (relied upon by DefaultWindows)
+
+SHOW( VduDriverWorkSpace.ws.TWLCol  );
+SHOW( VduDriverWorkSpace.ws.TWBRow  );
+SHOW( VduDriverWorkSpace.ws.TWRCol  );
+SHOW( VduDriverWorkSpace.ws.TWTRow  );
+
+SHOW( VduDriverWorkSpace.ws.OrgX  );
+SHOW( VduDriverWorkSpace.ws.OrgY );
+
+SHOW( VduDriverWorkSpace.ws.GCsX  );
+SHOW( VduDriverWorkSpace.ws.GCsY );
+
+SHOW( VduDriverWorkSpace.ws.OlderCsX  );
+SHOW( VduDriverWorkSpace.ws.OlderCsY  );
+
+SHOW( VduDriverWorkSpace.ws.OldCsX  );
+SHOW( VduDriverWorkSpace.ws.OldCsY  );
+SHOW( VduDriverWorkSpace.ws.GCsIX   );
+SHOW( VduDriverWorkSpace.ws.GCsIY   );
+SHOW( VduDriverWorkSpace.ws.NewPtX  );
+SHOW( VduDriverWorkSpace.ws.NewPtY  );
+
+      // End of together block
+
+SHOW( VduDriverWorkSpace.ws.TForeCol  );
+SHOW( VduDriverWorkSpace.ws.TBackCol  );
+
+SHOW( VduDriverWorkSpace.ws.CursorX  );
+SHOW( VduDriverWorkSpace.ws.CursorY  );
+SHOW( VduDriverWorkSpace.ws.CursorAddr  );
+
+SHOW( VduDriverWorkSpace.ws.InputCursorX  );
+SHOW( VduDriverWorkSpace.ws.InputCursorY  );
+SHOW( VduDriverWorkSpace.ws.InputCursorAddr  );
+
+SHOW( VduDriverWorkSpace.ws.EORtoggle  );
+SHOW( VduDriverWorkSpace.ws.RowsToDo   );
+
+SHOW( VduDriverWorkSpace.ws.VduStatus  );
+
+SHOW( VduDriverWorkSpace.ws.CBWS );
+SHOW( VduDriverWorkSpace.ws.CBStart );
+SHOW( VduDriverWorkSpace.ws.CBEnd );
+
+SHOW( VduDriverWorkSpace.ws.CursorDesiredState );
+SHOW( VduDriverWorkSpace.ws.CursorStartOffset );
+SHOW( VduDriverWorkSpace.ws.CursorEndOffset );
+SHOW( VduDriverWorkSpace.ws.CursorCounter );
+SHOW( VduDriverWorkSpace.ws.CursorSpeed );
+SHOW( VduDriverWorkSpace.ws.Reg10Copy );
+
+SHOW( VduDriverWorkSpace.ws.CursorFill  );
+
+SHOW( VduDriverWorkSpace.ws.CursorNbit  );
+
+SHOW( VduDriverWorkSpace.ws.DisplayStart  );
+SHOW( VduDriverWorkSpace.ws.DriverBankAddr  );
+SHOW( VduDriverWorkSpace.ws.DisplayBankAddr  );
+SHOW( VduDriverWorkSpace.ws.DisplayNColour  );
+SHOW( VduDriverWorkSpace.ws.DisplayModeFlags  );
+SHOW( VduDriverWorkSpace.ws.DisplayModeNo  );
+SHOW( VduDriverWorkSpace.ws.DisplayScreenStart  );
+
+SHOW( VduDriverWorkSpace.ws.DisplayXWindLimit  );
+SHOW( VduDriverWorkSpace.ws.DisplayYWindLimit );
+SHOW( VduDriverWorkSpace.ws.DisplayXEigFactor );
+SHOW( VduDriverWorkSpace.ws.DisplayYEigFactor );
+SHOW( VduDriverWorkSpace.ws.DisplayLog2BPP );
+SHOW( VduDriverWorkSpace.ws.PointerXEigFactor );
+
+SHOW( VduDriverWorkSpace.ws.Ecf1 );
+SHOW( VduDriverWorkSpace.ws.Ecf2 );
+SHOW( VduDriverWorkSpace.ws.Ecf3 );
+SHOW( VduDriverWorkSpace.ws.Ecf4 );
+
+SHOW( VduDriverWorkSpace.ws.DotLineStyle );
+
+SHOW( VduDriverWorkSpace.ws.ModeNo  );
+
+SHOW( VduDriverWorkSpace.ws.TFTint  );
+SHOW( VduDriverWorkSpace.ws.TBTint  );
+SHOW( VduDriverWorkSpace.ws.GFTint  );
+SHOW( VduDriverWorkSpace.ws.GBTint  );
+
+SHOW( VduDriverWorkSpace.ws.TotalScreenSize  );
+
+SHOW( VduDriverWorkSpace.ws.MaxMode  );
+
+SHOW( VduDriverWorkSpace.ws.ScreenEndAddr  );
+
+SHOW( VduDriverWorkSpace.ws.CursorFlags  );
+
+SHOW( VduDriverWorkSpace.ws.CursorStack  );
+
+SHOW( VduDriverWorkSpace.ws.ECFShift  );
+SHOW( VduDriverWorkSpace.ws.ECFYOffset  );
+
+      // WsVdu5 # 0      // Vdu 5 workspace
+SHOW( VduDriverWorkSpace.ws.WsScr );
+SHOW( VduDriverWorkSpace.ws.WsEcfPtr );
+SHOW( VduDriverWorkSpace.ws.EndVerti );
+SHOW( VduDriverWorkSpace.ws.StartMask );
+SHOW( VduDriverWorkSpace.ws.EndMask );
+SHOW( VduDriverWorkSpace.ws.FontOffset );
+SHOW( VduDriverWorkSpace.ws.TempPlain );
+
+SHOW( VduDriverWorkSpace.ws.VIDCClockSpeed  );
+
+SHOW( VduDriverWorkSpace.ws.CurrentMonitorType  );
+
+SHOW( VduDriverWorkSpace.ws.PixelRate  );
+
+SHOW( VduDriverWorkSpace.ws.BorderL );
+SHOW( VduDriverWorkSpace.ws.BorderB );
+SHOW( VduDriverWorkSpace.ws.BorderR );
+SHOW( VduDriverWorkSpace.ws.BorderT );
+
+SHOW( VduDriverWorkSpace.ws.GraphicWs );
+
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SprReadNColour );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SprWriteNColour );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SprBytesPerChar );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SprXShftFactor );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SprNPix );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SprLog2BPC );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SprLog2BPP );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SprModeFlags );
+
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.NameBuf );
+
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltWidth );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltHeight );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltScrOff );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltMemOff );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltScrAdr );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltColCnt );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltMemAdr );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltShftR );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltShftL );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltMskAdr );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltLMask );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltRMask );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltEcfPtr );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltEcfIndx );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltPixPerWord );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltBPP );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltMaskBit );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltMaskPtr );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltMaskRowBit );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltMaskRowPtr );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltMaskRowLen );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltzgooMasks );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.ScrLoaHandle );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.ScrLoaBufAdr );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.ScrLoaBytes );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.ScrLoaFilPtr );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.ScrLoaFilOfst );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.ScrLoaAreaCB );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SPltAction );
+SHOW( VduDriverWorkSpace.ws.GraphicWs.ws.SloadModeSel );
+
+
+SHOW( VduDriverWorkSpace.ws.GCharSizeX   );
+SHOW( VduDriverWorkSpace.ws.GCharSizeY   );
+
+SHOW( VduDriverWorkSpace.ws.GCharSpaceX   );
+SHOW( VduDriverWorkSpace.ws.GCharSpaceY   );
+
+SHOW( VduDriverWorkSpace.ws.TCharSizeX   );
+SHOW( VduDriverWorkSpace.ws.TCharSizeY   );
+
+SHOW( VduDriverWorkSpace.ws.TCharSpaceX   );
+SHOW( VduDriverWorkSpace.ws.TCharSpaceY   );
+
+SHOW( VduDriverWorkSpace.ws.HLineAddr       );
+SHOW( VduDriverWorkSpace.ws.GcolOraEorAddr  );
+
+SHOW( VduDriverWorkSpace.ws.BlankPalAddr   );
+SHOW( VduDriverWorkSpace.ws.FirPalAddr     );
+SHOW( VduDriverWorkSpace.ws.SecPalAddr     );
+
+SHOW( VduDriverWorkSpace.ws.CurrentGraphicsVDriver  );
+
+SHOW( VduDriverWorkSpace.ws.PointerShape1       );
+SHOW( VduDriverWorkSpace.ws.PointerShape2       );
+SHOW( VduDriverWorkSpace.ws.PointerShape3       );
+SHOW( VduDriverWorkSpace.ws.PointerShape4       );
+SHOW( VduDriverWorkSpace.ws.PointerShapeH1      );
+SHOW( VduDriverWorkSpace.ws.PointerShapeH2      );
+
+SHOW( VduDriverWorkSpace.ws.PointerShapeBlocks );
+
+SHOW( VduDriverWorkSpace.ws.PointerShapeLA );
+SHOW( VduDriverWorkSpace.ws.PointerShapeNumber );
+SHOW( VduDriverWorkSpace.ws.PointerX );
+SHOW( VduDriverWorkSpace.ws.PointerY );
+
+SHOW( VduDriverWorkSpace.ws.GraphicsVFeatures   );
+SHOW( VduDriverWorkSpace.ws.TrueVideoPhysAddr   );
+SHOW( VduDriverWorkSpace.ws.GraphicsVDrivers );
+SHOW( VduDriverWorkSpace.ws.pad1 );
+
+SHOW( VduDriverWorkSpace.ws.TextFgColour );
+SHOW( VduDriverWorkSpace.ws.TextBgColour );
+
+SHOW( VduDriverWorkSpace.ws.TextExpandArea  );
+
+SHOW( VduDriverWorkSpace.ws.pad2 );
+
+SHOW( VduDriverWorkSpace.ws.ScreenBlankFlag );
+
+SHOW( VduDriverWorkSpace.ws.ScreenBlankDPMSState );
+                                    // 1 => blank to stand-by (hsync off)
+                                    // 2 => blank to suspend (vsync off)
+                                    // 3 => blank to off (H+V off)
+                                    // 255 => no mode programmed yet
+
+
+
+SHOW( VduDriverWorkSpace.ws.        AlignSpace64_1 );
+
+SHOW( VduDriverWorkSpace.ws.FgEcfOraEor );
+
+SHOW( VduDriverWorkSpace.ws.BgEcfOraEor );
+
+SHOW( VduDriverWorkSpace.ws.BgEcfStore );
+
+SHOW( VduDriverWorkSpace.ws.LineDotCnt  );
+SHOW( VduDriverWorkSpace.ws.LineDotPatLSW  );
+SHOW( VduDriverWorkSpace.ws.LineDotPatMSW  );
+
+SHOW( VduDriverWorkSpace.ws.DotLineLength  );
+
+SHOW( VduDriverWorkSpace.ws.BBCcompatibleECFs  );
+
+SHOW( VduDriverWorkSpace.ws.SpAreaStart  );
+SHOW( VduDriverWorkSpace.ws.SpChooseName );
+SHOW( VduDriverWorkSpace.ws.SpChoosePtr );
+
+SHOW( VduDriverWorkSpace.ws.SWP_W );
+SHOW( VduDriverWorkSpace.ws.SWP_H );
+SHOW( VduDriverWorkSpace.ws.SWP_Callback );
+SHOW( VduDriverWorkSpace.ws.SWP_Mutex );
+SHOW( VduDriverWorkSpace.ws.SWP_Restore );
+SHOW( VduDriverWorkSpace.ws.SWP_Dirty );
+SHOW( VduDriverWorkSpace.ws.pad );
+
+SHOW( VduDriverWorkSpace.ws.SWP_Coords  );
+SHOW( VduDriverWorkSpace.ws.SWP_Pos  );
+SHOW( VduDriverWorkSpace.ws.SWP_Under  );
+SHOW( VduDriverWorkSpace.ws.SWP_Palette );
+
+SHOW( VduDriverWorkSpace.ws.TeletextOffset  );
+
+SHOW( VduDriverWorkSpace.ws.TeletextCount  );
+
+SHOW( VduDriverWorkSpace.ws.WrchNbit  );
+
+SHOW( VduDriverWorkSpace.ws.CharWidth  );
+      // in HiResTTX MODE 7, where characters are 16 pixels wide)
+      // This could also be defined as (TCharSizeX<<Log2BPC)/8
+
+SHOW( VduDriverWorkSpace.ws.TextOffset  );
+      // Keeps the text window centered when e.g. when mode 7 picks
+      // a higher resolution mode than strictly necessary.
+
+SHOW( VduDriverWorkSpace.ws.TTXFlags  );
+
+SHOW( VduDriverWorkSpace.ws.BeepBlock );
+
+SHOW( VduDriverWorkSpace.ws.ScreenMemoryClaimed );
+SHOW( VduDriverWorkSpace.ws.ExternalFramestore );
+
+SHOW( VduDriverWorkSpace.ws.pad4 );
+
+SHOW( VduDriverWorkSpace.ws.TTXDoubleCountsPtr  );
+SHOW( VduDriverWorkSpace.ws.TTXMapPtr );
+SHOW( VduDriverWorkSpace.ws.TTXLineStartsPtr );
+SHOW( VduDriverWorkSpace.ws.TTXNewWorkspace );
+
+SHOW( VduDriverWorkSpace.ws.RAMMaskTb );
+
+      // values of R0-R3 to return from SwitchOutputToSprite
+      // or Mask );
+SHOW( VduDriverWorkSpace.ws.SpriteMaskSelect  );
+      // current state
+SHOW( VduDriverWorkSpace.ws.VduSpriteArea  );
+      // (0 if output is to screen)
+SHOW( VduDriverWorkSpace.ws.VduSprite  );
+
+SHOW( VduDriverWorkSpace.ws.VduSaveAreaPtr  );
+
+SHOW( VduDriverWorkSpace.ws.ClipBoxEnable  );
+
+SHOW( VduDriverWorkSpace.ws.ClipBoxLCol );
+SHOW( VduDriverWorkSpace.ws.ClipBoxBRow );
+SHOW( VduDriverWorkSpace.ws.ClipBoxRCol );
+SHOW( VduDriverWorkSpace.ws.ClipBoxTRow );
+
+SHOW( VduDriverWorkSpace.ws.FgPattern );
+SHOW( VduDriverWorkSpace.ws.BgPattern );
+
+SHOW( VduDriverWorkSpace.ws.pad5 );
+
+SHOW( VduDriverWorkSpace.ws.KernelModeSelector  );
+
+SHOW( VduDriverWorkSpace.ws.     AlignSpace5 );
+
+SHOW( VduDriverWorkSpace.ws.TextExpand );
+
+//SHOW( VduDriverWorkSpace.ws.     AlignSpace_64 );
+
+SHOW( VduDriverWorkSpace.ws.LargeCommon );
+
+SHOW( VduDriverWorkSpace.ws.Font );
+
+SHOW( VduDriverWorkSpace.ws.VduSaveArea );
+
 return 0;
 }
 

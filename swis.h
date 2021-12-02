@@ -61,6 +61,11 @@ enum {
 /* 60 */ OS_FindMemMapEntries, OS_SetColour,
 /* 64 */ OS_Pointer = 0x64, OS_ScreenMode, OS_DynamicArea,
 /* 68 */ OS_Memory = 0x68, OS_ClaimProcessorVector, OS_Reset, OS_MMUControl,
+/* 6c */ OS_ResyncTime, OS_PlatformFeatures, OS_SynchroniseCodeAreas, OS_CallASWI,
+/* 70 */ OS_AMBControl, OS_CallASWIR12, OS_SpecialControl, OS_EnterUSR32,
+/* 74 */ OS_EnterUSR26, OS_VIDCDivider, OS_NVMemory,
+         OS_Hardware = 0x7a, OS_IICOp, 
+/* 7c */ OS_LeaveOS, OS_ReadLine32, OS_SubstituteArgs32, OS_HeapSort32,
  
 /* c0 */ OS_ConvertStandardDateAndTime = 0xc0, OS_ConvertDateAndTime,
 /* d0 */ OS_ConvertHex1 = 0xd0, OS_ConvertHex2, OS_ConvertHex4, OS_ConvertHex6,
@@ -175,11 +180,13 @@ static inline void *rma_allocate( uint32_t size, svc_registers *regs )
   uint32_t r1 = regs->r[1];
   uint32_t r2 = regs->r[2];
   uint32_t r3 = regs->r[3];
+  uint32_t psr = regs->spsr;
   void *result = 0;
 
   regs->r[0] = 2;
   regs->r[1] = (uint32_t) &rma_heap;
   regs->r[3] = size;
+  regs->spsr = 0; // V flag set on entry results in failure
 
   claim_lock( &shared.memory.lock );
 
@@ -193,6 +200,7 @@ static inline void *rma_allocate( uint32_t size, svc_registers *regs )
   regs->r[1] = r1;
   regs->r[2] = r2;
   regs->r[3] = r3;
+  regs->spsr = psr;
 
   return result;
 }
@@ -210,3 +218,5 @@ asm ( "bkpt 12" );
     return false;
 }
 
+// From swis.c, to allow veneers on OS_ SWIs.
+bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc );

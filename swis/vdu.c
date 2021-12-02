@@ -43,8 +43,11 @@ bool do_OS_ReadVduVariables( svc_registers *regs )
     case 0 ... 12: *val = workspace.vdu.modevars[*var]; break;
     case 128 ... 172: *val = workspace.vdu.vduvars[*var - 128]; break;
     case 256 ... 257: *val = workspace.vdu.textwindow[*var - 256]; break;
-    default: for (;;) { asm( "wfi" ); }
+    default: for (;;) { asm( "bkpt 68" ); }
     }
+#ifdef DEBUG__SHOW_VDU_VARS
+WriteS( "Read Vdu Var " ); WriteNum( *var ); WriteS( " = " ); WriteNum( *val ); NewLine;
+#endif
     var++;
     val++;
   }
@@ -53,8 +56,11 @@ bool do_OS_ReadVduVariables( svc_registers *regs )
 
 bool do_OS_ReadModeVariable( svc_registers *regs )
 {
-  if (regs->r[0] != -1) {
-    for (;;) { asm ( "wfi" ); }
+  // FIXME Needs work, always assuming the one and only mode
+  if (regs->r[1] >= number_of( workspace.vdu.modevars )) {
+    static error_block error = { 0x999, "Bad mode variable" };
+    regs->r[0] = (uint32_t) &error;
+    return false;
   }
   regs->r[2] = workspace.vdu.modevars[regs->r[1]];
   return true;
@@ -62,13 +68,26 @@ bool do_OS_ReadModeVariable( svc_registers *regs )
 
 bool do_OS_ReadPoint( svc_registers *regs )
 {
-  for (;;) { asm( "wfi" ); }
+  for (;;) { asm( "bkpt 67" ); }
 }
 
 bool do_OS_RemoveCursors( svc_registers *regs ) { return true; } // What cursors? FIXME
 bool do_OS_RestoreCursors( svc_registers *regs ) { return true; } // What cursors?
 
-static const uint32_t initial_mode_vars[13] = { 0x40, 0xef, 0x86, -1, 1, 1, 0x1e00, 0x7e9000, 0, 5, 5, 0x77f, 0x437 };
+static const uint32_t initial_mode_vars[13] = { 
+  0x40,         // Mode flags Hardware scroll never used
+  1920 / 8,     // Character columns
+  1080 / 8,     // Character rows
+  0xffffffff,   // Maximum logical colour (?)
+  0,            // XEigFactor
+  0,            // YEigFactor
+  1920 * 4,     // Line length
+  1920*1080*4,  // Screen size
+  0,            // YShiftFactor (not used)
+  5,            // Log2BPP (32bpp)
+  5,            // Log2BPC
+  1920-1,       // XWindLimit
+  1080-1 };     // YWindLimit
 
 void SetInitialVduVars()
 {

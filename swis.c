@@ -52,7 +52,7 @@ static uint32_t word_align( void *p )
 
 // This routine is for SWIs implemented in the legacy kernel, 0-511, not in
 // modules, in ROM or elsewhere. (i.e. routines that return using SLVK.)
-static bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
+bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
 {
   clear_VF();
 
@@ -72,7 +72,7 @@ static bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
 
       // Which SWIs use flags in r12 for input?
       "\n  ldr r12, [r12, %[spsr]]"
-      "\n  bic lr, r12, #(1 << 18) // Clear V flags leaving original flags in r12"
+      "\n  bic lr, r12, #(1 << 28) // Clear V flags leaving original flags in r12"
       // TODO re-enable interrupts if enabled in caller
 
       "\n  bx r10"
@@ -187,7 +187,30 @@ static bool do_OS_UnusedSWI( svc_registers *regs ) { return Kernel_Error_Unimple
 static bool do_OS_UpdateMEMC( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SetCallBack( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_ReadUnsigned( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadUnsigned( svc_registers *regs )
+{
+  // FIXME, can overflow, ignores flags
+  if (regs->r[4] == 0x45444957) asm ( "bkpt 80" );
+  uint32_t base = regs->r[0] & 0x7f;
+  if (base < 2 || base > 36) base = 10; // Can this really be a default?
+  uint32_t result = 0;
+  const char *c = (const char*) regs->r[1];
+  for (;;) {
+    unsigned char d = *c;
+    if (d < '0') break;
+    if (d >= 'a') d -= ('a' - 'A');
+    if (d > 'Z') break;
+    if (d > '9' && d < 'A') break;
+    if (d > '9') d -= ('A' - '0' + 10);
+    if (d > base) break;
+    result = (result * base) + d;
+    c++;
+  }
+  regs->r[1] = c;
+  regs->r[2] = result;
+
+  return true;
+}
 
 #if 0
 static bool gs_space_is_terminator( uint32_t flags )
@@ -575,7 +598,12 @@ static bool do_OS_RemoveTickerEvent( svc_registers *regs )
 
 
 static bool do_OS_InstallKeyHandler( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_CheckModeValid( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool do_OS_CheckModeValid( svc_registers *regs )
+{
+  regs->spsr &= ~CF; // All are valid, mostly because I only support one, yet!
+  return true;
+}
 
 
 static bool do_OS_ClaimScreenMemory( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
@@ -993,6 +1021,28 @@ static bool do_OS_Reset( svc_registers *regs ) { return Kernel_Error_Unimplement
 
 static bool do_OS_MMUControl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
+static bool do_OS_ResyncTime( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_PlatformFeatures( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_AMBControl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool do_OS_SpecialControl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_EnterUSR32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_EnterUSR26( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_VIDCDivider( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_NVMemory( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_Hardware( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_IICOp( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_LeaveOS( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadLine32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SubstituteArgs32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_HeapSort32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool do_OS_SynchroniseCodeAreas( svc_registers *regs )
+{
+  WriteS( "OS_SynchroniseCodeAreas FIXME" );
+  return true;
+}
+
 static bool buffer_too_small(  svc_registers *regs )
 {
   static error_block error = { 0x1e4, "Buffer overflow" };
@@ -1347,7 +1397,7 @@ static swifn os_swis[256] = {
   [OS_Claim] =  do_OS_Claim,
 
   [OS_Release] =  do_OS_Release,
-//  [OS_ReadUnsigned] =  do_OS_ReadUnsigned,
+  [OS_ReadUnsigned] =  do_OS_ReadUnsigned,
   [OS_GenerateEvent] =  do_OS_GenerateEvent,
 
   [OS_ReadVarVal] =  do_OS_ReadVarVal,
@@ -1367,7 +1417,7 @@ static swifn os_swis[256] = {
 
   [OS_ReadEscapeState] =  do_OS_ReadEscapeState,
 //  [OS_EvaluateExpression] =  do_OS_EvaluateExpression,
-//  [OS_SpriteOp] =  do_OS_SpriteOp,
+  [OS_SpriteOp] =  do_OS_SpriteOp,
 //  [OS_ReadPalette] =  do_OS_ReadPalette,
 
   [OS_ServiceCall] =  do_OS_ServiceCall,
@@ -1409,7 +1459,7 @@ static swifn os_swis[256] = {
   [OS_ReleaseDeviceVector] =  do_OS_ReleaseDeviceVector,
   [OS_DelinkApplication] =  do_OS_DelinkApplication,
   [OS_RelinkApplication] =  do_OS_RelinkApplication,
-  [OS_HeapSort] =  do_OS_HeapSort,
+  // [OS_HeapSort] =  do_OS_HeapSort,
 
   [OS_ExitAndDie] =  do_OS_ExitAndDie,
   [OS_ReadMemMapInfo] =  do_OS_ReadMemMapInfo,
@@ -1444,6 +1494,24 @@ static swifn os_swis[256] = {
   [OS_Reset] =  do_OS_Reset,
 
   [OS_MMUControl] =  do_OS_MMUControl,
+  [OS_ResyncTime] = do_OS_ResyncTime,
+  [OS_PlatformFeatures] = do_OS_PlatformFeatures,
+  [OS_SynchroniseCodeAreas] = do_OS_SynchroniseCodeAreas,
+  // [OS_CallASWI] = do_OS_CallASWI, Special case
+  [OS_AMBControl] = do_OS_AMBControl,
+  // [OS_CallASWIR12] = do_OS_CallASWIR12, Special case
+  [OS_SpecialControl] = do_OS_SpecialControl,
+  [OS_EnterUSR26] = do_OS_EnterUSR26,
+  [OS_VIDCDivider] = do_OS_VIDCDivider,
+  [OS_NVMemory] = do_OS_NVMemory,
+  [OS_EnterUSR32] = do_OS_EnterUSR32,
+  [OS_Hardware] = do_OS_Hardware,
+  [OS_IICOp] = do_OS_IICOp,
+  [OS_LeaveOS] = do_OS_LeaveOS,
+  [OS_ReadLine32] = do_OS_ReadLine32,
+  [OS_SubstituteArgs32] = do_OS_SubstituteArgs32,
+//  [OS_HeapSort32] = do_OS_HeapSort32,
+
 
   [OS_ConvertStandardDateAndTime] =  do_OS_ConvertStandardDateAndTime,
   [OS_ConvertDateAndTime] =  do_OS_ConvertDateAndTime,
@@ -1521,6 +1589,11 @@ static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t nu
 {
   regs->spsr &= ~VF;
 
+if (OS_ValidateAddress == (number & ~Xbit)) {
+  regs->spsr &= ~CF;
+  return;
+}
+
   uint32_t r0 = regs->lr;
 
   if (Kernel_go_svc( regs, number )) {
@@ -1566,7 +1639,6 @@ static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t nu
     WriteNum( number );
     WriteS( " " );
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
-    for (;;) { asm ( "wfi" ); }
     asm ( "bkpt 16" );
   }
 }
@@ -1644,6 +1716,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
   // The SVC stack pointer should be maintained by the implementation.
 
   // C functions may corrupt r0-r3, r9, and r10-12, and r14 (lr)
+  // Note: r9 is optionally callee-saved, use C_CLOBBERED
 
   // Gordian knot time.
   // Store r0-r12 on the stack, plus the exception return details (srs)
@@ -1663,7 +1736,11 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
       );
 
   uint32_t number = get_swi_number( lr );
-  
+
+  // FIXME What should happen if you call CallASWI using CallASWI?
+  if ((number & ~Xbit) == OS_CallASWI) number = regs->r[9];
+  else if ((number & ~Xbit) == OS_CallASWIR12) number = regs->r[12];
+
   switch (number & ~Xbit) {
     case OS_File:
     case OS_Args:

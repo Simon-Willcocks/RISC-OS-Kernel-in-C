@@ -79,11 +79,11 @@ void *memset(void *s, int c, size_t n)
 #define Write0( string ) { register uint32_t r0 asm( "r0" ) = (uint32_t) (string); asm ( "push { r0-r12, lr }\nsvc 2\n  pop {r0-r12, lr}" : : "r" (r0) ); } 
 
 // Return the relocated address of the item in the module: function or constant.
-static uint32_t local_ptr( void *p )
+static void * local_ptr( const void *p )
 {
   register uint32_t result;
   asm ( "adrl %[result], local_ptr" : [result] "=r" (result) );
-  return result + (char*) p - (char *) local_ptr;
+  return (void*) (result + (char*) p - (char *) local_ptr);
 }
 
 struct workspace {
@@ -231,6 +231,7 @@ static void new_line( struct core_workspace *workspace )
 
 void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace *workspace )
 {
+return;
 if (core( workspace ) == 0) { workspace->shared->uart[0] = (c < ' ' && c != '\n' && c != '\r') ? (c + '@') : c; }
 
   if (workspace->x == 58 || c == '\n') {
@@ -448,13 +449,6 @@ static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
   workspace->gpio[0x28/4] = (1 << 22); // Clr
   asm volatile ( "dsb" );
 
-// Just so the values can be displayed:
-  workspace->frame_buffer = map_screen_into_memory( (dma_tags[buffer_tag] & ~0xc0000000) );
-  //memset( workspace->frame_buffer, bg, width*height*4 );
-  show_word( 4, 10, dma_tags[buffer_tag], White, workspace );
-  show_word( 4, 20, dma_tags[buffer_tag+1], White, workspace );
-// end
-
   return (dma_tags[buffer_tag] & ~0xc0000000);
 }
 
@@ -509,14 +503,16 @@ void init( uint32_t this_core, uint32_t number_of_cores )
     }
   }
 
-  register uint32_t vector asm( "r0" ) = 3;
-  register uint32_t routine asm( "r1" ) = local_ptr( WrchV_handler );
-  register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
-  asm ( "svc 0x2001f" : : "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
+  {
+    void *handler = local_ptr( WrchV_handler );
+    register uint32_t vector asm( "r0" ) = 3;
+    register uint32_t routine asm( "r1" ) = handler;
+    register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
+    asm ( "svc 0x2001f" : : "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
+  }
 
   WriteS( "HAL obtained WrchV\\n\\r" );
+
   if (first_entry) { WriteS( "HAL initialised frame buffer\\n\\r" ); }
-  WriteNum( (uint32_t) private );
-  WriteNum( (uint32_t) workspace );
 }
 

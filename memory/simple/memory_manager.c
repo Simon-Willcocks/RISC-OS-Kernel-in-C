@@ -30,10 +30,10 @@
 // It will break very quickly, but hopefully demonstrate the principle.
 
 struct DynamicArea {
-  int32_t  number:12;
+  uint32_t number;
   uint32_t permissions:3;
   bool shared:1; // Visible to all cores at the same location (e.g. Screen)
-  uint32_t reserved:16;
+  uint32_t reserved:28;
 
   uint32_t virtual_page;
   uint32_t start_page;
@@ -230,6 +230,7 @@ static inline bool Error_UnknownDA( svc_registers *regs )
 
 bool do_OS_ChangeDynamicArea( svc_registers *regs )
 {
+  WriteS( "Resizing DA " ); WriteNum( regs->r[0] ); NewLine;
   DynamicArea *da = find_DA( regs->r[0] );
   int32_t resize_by = (int32_t) regs->r[1];
   int32_t resize_by_pages = resize_by >> 12;
@@ -244,11 +245,13 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs )
   }
 
   if (0 != (resize_by & 0xfff)) {
-    // FIXME Shrinking
-    resize_by_pages += (resize_by_pages >> 20); // +/- 1, or 0
+    if (resize_by > 0)
+      resize_by_pages ++;
+    else
+      resize_by_pages --;
   }
 
-  WriteS( "Resizing DA " ); WriteNum( da->number ); WriteS( " from " ); WriteNum( da->pages<<12 ); WriteS( " by " ); WriteNum( resize_by ); WriteS( " (actual = " ); WriteNum( da->actual_pages << 12 ); WriteS( ")" ); NewLine;
+  WriteS( "Resizing DA " ); WriteNum( regs->r[0] ); WriteS( " from " ); WriteNum( da->pages<<12 ); WriteS( " by " ); WriteNum( resize_by ); WriteS( " (actual = " ); WriteNum( da->actual_pages << 12 ); WriteS( ")" ); NewLine;
 
   if (da->actual_pages != 0 && (da->pages << 12) + resize_by > (da->actual_pages << 12)) {
     static error_block error = { 999, "DA maximum size exceeded" };
@@ -375,7 +378,8 @@ bool do_OS_DynamicArea( svc_registers *regs )
 
   if (shared.memory.last_da_address == 0) {
     // First time in this routine
-    shared.memory.last_da_address = 0x30000000; // FIXME I don't know how DAs get allocated to virtual addresses!
+    extern uint32_t dynamic_areas_base;
+    shared.memory.last_da_address = (uint32_t) &dynamic_areas_base;
     shared.memory.user_da_number = 256;
   }
 
@@ -394,16 +398,21 @@ bool do_OS_DynamicArea( svc_registers *regs )
       int32_t number = regs->r[1];
       if (number == -1) {
         number = shared.memory.user_da_number++;
+        regs->r[1] = number;
       }
       da->number = number;
 
       int32_t max_logical_size = regs->r[5];
-      if (max_logical_size == -1) max_logical_size = 128 << 20; // FIXME
+      if (max_logical_size == -1) {
+        max_logical_size = 16 << 20; // FIXME, but 16 sounds OK for anything written in olden times
+        regs->r[5] = max_logical_size;
+      }
 
       int32_t va = regs->r[3];
       if (va == -1) {
         va = shared.memory.last_da_address;
         shared.memory.last_da_address += max_logical_size;
+        regs->r[3] = va;
       }
 
       da->virtual_page = va >> 12;
@@ -416,7 +425,9 @@ bool do_OS_DynamicArea( svc_registers *regs )
       da->permissions = 6; // rw- FIXME: There's also privileged only...
       // Only non-shared?
       da->shared = 0;
-      da->pages = 0; // Initial state, then expand, as needed
+      da->pages = 0;            // Initial state, allocated and expanded by OS_ChangeDynamicArea
+      da->start_page = 0;       // Initial state, allocated and expanded by OS_ChangeDynamicArea
+      da->actual_pages = 0;     // Initial state, allocated and expanded by OS_ChangeDynamicArea
       da->next = workspace.memory.dynamic_areas;
       workspace.memory.dynamic_areas = da;
 
@@ -508,11 +519,17 @@ R8 	Pointer to name of area
       }
     }
     break;
+  case 27:
+    {
+      WriteS( "\\x08 Lying to the Wimp (probably) about free memory" );
+      regs->r[2] = 500;
+    }
+    break;
   default:
     {
 
 WriteS( "OS_DynamicArea " ); WriteNum( regs->r[0] ); WriteS( " " ); WriteNum( regs->r[1] ); NewLine;
-for (;;) { asm ( "wfi" ); }
+for (;;) { asm ( "bkpt 78" ); }
       static error_block error = { 0x997, "Cannot do anything to DAs" };
       regs->r[0] = (uint32_t) &error;
       result = false;

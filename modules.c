@@ -991,8 +991,9 @@ bool do_OS_Release( svc_registers *regs )
     v = v->next;
   }
 
-  // FIXME Error on not found?
-  return true;
+  static error_block not_there = { 0x1a1, "Bad vector release" };
+  regs->r[0] = (uint32_t) &not_there;
+  return false;
 }
 
 bool do_OS_AddToVector( svc_registers *regs )
@@ -1070,23 +1071,24 @@ bool excluded( const char *name )
 {
   // These modules fail on init, at the moment.
   static const char *excludes[] = { "PCI"               // Data abort fc01ff04 prob. pci_handles
+                                  , "WindowManager"     // Sprite problems
+                                  , "Debugger"
+                                  , "BCMSupport"        // Unknown dynamic area
+                                  , "Portable"          // Uses OS_MMUControl
+                                  , "RTSupport"         // Unknown dynamic area
+                                  , "USBDriver"         //  "
+                                  , "DWCDriver"         //  "
+                                  , "XHCIDriver"        //  "
+                                  , "VCHIQ"             //  "
+                                  , "BCMSound"          // ???
 
+// Probably don't work, I can't be bothered to see if their problems are solved already
                                   , "BufferManager"     // Full RMA? Something odd, anyway.
                                   , "ColourTrans"     // Full RMA? Something odd, anyway.
-                                  , "WindowManager"
-                                  , "Portable"          // Uses OS_MMUControl
                                   , "SoundDMA"          // Uses OS_Memory
                                   , "SoundChannels"     // ???
                                   , "SoundScheduler"    // Sound_Tuning
                                   , "SpriteExtend" // ReadSysInfo
-                                  , "Debugger"
-                                  , "BCMSupport"        // Doesn't return, afaics
-                                  , "RTSupport"         // Doesn't return, afaics
-                                  , "USBDriver"         // Doesn't return, afaics
-                                  , "DWCDriver"         // Doesn't return, afaics
-                                  , "XHCIDriver"        // Doesn't return, afaics
-                                  , "VCHIQ"             // Doesn't return, afaics
-                                  , "BCMSound"          // Initialisation returns an error
                                   , "TaskManager"       // Initialisation returns an error
                                   , "ScreenModes"       // Doesn't return, afaics
                                   , "BCMVideo"          // Tries to use OS_MMUControl
@@ -1149,18 +1151,18 @@ bool excluded( const char *name )
                                   , "UnSqueezeAIF"
                                   , "GPIO"
 
+                                  , "DMAManager"        // Calls OS_Hardware
+                                  , "BBCEconet"         // Data abort
+                                  , "RamFS"             // Unknown dynamic area
+                                  , "FSLock"            // Writes CMOS not yet supported
+                                  , "FPEmulator"        // OS_ClaimProcessorVector
 
                                   , "MbufManager"       // 0xe200004d
 
-                                  , "DMAManager"    // 
   //                                , "DisplayManager"    // Accesses memory at 0x210184bb - Outside RMA?
                                   , "DragASprite"       // Doesn't return, afaics
-                                  , "BBCEconet"       // Doesn't return, afaics
                                   , "RamFS"             // Tries to use OS_MMUControl
                                   , "Filer"             // Doesn't return, afaics
-                                  , "FSLock"             // Doesn't return, afaics
-                                  //, "FontManager"        // Doesn't return, afaics
-                                  , "FPEmulator"        // Undefined instruction fc277a00
                                   , "VFPSupport"        // Init returned with V set
                                   , "Hourglass"        // OS_ReadPalette
                                   , "InternationalKeyboard" // Probably because there isn't one?
@@ -1174,11 +1176,11 @@ bool excluded( const char *name )
                                   , "Serial"        // "esources$Path{,_Message} not found
                                   , "ShellCLI"        // "esources$Path{,_Message} not found
                                   , "SoundControl"          // No return
-                                  , "Squash"                    // No return
+                                  // , "Squash"                    // No return
                                   , "BootFX"                    // No return
                                   , "SystemDevices"             // No return
                                   , "TaskWindow"             // Data abort, fc339bc4 -> 01f0343c
-
+/**/
   };
 
   for (int i = 0; i < number_of( excludes ); i++) {
@@ -1202,7 +1204,7 @@ void init_modules()
 
     workspace.kernel.env = title_string( header );
 
-#ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
+#ifdef DEBUG__SHOW_MODULE_INIT
     WriteS( "\x09NIT: " );
     Write0( workspace.kernel.env );
 #endif
@@ -1213,7 +1215,7 @@ void init_modules()
 
       asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
 
-#ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
+#ifdef DEBUG__SHOW_MODULE_INIT
       NewLine;
 #endif
 
@@ -1386,8 +1388,20 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     case 0x12 ... 0x15:
       regs[2] = 0; break;
     
+    // WimpDoubleClickMove Limit
+    case 0x16: regs[2] = 5; break; // FIXME made up!
+
+    // WimpAutoMenuDelay time
+    case 0x17: regs[2] = 50; break; // FIXME made up!
+
     // UK Territory (encoded)
     case 0x18: regs[2] = 1 ^ 1; break;
+
+    // Wimp menu drag delay
+    case 0x1b: regs[2] = 50; break; // FIXME made up!
+
+    // FileSwitch options
+    case 0x1c: regs[2] = 0b00000010; break; // FIXME made up!
 
     // Font Cache pages: 512k
     case 0x86: regs[2] = 128; break;
@@ -1395,12 +1409,42 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     // Time zone (15 mins as signed)
     case 0x8b: regs[2] = 0; break;
 
+    // Desktop features
+    case 0x8c: regs[2] = 0x1; break; // FIXME made up, not pretty
+
+    // Screen size (pages)
+    case 0x8f: regs[2] = (1920 * 1080 + 4095) >> 12; break;
+
+#ifdef USE_ROM_OSBYTE_VARS
+    case 0xa6 ... 0xff:
+      {
+        extern uint8_t ByteVarInitTable;
+        uint8_t *table = &ByteVarInitTable;
+        regs[2] = table[r1 - 0xa6];
+        break;
+      }
+#else
+    // Desktop features
+    case 0xbc: regs[2] = 0x1; break; // FIXME made up: opt 4, 1
+
+    // Wimp Flags
+    case 0xc5: regs[2] = 0x6f; break; // FIXME
+
     // FontMax, FontMax1-5
     case 0xc8 ... 0xcd: regs[2] = 32; break;
 
     // Alarm flags/DST ???
     case 0xdc: regs[2] = 0; break;
 
+    // WimpDragDelayTime
+    case 0xdd: regs[2] = 20; break; // FIXME made up!
+
+    // WimpDragMoveLimit
+    case 0xde: regs[2] = 20; break; // FIXME made up!
+
+    // WimpDoubleClickDelayTime
+    case 0xdf: regs[2] = 50; break; // FIXME made up!
+#endif
     default: WriteS( " CMOS byte " ); WriteNum( r1 ); asm ( "bkpt 61" );
     }
     WriteS( " = " ); WriteNum( regs[2] );
@@ -1442,6 +1486,15 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     case 0xc7: WriteS( " Spool handle" ); break;
     default: asm( "bkpt 81" ); // Catch used variables I haven't identified yet
     }
+    }
+    break;
+  case 0x81: // Scan keyboard/read OS version (two things that are made for each other!)
+    {
+    if (r1 == 0 && r2 == 0xff) {
+      regs[1] = 171;
+    }
+    else
+      asm ( "bkpt 90" );
     }
     break;
   default: asm ( "bkpt 91" );
@@ -1878,7 +1931,7 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
   if (error != 0 && error->code == 214) {
     // Not found in any module
     WriteS( "Command not found" );
-    asm( "bkpt 51" );
+    // asm( "bkpt 51" );
   }
 }
 
@@ -1906,6 +1959,11 @@ void Boot()
   static vector default_CliV = { .next = 0, .code = (uint32_t) default_os_cli, .private_word = 0 };
   static vector do_nothing = { .next = 0, .code = (uint32_t) finish_vector, .private_word = 0 };
 
+  // SwiSpriteOp does BranchNotJustUs, which accesses internal kernel structures. Avoid this, by going directly
+  // to SpriteVecHandler.
+  extern void SpriteVecHandler();
+  static vector default_SpriteV = { .next = 0, .code = (uint32_t) SpriteVecHandler, .private_word = 0 };
+
   for (int i = 0; i < number_of( workspace.kernel.vectors ); i++) {
     workspace.kernel.vectors[i] = &do_nothing;
   }
@@ -1913,6 +1971,7 @@ void Boot()
   workspace.kernel.vectors[0x05] = &default_CliV;
   workspace.kernel.vectors[0x06] = &default_ByteV;
   workspace.kernel.vectors[0x1e] = &default_ChEnvV;
+  workspace.kernel.vectors[0x1f] = &default_SpriteV;
 
   SetInitialVduVars();
 
@@ -1921,28 +1980,104 @@ void Boot()
   workspace.vectors.zp.PrinterBufferAddr = 0xfaff2c98; // Where from?
   workspace.vectors.zp.PrinterBufferSize = 0x1000; // 
 
+  // Kernel/s/HAL
+  workspace.vectors.zp.Page_Size == 0x1000;
+
+WriteS( "Page size 0x1000" );
   // This is obviously becoming the boot sequence, to be refactored when something's happening...
 
-  workspace.vdu.modevars[0] = 0x40; // Don't know what this means, but it's what the real thing returns
-  workspace.vdu.modevars[3] = -1;
-  workspace.vdu.modevars[4] = 1;
-  workspace.vdu.modevars[5] = 1;
-  workspace.vdu.modevars[6] = 1920 * 4;
-  workspace.vdu.modevars[9] = 5;
-  workspace.vdu.modevars[12] = 1080-1;
-// TODO set these from information from the HAL
-  workspace.vdu.vduvars[128 - 128] = 0;         // VduExt_GWLCol
-  workspace.vdu.vduvars[129 - 128] = 0;         // VduExt_GWBRow
-  workspace.vdu.vduvars[130 - 128] = 1920 - 1;  // VduExt_GWRCol
-  workspace.vdu.vduvars[131 - 128] = 1080 - 1;  // VduExt_GWTRow
-  extern uint32_t frame_buffer;
-  workspace.vdu.vduvars[148 - 128] = (uint32_t) &frame_buffer;
-  workspace.vdu.vduvars[149 - 128] = (uint32_t) &frame_buffer;
-  workspace.vdu.vduvars[150 - 128] = 1920 * 1080 * 4;
-  workspace.vdu.vduvars[153 - 128] = 0xffffffff; // FG (lines) white
-  workspace.vdu.vduvars[154 - 128] = 0xffffffff; // BG (fill) white
+  static const uint32_t modevars[13] = {
+    0x40,
+    0xef,
+    0x86,
+    0xffffffff,
+    0x1,
+    0x1,
+    0x1e00,
+    0x7e9000,
+    0x0,
+    0x5,
+    0x5,
+    0x77f,
+    0x437
+  };
+  for (int i = 0; i < number_of( modevars ); i++)
+    workspace.vdu.modevars[i] = modevars[i];
 
-  workspace.vdu.vduvars[166 - 128] = (uint32_t) fast_horizontal_line_draw;
+  extern uint32_t frame_buffer;
+  static const uint32_t vduvars[45] = {
+    0x0,                                // 0x80
+    0x0,
+    0x77f,
+    0x437,
+    0,
+    0x86,
+    0xef,
+    0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0,                         // 0x90
+    (uint32_t) &frame_buffer, // 0x94
+    (uint32_t) &frame_buffer, // 0x95
+    0xfd2000,
+    0x63,
+    0x60,
+    0xffffffff,
+    0x0,
+    0xffffff,
+    0x0,
+    0xff,
+    0x0,
+    0xff,
+    0x0,                                // 0xa0 160
+    0x35,
+    0x8,
+    0x10,
+    0x8,
+    0x10,
+    (uint32_t) fast_horizontal_line_draw,
+    8,
+    8,
+    8,
+    8,
+    0xffff1480,
+    0 };
+
+  // TODO set these from information from the HAL
+
+  for (int i = 0; i < number_of( vduvars ); i++)
+    workspace.vdu.vduvars[i] = vduvars[i];
+
+  workspace.vdu.textwindow[0] = 0xef;
+  workspace.vdu.textwindow[1] = 0x43;
+
+  // OK, there must be a better way...
+  // Set up graphics window
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol = 1920-1;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow = 1080-1;
+
+  // I know, we need to not have the frame buffer at a fixed address, 
+  // and probably allow for more than one at a time...
+
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenSize = 1920 * 1080 * 4;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.XWindLimit = 1920;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.YWindLimit = 1080; // -1 ?
+  workspace.vectors.zp.VduDriverWorkSpace.ws.LineLength = 1920 * 4;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.NColour = 32;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.YShftFactor = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ModeFlags = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.XEigFactor = 1;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.YEigFactor = 1;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPC = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPP = 5;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ScrRCol = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ScrBRow = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.XShftFactor = 0;
+
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenStart = &frame_buffer;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenEndAddr = &(&frame_buffer)[1920*1080-1];
+  workspace.vectors.zp.VduDriverWorkSpace.ws.TotalScreenSize = 1920 * 1080 * 4;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.TrueVideoPhysAddr = &frame_buffer;
 
   // Start the HAL, a multiprocessing-aware module that initialises essential features before
   // the boot sequence can start.
@@ -1958,6 +2093,7 @@ void Boot()
 /*
   init_module( "UtilityModule" );
 
+  init_module( "DrawMod" );
   init_module( "FileSwitch" );
   init_module( "ResourceFS" );
   init_module( "TerritoryManager" );
@@ -1968,8 +2104,8 @@ void Boot()
   init_module( "ColourTrans" );
   init_module( "FontManager" );
   init_module( "ROMFonts" );
-  init_module( "DrawMod" );
 */
+
   NewLine; WriteS( "All modules initialised, starting USR mode code" ); NewLine;
 
 
@@ -1993,32 +2129,6 @@ void Boot()
   __builtin_unreachable();
 }
 
-static inline void show_character( uint32_t x, uint32_t y, unsigned char c, uint32_t colour )
-{
-  extern uint8_t system_font[128-32][8];
-  uint32_t dx = 0;
-  uint32_t dy = 0;
-  c = (c & 0x7f) - ' ';
-
-  for (dy = 0; dy < 8; dy++) {
-    for (dx = 0; dx < 8; dx++) {
-      if (0 != (system_font[c][dy] & (0x80 >> dx)))
-        set_pixel( x+dx, y+dy, colour );
-      else
-        set_pixel( x+dx, y+dy, Black );
-    }
-  }
-}
-
-void show_string( uint32_t x, uint32_t y, const char *string, uint32_t colour )
-{
-  while (*string != 0) {
-    show_character( x, y, *string++, colour );
-    x += 8;
-  }
-  asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) : "lr", "cc" );
-}
-
 // None of the following will remain in the kernel, it is experimental user
 // mode code.
 
@@ -2028,6 +2138,64 @@ void show_string( uint32_t x, uint32_t y, const char *string, uint32_t colour )
 // ss is there in case the s parameter is even slightly complicated
 #define Write0( s ) do { const char *ss = s; register const char *string asm( "r0" ) = ss; asm ( "svc 2" : : "r" (string) ); } while (false)
 */
+
+const unsigned char sprite_file_data[] = {
+//   0x5c, 0x02, 0x00, 0x00, // Length added manually (not stored in file)
+  0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x3c, 0x05, 0x00, 0x00,
+  0x2c, 0x05, 0x00, 0x00,       // offset to next sprite
+  'n', 'e', 'w', 's', 'p', 'r', 'i', 't', 'e', 0x00, 0x00, 0x00, 
+  0x0a, 0x00, 0x00, 0x00,       // width in words 11
+  0x0f, 0x00, 0x00, 0x00,       // height in pixels 16
+  0x00, 0x00, 0x00, 0x00,       // New sprite (0)
+  0x1f, 0x00, 0x00, 0x00,       // Last used bit on right edge of sprite
+  0x2c, 0x00, 0x00, 0x00,       // Offset to image (from start of sprite)
+  0x2c, 0x00, 0x00, 0x00,       // Offset to mask (or image, if none).
+  0xb5, 0x80, 0x16, 0x30,       // Sprite Mode Word 0x301680b5 - 90 x 90 DPI, type 6 (32bpp 8:8:8:8 TBGR), not wide
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00,
+  0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00,
+  0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00,
+  0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00,
+  0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00,
+  0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00,
+  0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00,
+  0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00, 0x87, 0x74, 0x00, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00,
+  0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00,
+  0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00,
+  0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00,
+  0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00,
+  0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00,
+  0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00,
+  0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00, 0xff, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00,
+  0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00, 0x87, 0x74, 0xff, 0x00
+};
 
 static uint32_t open_file_to_read( const char *name )
 {
@@ -2401,7 +2569,7 @@ static uint32_t path3[] = {
     }
   }
 
-  if (0) { // Try a GSTrans, it fails in FindFont
+  { // Try a GSTrans, it fails in FindFont
     char buffer[256];
     const char var[] = "<Font$Path>";
 
@@ -2423,6 +2591,28 @@ OSCLI( "Echo Hello" );
 // OSCLI( "Eval 1 + 1" ); Fails with data abort attempting to read from 0 
 // OSCLI( "ROMModules" ); Fails with lots of Buffer overflows.
 
+  const uint32_t *sprite_area = (void*) sprite_file_data;
+  uint32_t sprite_address = (uint32_t) sprite_area - 4 + sprite_area[1];
+  WriteS( "\\n\\rRendering sprite " ); Write0( sprite_address + 4 ); WriteS( "\\n\\r" );
+
+  {
+    // Always ensure all calculations, initialisations, etc. are before you
+    // start talking about register variables to be passed to assembler.
+    uint32_t column = 100 + core_number * 200;
+
+    register uint32_t code asm( "r0" ) = 0x22 | 0x200;
+    register const unsigned char *file asm( "r1" ) = sprite_area;
+    register uint32_t sprite asm( "r2" ) = sprite_address;
+    register uint32_t x asm( "r3" ) = column;
+    register uint32_t y asm( "r4" ) = 1024;
+    register uint32_t action asm( "r5" ) = 0;
+    //register uint32_t scaling asm( "r6" ) = 0;
+    //register uint32_t translation asm( "r7" ) = 0;
+    asm ( "svc 0x2e" : : "r" (code), "r" (file), "r" (sprite), "r" (x), "r" (y), "r" (action) ); // , "r" (scaling), "r" (translation) );
+  }
+  WriteS( "\\n\\rRendered sprite " ); Write0( sprite_address + 4 ); WriteS( "\\n\\r" );
+
+if (0) {
 const char *filename = "Resources:$.Resources.Alarm.Messages";
 uint32_t file_handle = open_file_to_read( filename );
 
@@ -2430,14 +2620,16 @@ WriteS( "Opened file " ); Write0( filename ); WriteS( " handle: " ); WriteNum( f
 
 register uint32_t handle asm( "r1" ) = file_handle;
 asm ( "0: svc 0x0a\n  svccc 0\n  bcc 0b" : : "r" (handle) );
-asm( "bkpt 99" );
+}
+//asm( "bkpt 99" );
 /*
 register uint32_t version asm( "r0" );
 register uint32_t size asm( "r2" );
 register uint32_t used asm( "r3" );
 asm ( "svc 0x40080" : "=r" (version), "=r" (size), "=r" (used) );
 WriteS( "Read 
-
+*/
+/*
 WriteS( "Looking for Trinity.Medium" ); NewLine;
 uint32_t font = Font_FindFont( "Trinity.Medium", 12 * 16, 12 * 16, 96, 96 );
 if (font > 255) {

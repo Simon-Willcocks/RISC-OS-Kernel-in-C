@@ -16,51 +16,48 @@
 #include "inkernel.h"
 
 #if 1
-
-
-// Not used at the moment, need to re-implement GS SWIs first, the legacy code uses the legacy variables code.
-static bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t start )
-{
-  clear_VF();
-
-  register uint32_t non_kernel_code asm( "r10" ) = start;
-
-  asm (
-      "\n  push { %[regs] }"
-      "\n  ldm %[regs], { r0-r9 }"
-      "\n  adr %[regs], return"
-      "\n  push { %[regs] } // return address"
-      "\n  mov lr, #0 // Clear all flags - this may be wrong"
-      "\n  bx r10"
-      "\nreturn:"
-      "\n  pop { %[regs] }"
-      "\n  stm %[regs], { r0-r9 }"
-      "\n  ldr r1, [%[regs], %[spsr]]"
-      "\n  bic r1, #0xf0000000"
-      "\n  and r2, r14, #0xf0000000"
-      "\n  orr r1, r1, r2"
-      "\n  str r1, [%[regs], %[spsr]]"
-      :
-      : [regs] "r" (regs)
-      , "r" (non_kernel_code)
-      , [spsr] "i" (4 * (&regs->spsr - &regs->r[0]))
-      : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9" );
-
-  return (regs->spsr & VF) == 0;
-}
-
+// Use the legacy code until re-implemented GSTrans etc.
 
 bool do_OS_ReadVarVal( svc_registers *regs )
 {
-  WriteS( "Reading " ); Write0( regs->r[0] ); NewLine;
-  bool result = run_risos_code_implementing_swi( regs, 0xfc020ab4 );
+#ifdef DEBUG__SHOW_SYSTEM_VARIABLE
+#if DEBUG__SHOW_SYSTEM_VARIABLE & 1
+  WriteS( "Reading " ); WriteNum( regs->r[0] ); WriteS( " " ); Write0( regs->r[0] ); NewLine;
+#endif
+#endif
+  bool result = run_risos_code_implementing_swi( regs, OS_ReadVarVal );
+#ifdef DEBUG__SHOW_SYSTEM_VARIABLE
+#if DEBUG__SHOW_SYSTEM_VARIABLE & 4
+  // if (result) WriteS( "Read " ); Write0( regs->r[1] ); NewLine;
+#endif
+#endif
   return result;
 }
 
 bool do_OS_SetVarVal( svc_registers *regs )
 {
-  WriteS( "Setting " ); Write0( regs->r[0] ); WriteS( " to \\\"" ); Write0( regs->r[1] ); WriteS( "\\\"\\n\\r" );
-  bool result = run_risos_code_implementing_swi( regs, 0xfc020c58 );
+#ifdef DEBUG__SHOW_SYSTEM_VARIABLE
+#if DEBUG__SHOW_SYSTEM_VARIABLE & 2
+  WriteS( "Setting " ); Write0( regs->r[0] );
+  switch (regs->r[4]) {
+  case 1:
+    WriteS( " to (number) " );
+    WriteNum( regs->r[1] );
+    WriteS( ")\\n\\r" );
+    break;
+  case 16:
+    WriteS( "Code variable: " );
+    WriteNum( regs->r[1] );
+    WriteS( "\\n\\r" );
+    break;
+  default:
+    WriteS( " to \\\"" ); 
+    Write0( regs->r[1] );
+    WriteS( "\\\"\\n\\r" );
+  }
+#endif
+#endif
+  bool result = run_risos_code_implementing_swi( regs, OS_SetVarVal );
   return result;
 }
 

@@ -432,7 +432,7 @@ typedef struct {
   uint32_t PIRQ_Chain;
   uint32_t PFIQasIRQ_Chain;
   // Workspace
-  uint8_t  EnvTime[5];
+  uint8_t  EnvTime[5];                  // adc
   uint8_t  RedirectInHandle;
   uint8_t  RedirectOutHandle;
   uint8_t  MOShasFIQ;
@@ -497,7 +497,7 @@ typedef struct {
   uint32_t PrinterBufferSize; //  size of printer buffer - not to be confused with PrintBuffSize
                               // which is the (constant) default size for the MOS's smallish buffer
 
-  uint8_t pad_to_fe8[0xfe8 - 0xfd8];
+  uint8_t pad_to_fe8[0xfe8 - 0xfe4];
 
   // Words for old tools of assorted varieties
   // Don't move the following as their positions are assumed by other modules
@@ -514,7 +514,439 @@ typedef struct {
   uint32_t FPEAnchor;
   uint32_t DomainId; //  SKS added for domain identification
   uint32_t Modula2_Private; //  MICK has FFC and uses it it in USR mode
-  uint8_t VduDriverWorkSpace[0x3000];
+  // 0xffff1000:
+  union {
+    struct {
+      uint32_t FgEcf[8]; // Foreground Ecf, set by GCOL(a,0-127)
+      uint32_t BgEcf[8]; // Background Ecf, set by GCOL(a,128-255)
+      uint32_t GPLFMD;   // Foreground action, set by GCOL(a,0-127)
+      uint32_t GPLBMD;   // Background action, set by GCOL(a,128-255)
+      uint32_t GFCOL;    // Foreground colour, set by GCOL(a,0-127)
+      uint32_t GBCOL;    // Background colour, set by GCOL(a,128-255)
+
+      uint32_t GWLCol ; // Graphics window left column  --
+      uint32_t GWBRow ; // Graphics window bottom row     |
+      uint32_t GWRCol ; // Graphics window right column   |
+      uint32_t GWTRow ; // Graphics window top row      --
+
+      uint8_t qqqPad[3];
+      uint8_t QQ[17];   //Queue - QQ+1 is on a word boundary
+      uint32_t QOffset; //Value to add to VDUqueueItems to point to next queue posn.
+      uint32_t JVec     ; //Jump vector to internal routines
+
+      // Start of MODE table workspace
+
+      uint32_t ScreenSize ; // number of bytes needed for this mode (assumed 1st in list)
+
+      uint32_t XWindLimit ; // Maximum value of GWRCol (internal representation)
+
+      // LineLength must be immediately after YWindLimit
+
+      uint32_t YWindLimit ; // Maximum value of GWTRow (internal representation)
+
+      uint32_t LineLength ; // Length of one pixel row in bytes
+
+      uint32_t NColour ; // Number of colours minus 1
+
+      uint32_t YShftFactor ; // Number of places to shift YCoord in address generation after
+      // multiplying by 5, holds
+      // 7,6,5 or 4 for 8,4,2 or 1 bits per pixel (640x256 mode) or
+      // 6,5,4 or 3 for 8,4,2 or 1 bits per pixel (320x256 mode).
+
+      uint32_t ModeFlags ; // Bit 0 => non-graphic, Bit 1 => teletext, Bit 2 => gap mode
+
+      uint32_t XEigFactor ; // Number of places to shift XCoord in external to internal
+      // coordinate conversion, holds
+      // 1 for 640x256 mode
+      // 2 for 320x256 mode
+      // 3 for 160x256 (BBC micro mode 2)
+
+      uint32_t YEigFactor ; // number of shifts to convert between internal/external Y
+
+      uint32_t Log2BPC ; // Log to base 2 of BytesPerChar ie (0,1,2,3,4)
+
+      uint32_t Log2BPP ; // Log to base 2 of BitsPerPix ie (0,1,2,3)
+
+      uint32_t ScrRCol ; // Maximum column number in this screen mode
+      uint32_t ScrBRow ; // Maximum row number in this screen mode
+
+      // End of table-initialised workspace
+
+      uint8_t pad6[8];
+
+      // Next 3 must be together in this order !
+
+      uint32_t XShftFactor ; // Number of places to shift XCoord in address generation,
+      // holds 2,3,4 or 5 for 8,4,2,1 bits per pixel respectivly
+      uint32_t GColAdr ; // Address of Ecf to plot - either FgEcf or BgEcf
+
+      uint32_t ScreenStart ; // Start address of screen (for VDU drivers)
+
+      uint32_t NPix ; // Number of pixels per word minus 1, holds
+      // holds 3,7,15 or 31 for 8,4,2,1 bits per pixel modes
+
+      uint32_t AspectRatio ; // Pixel shape : 0 square, 1 horz rect, 2 vert rect
+
+      uint32_t BitsPerPix ; // Bits per pixel (1,2,4,8)
+
+      uint32_t BytesPerChar ; // Bytes per 8 pixels of character
+      // (same as BitsPerPix except in double pixel modes)
+
+      uint32_t DisplayLineLength ; // LineLength of display. May include padding from ExtraBytes control list item, so needs manual preservation during screen redirection.
+
+      uint32_t RowMult ; // Row multiplier for text manipulation
+
+      uint32_t RowLength ; // Bytes per text row in this mode (eg 640,1280,5120)
+
+      // The following (up to and including NewPtY) must be together in this order
+      // (relied upon by DefaultWindows)
+
+      uint32_t TWLCol ; // Text window left column  --
+      uint32_t TWBRow ; // Text window bottom row     |
+      uint32_t TWRCol ; // Text window right column   |
+      uint32_t TWTRow ; // Text window top row      --
+
+      uint32_t OrgX ; // Screen origin (external representation)
+      uint32_t OrgY;
+
+      uint32_t GCsX ; // Graphics cursor (external representation)
+      uint32_t GCsY;
+
+      uint32_t OlderCsX ; // Very old X coordinate (internal)
+      uint32_t OlderCsY ; // Very old Y coordinate (internal)
+
+      uint32_t OldCsX ; // Old graphics cursor (internal representation) --
+      uint32_t OldCsY ; //                                                 |
+      //                                                 |
+      uint32_t GCsIX  ; // Graphics cursor (internal representation)       |
+      uint32_t GCsIY  ; //                                                 |
+      //                                                 |
+      uint32_t NewPtX ; // Newest point (internal representation)          |
+      uint32_t NewPtY ; //                                               --
+
+      // End of together block
+
+      uint32_t TForeCol ; // Text foreground colour
+      uint32_t TBackCol ; // Text background colour
+
+      uint32_t CursorX ; // Text cursor X position ; these 3 must be in same order as ...
+      uint32_t CursorY ; // Text cursor Y position
+      uint32_t CursorAddr ; // Screen address of (output) cursor
+
+      uint32_t InputCursorX ; // Input cursor X position ; ... these 3
+      uint32_t InputCursorY ; // Input cursor Y position
+      uint32_t InputCursorAddr ; // Screen address of input cursor
+
+      uint32_t EORtoggle ; // Toggle between gap and non-gap
+      uint32_t RowsToDo  ; // in the CLS
+
+      uint32_t VduStatus ; // Vdu2, Window, Shadow bits (others in CursorFlags)
+
+      uint8_t CBWS[8];        // Clear block (VDU 23,8..) workspace
+      uint8_t CBStart[2];
+      uint8_t CBEnd[2];
+
+      uint32_t CursorDesiredState;
+      uint32_t CursorStartOffset;
+      uint32_t CursorEndOffset;
+      uint32_t CursorCounter;
+      uint32_t CursorSpeed;
+      uint32_t Reg10Copy;
+
+      uint32_t CursorFill ; // Word to EOR cursor ; MUST be immediately before CursorNbit
+
+      uint32_t CursorNbit ; // Pointer to cursor code for current mode
+
+      uint32_t DisplayStart ; // Start address of screen (for display)
+      uint32_t DriverBankAddr ; // Default start address for VDU drivers
+      uint32_t DisplayBankAddr ; // Default start address for display
+      uint32_t DisplayNColour ; // No. of colours -1 for displayed mode
+      uint32_t DisplayModeFlags ; // ModeFlags for displayed mode
+      uint32_t DisplayModeNo ; // ModeNo for displayed mode
+      uint32_t DisplayScreenStart ; // Where VDU outputs to when outputting to screen
+
+      uint32_t DisplayXWindLimit ; // Used for pointer programming
+      uint32_t DisplayYWindLimit;
+      uint32_t DisplayXEigFactor;
+      uint32_t DisplayYEigFactor;
+      uint8_t DisplayLog2BPP;
+      uint8_t PointerXEigFactor;
+      uint8_t pad8[2];
+
+      uint8_t Ecf1[8];        // The Ecf patterns
+      uint8_t Ecf2[8];
+      uint8_t Ecf3[8];
+      uint8_t Ecf4[8];
+
+      uint8_t DotLineStyle[8];        // Dot dash line pattern
+
+      uint32_t ModeNo ; // Current mode number
+
+      uint32_t TFTint ; // Text foreground tint          (in bits 6,7)
+      uint32_t TBTint ; // Text background tint
+      uint32_t GFTint ; // Graphics foreground tint
+      uint32_t GBTint ; // Graphics background tint
+
+      uint32_t TotalScreenSize ; // Amount configured for screen (in bytes)
+
+      uint32_t MaxMode ; // Maximum mode number allowed (20 for now)
+
+      uint32_t ScreenEndAddr ; // Logical address of screen (start of 2nd copy)
+
+      uint32_t CursorFlags ; // Silly Master cursor movement flags
+
+      uint32_t CursorStack ; // Bit stack of nested cursor states (0 => on, 1 => off)
+      // (bit 31 = TOS)
+
+      uint32_t ECFShift ; // number of bits to rotate right ECF OR and EOR masks by
+      uint32_t ECFYOffset ; // vertical offset to ECF index
+
+      // WsVdu5 # 0      // Vdu 5 workspace
+      uint32_t WsScr;
+      uint32_t WsEcfPtr;
+      uint32_t EndVerti;
+      uint32_t StartMask;
+      uint32_t EndMask;
+      uint32_t FontOffset;
+      uint8_t TempPlain[16];  // only used for MODE 10
+
+      uint32_t VIDCClockSpeed ; // current VIDC clock speed in kHz (now always zero)
+
+      uint32_t CurrentMonitorType ; // initialised from configured one
+
+      uint32_t PixelRate ; // Pixel Rate in kHz
+
+      uint32_t BorderL; // Size of border
+      uint32_t BorderB;
+      uint32_t BorderR;
+      uint32_t BorderT;
+
+      union {
+        // Starts at ffff1244
+        struct {
+          uint32_t RetnReg[10];
+          uint32_t RetnLink;
+          // ffff1270
+          uint32_t SprReadNColour;      //Vdu vars for the mode the     --
+          uint32_t SprWriteNColour;     // the sprite is in               |
+          uint32_t SprBytesPerChar;     //                                |
+          uint32_t SprXShftFactor;      //                                |
+          uint32_t SprNPix;             //                                |
+          uint32_t SprLog2BPC;          //                                |
+          uint32_t SprLog2BPP;          //                                |
+          uint32_t SprModeFlags;        //                              --
+
+          uint8_t NameBuf[16];
+
+          // ffff12a0:
+          uint32_t SPltWidth;
+          uint32_t SPltHeight;
+          uint32_t SPltScrOff;
+          uint32_t SPltMemOff;
+          uint32_t SPltScrAdr;
+          uint32_t SPltColCnt;
+          uint32_t SPltMemAdr;
+          uint32_t SPltShftR;
+          uint32_t SPltShftL;
+          uint32_t SPltMskAdr;
+          uint32_t SPltLMask;
+          uint32_t SPltRMask;
+          uint32_t SPltEcfPtr;
+          uint32_t SPltEcfIndx;
+          uint32_t SPltPixPerWord;
+          uint32_t SPltBPP;
+          uint32_t SPltMaskBit;
+          uint32_t SPltMaskPtr;
+          uint32_t SPltMaskRowBit;
+          uint32_t SPltMaskRowPtr;
+          uint32_t SPltMaskRowLen;
+          uint8_t SPltzgooMasks[16];
+          uint32_t ScrLoaHandle;
+          uint32_t ScrLoaBufAdr;
+          uint32_t ScrLoaBytes;
+          uint32_t ScrLoaFilPtr;
+          uint32_t ScrLoaFilOfst;
+          uint32_t ScrLoaAreaCB[4];
+          uint32_t SPltAction;
+          uint8_t SloadModeSel[56];
+        } ws;
+        uint8_t GraphicWs[300]; // All graphics workspace is overlaid here
+      } GraphicWs;
+
+      uint32_t GCharSizeX  ; // width of VDU 5 chars in pixels
+      uint32_t GCharSizeY  ; // height of VDU 5 chars in pixels
+
+      uint32_t GCharSpaceX  ; // horizontal spacing between VDU 5 chars in pixels
+      uint32_t GCharSpaceY  ; // vertical   ------------------""-----------------
+
+      uint32_t TCharSizeX  ; // width of VDU 4 chars in pixels
+      uint32_t TCharSizeY  ; // height of VDU 4 chars in pixels
+
+      uint32_t TCharSpaceX  ; // horizontal spacing between VDU 4 chars in pixels
+      uint32_t TCharSpaceY  ; // vertical   ------------------""-----------------
+
+      uint32_t HLineAddr      ; // address of exported HLine
+      uint32_t GcolOraEorAddr ; // address of FgEcfOraEor etc
+
+      uint32_t BlankPalAddr  ; // address of block for blank palette
+      uint32_t FirPalAddr    ; // address of block for first flash state palette
+      uint32_t SecPalAddr    ; // address of block for second flash state palette
+
+      uint32_t CurrentGraphicsVDriver ; // Current driver number
+
+      uint32_t PointerShape1      ; // pointers to defined shapes 1 to 4
+      uint32_t PointerShape2      ;
+      uint32_t PointerShape3      ;
+      uint32_t PointerShape4      ;
+      uint32_t PointerShapeH1     ; // pointers to holding shapes 1 and 2 (so updates never hit shape given to HAL)
+      uint32_t PointerShapeH2     ;
+
+      struct {
+        uint8_t PointerWidth; // actual (unpadded) shape width in bytes (from OS_Word 21)
+        uint8_t PointerHeight; // shape height in pixels
+        uint8_t pad1[2];
+        uint32_t PointerBuffLA; // logical address of shape buffer (up to 8 * 32 bytes)
+        uint32_t PointerBuffPA; // physical address of shape buffer
+        uint8_t PointerActiveX; // active x in pixels from left
+        uint8_t PointerActiveY; // active y in pixels from top
+        uint8_t pad2[2];
+      } PointerShapeBlocks[6]; // room for the 6 shape descriptors themselves
+
+      uint32_t PointerShapeLA; // logical address of current shape buffer (owned by HAL)
+      uint32_t PointerShapeNumber; // includes bit 7 linkage flag (accessed as byte by legacy code)
+      uint32_t PointerX; // co-ordinates of pointer (not always = mouse)
+      uint32_t PointerY;
+
+      uint32_t GraphicsVFeatures  ; // features word from current driver, refreshed each mode change
+      uint32_t TrueVideoPhysAddr  ; // VideoPhysAddr is a lie, use this instead
+      uint32_t GraphicsVDrivers[8]; // List of drivers
+      uint32_t pad1[4];
+
+      uint32_t TextFgColour; // Fg/Bg colour stored as a colour number, computed on VDU 18 and re-poked!
+      uint32_t TextBgColour; //
+
+      uint32_t TextExpandArea ; // Pointer to Text expand area (in system heap)
+
+      uint32_t pad2[2];
+
+      uint8_t ScreenBlankFlag;      // 0 => unblanked, 1 => blanked
+
+      uint8_t ScreenBlankDPMSState; // 0 => just blank video
+                                    // 1 => blank to stand-by (hsync off)
+                                    // 2 => blank to suspend (vsync off)
+                                    // 3 => blank to off (H+V off)
+                                    // 255 => no mode programmed yet
+
+
+
+      uint8_t  AlignSpace64_1[2];
+
+      uint32_t FgEcfOraEor[16]; // Interleaved zgora & zgeor
+
+      uint32_t BgEcfOraEor[16]; // Interleaved zgora & zgeor
+
+      uint32_t BgEcfStore[16];  // Interleaved zgora & zgeor to store background
+
+      uint32_t LineDotCnt ; // Count down to restarting pattern
+      uint32_t LineDotPatLSW ; // Current state of pattern LSWord
+      uint32_t LineDotPatMSW ; //    "      "   "     "    MSWord
+
+      uint32_t DotLineLength ; // Dot Pattern repeat length as given in *FX163,242,n
+
+      uint32_t BBCcompatibleECFs ; // 0 => BBC compatible, 1 => native
+
+      uint32_t SpAreaStart ;    // Start of sprite area
+      uint8_t SpChooseName[16]; // No comment says Richard
+      uint32_t SpChoosePtr;
+
+      uint8_t SWP_W;            // Width & height of image to restore
+      uint8_t SWP_H;
+      uint8_t SWP_Callback;     // Nonzero if palette update callback registered
+      uint8_t SWP_Mutex;        // Mutex to prevent re-entrancy
+      uint8_t SWP_Restore;      // Nonzero if restore needed in RestorePointer
+      uint8_t SWP_Dirty;        // Nonzero if need replot due to palette change
+      uint8_t pad[2];
+
+      uint32_t SWP_Coords ;     // Coordinates of last plot
+      uint32_t SWP_Pos ;        // Address to restore pixels to, 0 if not displayed
+      uint32_t SWP_Under ;      // Pointer to copy of screen pixels from under the pointer
+      uint32_t SWP_Palette[3];  // Pointer colours converted to pixel values for current mode
+
+      uint32_t TeletextOffset ; // Offset to current teletext flash bank
+
+      uint32_t TeletextCount ; // Number of vsyncs till next teletext flash
+
+      uint32_t WrchNbit ; // Pointer to char code for current mode
+
+      uint32_t CharWidth ; // Width of a character in bytes (same as BytesPerChar except
+      // in HiResTTX MODE 7, where characters are 16 pixels wide)
+      // This could also be defined as (TCharSizeX<<Log2BPC)/8
+
+      uint32_t TextOffset ; // Byte offset into screen bank at which text window starts.
+      // Keeps the text window centered when e.g. when mode 7 picks
+      // a higher resolution mode than strictly necessary.
+
+      uint32_t TTXFlags ; // VDU 23,18 flags
+
+      uint8_t BeepBlock[8];           // OSWORD block for VDU 7
+
+      uint8_t ScreenMemoryClaimed; // NZ => memory has been claimed or is unusable
+      uint8_t ExternalFramestore;  // NZ => using external framestore rather than screen memory DA
+
+      uint8_t pad4[2];
+
+      uint32_t TTXDoubleCountsPtr ; // Number of double height chars on each line
+      uint32_t TTXMapPtr;
+      uint32_t TTXLineStartsPtr;
+      uint32_t TTXNewWorkspace; // Temp variable to allow mode changes to fail gracefully if TTX workspace can't be allocated
+
+      uint32_t RAMMaskTb[32]; // Copy of MaskTb for this mode (up to 32 words)
+
+      // values of R0-R3 to return from SwitchOutputToSprite
+      // or Mask; next 4 must be in this order
+      uint32_t SpriteMaskSelect ; // value of R0 to be given to SWI OS_SpriteOp to set up
+      // current state
+      uint32_t VduSpriteArea ; // Pointer to sprite area containing VDU output sprite
+      // (0 if output is to screen)
+      uint32_t VduSprite ; // Pointer to VDU output sprite (0 if output to screen)
+
+      uint32_t VduSaveAreaPtr ; // Pointer to save area for VDU variables
+
+
+      // with ClipBoxEnable immediately before it
+      uint32_t ClipBoxEnable ; // 0 => clip box disabled, 1 => enabled
+
+      uint32_t ClipBoxLCol;
+      uint32_t ClipBoxBRow;
+      uint32_t ClipBoxRCol;
+      uint32_t ClipBoxTRow;
+
+      uint32_t FgPattern[8]; // foreground pattern as defined by OS_SetColour
+      uint32_t BgPattern[8]; // background pattern as defined by OS_SetColour
+
+      uint32_t pad5[3];
+
+      uint32_t KernelModeSelector ; // pointer to block in system heap where
+                                    // current mode selector is copied
+
+      uint32_t      AlignSpace5[3];
+
+      uint32_t TextExpand[1024];     // Tim's massive text expansion table for whizzy WRCH
+
+      // uint32_t AlignSpace_64[12];
+
+      // Some infrequently used buffers which can be overlaid
+
+      uint8_t LargeCommon[2048 + 16 + 44]; // the largest area
+
+      uint32_t AlignSpace64;
+      // 0x1f00 (0xffff2f00)
+      uint8_t Font[0x700]; // 7 pages of (soft) font
+
+      uint32_t VduSaveArea; // Rest of raw
+    } ws;
+    uint32_t raw[0x3000/4];
+  }VduDriverWorkSpace;
   uint32_t DebuggerSpace[1024]; 
 } LegacyZeroPage;
 
