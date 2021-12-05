@@ -1023,7 +1023,26 @@ static bool do_OS_Reset( svc_registers *regs ) { return Kernel_Error_Unimplement
 static bool do_OS_MMUControl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ResyncTime( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_PlatformFeatures( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool do_OS_PlatformFeatures( svc_registers *regs )
+{
+  static error_block error = { 999, "Unknown PlatformFeature" };
+
+  if (0 == regs->r[0]) {
+    regs->r[0] = 0x80103ff9; // Good enough for SpriteExt module?
+    return true;
+  }
+  else if (34 == regs->r[0]) {
+    if (20 == regs->r[1]) {
+      regs->r[0] = 1; // Half word accesses supported
+      return true;
+    }
+  }
+
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
+
 static bool do_OS_AMBControl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_SpecialControl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }

@@ -1094,7 +1094,7 @@ bool excluded( const char *name )
                                   , "SoundDMA"          // Uses OS_Memory
                                   , "SoundChannels"     // ???
                                   , "SoundScheduler"    // Sound_Tuning
-                                  , "SpriteExtend" // ReadSysInfo
+                                  // , "SpriteExtend" // ReadSysInfo
                                   , "TaskManager"       // Initialisation returns an error
                                   , "ScreenModes"       // Doesn't return, afaics
                                   , "BCMVideo"          // Tries to use OS_MMUControl

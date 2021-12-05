@@ -59,13 +59,25 @@ bool do_OS_ReadModeVariable( svc_registers *regs )
   uint32_t legacy_mode_vars[21][13] = {
     [20] = { 0, 79, 63, 15, 1, 1, 320, 163840, 6, 2, 2, 639, 511 }
   };
-  uint32_t *modevars;
-  if (regs->r[0] == -1)
-    modevars = workspace.vdu.modevars;
-  else
-    modevars = legacy_mode_vars[regs->r[0]];
 
-  regs->r[2] = modevars[regs->r[1]];
+  // "The C flag is set if variable or mode numbers were invalid"
+
+  if ((regs->r[0] != -1 && regs->r[1] >= number_of( legacy_mode_vars )) 
+   || (regs->r[1] >= number_of( workspace.vdu.modevars ))) {
+    regs->spsr |= CF;
+  }
+  else {
+    regs->spsr &= ~CF;
+
+    uint32_t *modevars;
+    if (regs->r[0] == -1)
+      modevars = workspace.vdu.modevars;
+    else
+      modevars = legacy_mode_vars[regs->r[0]];
+
+    regs->r[2] = modevars[regs->r[1]];
+  }
+
   return true;
 }
 

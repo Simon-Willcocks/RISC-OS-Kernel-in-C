@@ -82,5 +82,5 @@ arm-linux-gnueabi-gcc-8 -Wall -I . \
 
 arm-linux-gnueabi-objcopy -R .ignoring -O binary rom.elf rom.bin &&
 arm-linux-gnueabi-objdump -x --disassemble-all rom.elf > rom.dump &&
-ls -l rom.* diffs.txt
+ls -l rom.bin
 
