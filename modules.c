@@ -469,18 +469,24 @@ bool do_OS_ServiceCall( svc_registers *regs )
   bool result = true;
   module *m = workspace.kernel.module_list_head;
 
+#ifdef DEBUG__SHOW_SERVICE_CALLS
 describe_service_call( regs );
+#endif
 
   uint32_t r12 = regs->r[12];
   while (m != 0 && regs->r[1] != 0 && result) {
     regs->r[12] = (uint32_t) m->private_word;
     if (0 != m->header->offset_to_service_call_handler) {
+#ifdef DEBUG__SHOW_SERVICE_CALLS
 Write0( title_string( m->header ) ); WriteS( " " );
+#endif
       result = run_service_call_handler_code( regs, m );
     }
     m = m->next;
   }
+#ifdef DEBUG__SHOW_SERVICE_CALLS
   NewLine;
+#endif
 
   regs->r[12] = r12;
 
@@ -763,7 +769,7 @@ static bool do_Module_LookupModuleName( svc_registers *regs )
   // Actually Lookup Module BY Name
 
 Write0( __func__ ); Write0( regs->r[1] ); // Initially called by Wimp during init, just to find ROM location
-  const char *name = regs->r[1];
+  const char *name = (void*) regs->r[1];
   if (name[0] == 'U' && name[7] == 'M' && name[13] == 0) { // FIXME
     WriteS( "Returning UtilityModule address (hack) \\x06 " );
     extern uint32_t va_base;
@@ -1981,7 +1987,7 @@ void Boot()
   workspace.vectors.zp.PrinterBufferSize = 0x1000; // 
 
   // Kernel/s/HAL
-  workspace.vectors.zp.Page_Size == 0x1000;
+  workspace.vectors.zp.Page_Size = 0x1000;
 
 WriteS( "Page size 0x1000" );
   // This is obviously becoming the boot sequence, to be refactored when something's happening...
@@ -2074,10 +2080,10 @@ WriteS( "Page size 0x1000" );
   workspace.vectors.zp.VduDriverWorkSpace.ws.ScrBRow = 0;
   workspace.vectors.zp.VduDriverWorkSpace.ws.XShftFactor = 0;
 
-  workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenStart = &frame_buffer;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenEndAddr = &(&frame_buffer)[1920*1080-1];
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenStart = (uint32_t) &frame_buffer;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenEndAddr = (uint32_t) &(&frame_buffer)[1920*1080-1];
   workspace.vectors.zp.VduDriverWorkSpace.ws.TotalScreenSize = 1920 * 1080 * 4;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.TrueVideoPhysAddr = &frame_buffer;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.TrueVideoPhysAddr = (uint32_t) &frame_buffer;
 
   // Start the HAL, a multiprocessing-aware module that initialises essential features before
   // the boot sequence can start.
@@ -2139,6 +2145,7 @@ WriteS( "Page size 0x1000" );
 #define Write0( s ) do { const char *ss = s; register const char *string asm( "r0" ) = ss; asm ( "svc 2" : : "r" (string) ); } while (false)
 */
 
+// The following routines are designed for user mode, so they don't have to save lr.
 static uint32_t open_file_to_read( const char *name )
 {
   // OS_Find
@@ -2155,32 +2162,40 @@ static uint32_t read_file_size( const char *name )
   register uint32_t os_file_code asm( "r0" ) = 17;
   register const char *filename asm( "r1" ) = name;
   register uint32_t file_size asm( "r4" );
-  asm ( "svc 8" : "=r" (file_size) : "r" (os_file_code), "r" (filename) : "r2", "r3", "r5" );
+  asm ( "svc %[swi]" : "=r" (file_size) 
+                     : [swi] "i" (OS_File), "r" (os_file_code), "r" (filename)
+                     : "r2", "r3", "r5" );
   return file_size;
 }
 
 static void *claim_rma_memory( uint32_t size )
 {
-  
+  register uint32_t reason asm( "r0" ) = 6;
+  register uint32_t amount asm( "r3" ) = size;
+  register void *mem asm ( "r2" );
+
+  asm ( "svc %[swi]" : "=r" (mem) : [swi] "i" (OS_Module), "r" (reason), "r" (amount) );
+
+  return mem;
 }
 
-static void *read_file_into_memory( const char *name )
+void *read_file_into_memory( const char *name )
 {
-  // OS_File
-  register uint32_t os_find_code asm( "r0" ) = 0x43 | (1 << 3);
-  register const char *filename asm( "r1" ) = name;
-  register uint32_t file_handle asm( "r0" );
-  asm ( "svc 0x0d" : "=r" (file_handle) : "r" (os_find_code), "r" (filename) ); // Doesn't corrupt lr because running usr
-  void *mem = claim_rma_memory( read_file_size( name ) );
+  uint32_t file_size = read_file_size( name );
+WriteS( "File size = " ); WriteNum( file_size ); NewLine;
+  void *mem = claim_rma_memory( file_size );
+WriteS( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
 
-  register uint32_t os_file_code asm( "r0" ) = 16;
-  register const char *filename asm( "r1" ) = name;
-  register void *load_address asm( "r2" ) = mem;
-  register uint32_t load_at_r2 asm( "r3" ) = 0;
-  asm ( "svc 8" : : "r" (os_file_code), "r" (filename), "r" (load_address), "r" (load_at_r2) : "r2", "r4", "r5" );
-  return file_size;
+  if (mem != 0)
+  {
+    register uint32_t os_file_code asm( "r0" ) = 16;
+    register const char *filename asm( "r1" ) = name;
+    register void *load_address asm( "r2" ) = mem;
+    register uint32_t load_at_r2 asm( "r3" ) = 0;
+    asm ( "svc %[swi]" : : [swi] "i" (OS_File), "r" (os_file_code), "r" (filename), "r" (load_address), "r" (load_at_r2) : "r4", "r5" );
+  }
 
-  return file_handle;
+  return mem;
 }
 
 static void user_mode_code( int core_number )
@@ -2566,38 +2581,32 @@ OSCLI( "Echo Hello" );
 // OSCLI( "Eval 1 + 1" ); Fails with data abort attempting to read from 0 
 // OSCLI( "ROMModules" ); Fails with lots of Buffer overflows.
 
-  const char sprite_file = "Resources:$.Resources.Wimp.Sprites";
+  WriteS( "\\n\\rLoading sprite\\n\\r" );
+  const char sprite_file[] = "Resources:$.Resources.Wimp.Sprites";
 
-  {
-    uint32_t file_handle = open_file_to_read( sprite_file );
+  uint8_t *sprite_file_data = read_file_into_memory( sprite_file );
+  char sprite[13] = "file_fff";
+  sprite[7] -= core_number;
 
-    WriteS( "Opened file " ); Write0( filename ); WriteS( " handle: " ); WriteNum( file_handle ); NewLine;
-
-    register uint32_t handle asm( "r1" ) = file_handle;
-    asm ( "0: svc 0x0a\n  svccc 0\n  bcc 0b" : : "r" (handle) );
-  }
-
-  uint8_t *sprite_file_data = 
-  const uint32_t *sprite_area = (void*) sprite_file_data;
-  uint32_t sprite_address = (uint32_t) sprite_area - 4 + sprite_area[1];
-  WriteS( "\\n\\rRendering sprite " ); Write0( sprite_address + 4 ); WriteS( "\\n\\r" );
+  const uint8_t *sprite_area = (void*) sprite_file_data - 4;
+  WriteS( "\\n\\rRendering sprite " ); Write0( sprite ); WriteS( "\\n\\r" );
 
   {
     // Always ensure all calculations, initialisations, etc. are before you
     // start talking about register variables to be passed to assembler.
     uint32_t column = 100 + core_number * 200;
 
-    register uint32_t code asm( "r0" ) = 0x22 | 0x200;
-    register const unsigned char *file asm( "r1" ) = sprite_area;
-    register uint32_t sprite asm( "r2" ) = sprite_address;
+    register uint32_t code asm( "r0" ) = 52 | 0x100; // User sprite area, sprite name
+    register const uint8_t *file asm( "r1" ) = sprite_area;
+    register const char *sprite_name asm( "r2" ) = sprite;
     register uint32_t x asm( "r3" ) = column;
     register uint32_t y asm( "r4" ) = 1024;
-    register uint32_t action asm( "r5" ) = 0;
-    //register uint32_t scaling asm( "r6" ) = 0;
-    //register uint32_t translation asm( "r7" ) = 0;
-    asm ( "svc 0x2e" : : "r" (code), "r" (file), "r" (sprite), "r" (x), "r" (y), "r" (action) ); // , "r" (scaling), "r" (translation) );
+    register uint32_t action asm( "r5" ) = 24; // Use mask, Translation table can be ignored
+    register uint32_t scaling asm( "r6" ) = 0;
+    register uint32_t translation asm( "r7" ) = 0;
+    asm ( "svc %[swi]" : : [swi] "i" (OS_SpriteOp), "r" (code), "r" (file), "r" (sprite_name), "r" (x), "r" (y), "r" (action), "r" (scaling), "r" (translation) );
   }
-  WriteS( "\\n\\rRendered sprite " ); Write0( sprite_address + 4 ); WriteS( "\\n\\r" );
+  WriteS( "\\n\\rRendered sprite\\n\\r" );
 
 if (0) {
 const char *filename = "Resources:$.Resources.Alarm.Messages";

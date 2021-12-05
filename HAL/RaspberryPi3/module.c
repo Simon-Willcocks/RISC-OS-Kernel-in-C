@@ -231,7 +231,6 @@ static void new_line( struct core_workspace *workspace )
 
 void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace *workspace )
 {
-return;
 if (core( workspace ) == 0) { workspace->shared->uart[0] = (c < ' ' && c != '\n' && c != '\r') ? (c + '@') : c; }
 
   if (workspace->x == 58 || c == '\n') {
@@ -506,7 +505,7 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   {
     void *handler = local_ptr( WrchV_handler );
     register uint32_t vector asm( "r0" ) = 3;
-    register uint32_t routine asm( "r1" ) = handler;
+    register void *routine asm( "r1" ) = handler;
     register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
     asm ( "svc 0x2001f" : : "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
   }

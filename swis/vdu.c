@@ -56,13 +56,16 @@ WriteS( "Read Vdu Var " ); WriteNum( *var ); WriteS( " = " ); WriteNum( *val ); 
 
 bool do_OS_ReadModeVariable( svc_registers *regs )
 {
-  // FIXME Needs work, always assuming the one and only mode
-  if (regs->r[1] >= number_of( workspace.vdu.modevars )) {
-    static error_block error = { 0x999, "Bad mode variable" };
-    regs->r[0] = (uint32_t) &error;
-    return false;
-  }
-  regs->r[2] = workspace.vdu.modevars[regs->r[1]];
+  uint32_t legacy_mode_vars[21][13] = {
+    [20] = { 0, 79, 63, 15, 1, 1, 320, 163840, 6, 2, 2, 639, 511 }
+  };
+  uint32_t *modevars;
+  if (regs->r[0] == -1)
+    modevars = workspace.vdu.modevars;
+  else
+    modevars = legacy_mode_vars[regs->r[0]];
+
+  regs->r[2] = modevars[regs->r[1]];
   return true;
 }
 

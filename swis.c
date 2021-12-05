@@ -62,7 +62,7 @@ bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
   register uint32_t non_kernel_code asm( "r10" ) = jtable[svc];
   register uint32_t result asm( "r0" );
   register uint32_t swi asm( "r11" ) = svc;
-  register uint32_t regs_in asm( "r12" ) = regs;
+  register svc_registers *regs_in asm( "r12" ) = regs;
 
   asm (
       "\n  push { r12 }"
@@ -206,7 +206,7 @@ static bool do_OS_ReadUnsigned( svc_registers *regs )
     result = (result * base) + d;
     c++;
   }
-  regs->r[1] = c;
+  regs->r[1] = (uint32_t) c;
   regs->r[2] = result;
 
   return true;
@@ -360,6 +360,7 @@ bool do_OS_GSTrans( svc_registers *regs )
 
 bool do_OS_GSTrans( svc_registers *regs )
 {
+  WriteNum( regs->r[0] ); WriteNum( regs->lr );
   WriteS( "GSTrans (in) \\\"" ); Write0( (char*) regs->r[0] ); WriteS( "\\\"\\n\\r" );
   bool result = run_risos_code_implementing_swi( regs, OS_GSTrans );
   WriteS( "GSTrans (out) \\\"" );
@@ -1408,7 +1409,9 @@ static swifn os_swis[256] = {
   [OS_GSRead] =  do_OS_GSRead,
   // Except Trans, which will output the initial string...
 */
+#ifdef DEBUG__SHOW_GSTRANS
   [OS_GSTrans] =  do_OS_GSTrans,
+#endif
 
 //  [OS_BinaryToDecimal] =  do_OS_BinaryToDecimal,
   [OS_FSControl] =  do_OS_FSControl,
