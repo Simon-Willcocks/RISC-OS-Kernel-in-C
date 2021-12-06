@@ -218,5 +218,17 @@ asm ( "bkpt 12" );
     return false;
 }
 
+typedef struct {
+  uint32_t mode_selector_flags;
+  uint32_t xres;
+  uint32_t yres;
+  uint32_t log2bpp;
+  uint32_t frame_rate;
+  struct {
+    uint32_t variable;
+    uint32_t value;
+  } mode_variables[];
+} mode_selector_block;
+
 // From swis.c, to allow veneers on OS_ SWIs.
 bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc );

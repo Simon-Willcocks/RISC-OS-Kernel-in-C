@@ -1077,7 +1077,7 @@ bool excluded( const char *name )
 {
   // These modules fail on init, at the moment.
   static const char *excludes[] = { "PCI"               // Data abort fc01ff04 prob. pci_handles
-                                  , "WindowManager"     // Sprite problems
+                     //             , "WindowManager"     // Sprite problems
                                   , "Debugger"
                                   , "BCMSupport"        // Unknown dynamic area
                                   , "Portable"          // Uses OS_MMUControl
@@ -1089,8 +1089,8 @@ bool excluded( const char *name )
                                   , "BCMSound"          // ???
 
 // Probably don't work, I can't be bothered to see if their problems are solved already
-                                  , "BufferManager"     // Full RMA? Something odd, anyway.
-                                  , "ColourTrans"     // Full RMA? Something odd, anyway.
+                     //             , "BufferManager"     // Full RMA? Something odd, anyway.
+                     //             , "ColourTrans"     // Full RMA? Something odd, anyway.
                                   , "SoundDMA"          // Uses OS_Memory
                                   , "SoundChannels"     // ???
                                   , "SoundScheduler"    // Sound_Tuning
@@ -1112,9 +1112,9 @@ bool excluded( const char *name )
                                   , "SDFS"              // 0x8600003f
                                   , "SDCMOS"              // 0x8600003f
                                   , "ColourPicker"      // 0x8600003f
-                                  , "DrawFile"          // 0x8600003f - are these SharedCLib users?
-                                  , "BootCommands"      // 0x8600003f
-                                  , "WindowScroll"      // 0x8600003f
+                     //             , "DrawFile"          // 0x8600003f - are these SharedCLib users?
+                     //             , "BootCommands"      // 0x8600003f
+                                  , "WindowScroll"      // 0x8600003f OS_Pointer not yet supported
                                   , "Internet"          // 0x8600003f
                                   , "Resolver"          // 0x8600003f
                                   , "Net"               // 0x8600003f
@@ -1336,10 +1336,27 @@ static inline uint32_t Font_FindFont( const char *name, uint32_t xpoints, uint32
   return result;
 }
 
+static inline void ColourTrans_SetFontColours( uint32_t font, uint32_t fg, uint32_t bg, uint32_t maxdiff )
+{
+  register uint32_t Rfont asm( "r0" ) = font;
+  register uint32_t Rfg asm( "r1" ) = fg;
+  register uint32_t Rbg asm( "r2" ) = bg;
+  register uint32_t Rmaxdiff asm( "r3" ) = maxdiff;
+
+  asm ( "swi %[swi]"
+        :
+        : "r" (Rfont)
+        , "r" (Rfg)
+        , "r" (Rbg)
+        , "r" (Rmaxdiff)
+        , [swi] "i" (0x20000 | 0x4074F)
+        : "lr" );
+}
+
 void Font_Paint( uint32_t font, const char *string, uint32_t type, uint32_t startx, uint32_t starty, uint32_t length )
 {
   register uint32_t rHandle asm( "r0" ) = font;
-  register uint32_t rString asm( "r1" ) = 0;
+  register uint32_t rString asm( "r1" ) = string;
   register uint32_t rType asm( "r2" ) = type;
   register uint32_t rx asm( "r3" ) = startx;
   register uint32_t ry asm( "r4" ) = starty;
@@ -2559,6 +2576,15 @@ static uint32_t path3[] = {
     }
   }
 
+  {
+    char output[20] = { "BINGO" };
+    register uint32_t n asm( "r0" ) = 845;
+    register char *buffer asm( "r1" ) = &output[0];
+    register uint32_t size asm( "r2" ) = sizeof( output );
+    asm ( "svc %[swi]" : : [swi] "i" (OS_ConvertCardinal4), "r" (n), "r" (buffer), "r" (size) );
+    NewLine; Write0( output ); NewLine;
+  }
+
   { // Try a GSTrans, it fails in FindFont
     char buffer[256];
     const char var[] = "<Font$Path>";
@@ -2617,15 +2643,7 @@ WriteS( "Opened file " ); Write0( filename ); WriteS( " handle: " ); WriteNum( f
 register uint32_t handle asm( "r1" ) = file_handle;
 asm ( "0: svc 0x0a\n  svccc 0\n  bcc 0b" : : "r" (handle) );
 }
-//asm( "bkpt 99" );
-/*
-register uint32_t version asm( "r0" );
-register uint32_t size asm( "r2" );
-register uint32_t used asm( "r3" );
-asm ( "svc 0x40080" : "=r" (version), "=r" (size), "=r" (used) );
-WriteS( "Read 
-*/
-/*
+
 WriteS( "Looking for Trinity.Medium" ); NewLine;
 uint32_t font = Font_FindFont( "Trinity.Medium", 12 * 16, 12 * 16, 96, 96 );
 if (font > 255) {
@@ -2633,8 +2651,12 @@ if (font > 255) {
 }
   WriteS( "Found font " ); WriteNum( font ); NewLine;
 
-Font_Paint( font, "Hello world", (1 << 4), 500 * core_number, 200, 0 );
-*/
+  ColourTrans_SetFontColours( font, 0xffffffff, 0x00000000, 14 );
+
+// OS units, not pixels?
+const char string[] = { 19, 0, 255, 0, 255, 255, 0, 'H', 'e', 'l', 'l', 'o', ' ', 'W', 'o', 'r', 'l', 'd', '\0' };
+Font_Paint( font, string, (1 << 4), 1000 + 1000 * core_number, 800, sizeof( string ) );
+
   for (int loop = 0;; loop++) {
 
     matrix[0] =  draw_cos( angle );

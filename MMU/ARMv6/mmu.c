@@ -382,7 +382,7 @@ static void map_block( physical_memory_block block )
 
 // noinline attribute is required so that stack space is allocated for any local variables.
 // There is no need for this routine to examine the fault generating instruction or the registers.
-static void __attribute__(( noinline )) handle_data_abort()
+static bool __attribute__(( noinline )) handle_data_abort()
 {
   if (0x807 == data_fault_type() && workspace.mmu.current != 0) {
     uint32_t fa = fault_address();
@@ -391,7 +391,7 @@ static void __attribute__(( noinline )) handle_data_abort()
     release_lock( &shared.mmu.lock );
     if (block.size != 0) {
       map_block( block );
-      return;
+      return true;
     }
   }
 
@@ -400,9 +400,8 @@ static void __attribute__(( noinline )) handle_data_abort()
 
   MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
 */
-  asm volatile ( "b Kernel_failed_data_abort" );
 
-  __builtin_unreachable();
+  return false;
 }
 
 void __attribute__(( naked, optimize( 0 ), noreturn )) Kernel_default_data_abort()
@@ -413,7 +412,11 @@ void __attribute__(( naked, optimize( 0 ), noreturn )) Kernel_default_data_abort
       "\n  push { "C_CLOBBERED" }"
       );
 
-  handle_data_abort();
+  if (!handle_data_abort()) {
+    asm volatile ( "pop { "C_CLOBBERED" }"
+               "\n  pop { lr }"
+               "\n  b Kernel_failed_data_abort" );
+  }
 
   asm volatile ( "pop { "C_CLOBBERED" }"
     "\n  rfeia sp! // Restore execution and SPSR" );

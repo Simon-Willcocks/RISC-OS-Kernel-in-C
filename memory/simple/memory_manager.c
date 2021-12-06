@@ -304,7 +304,7 @@ WriteS( " Mapping" );
 WriteS( " Mapped" );
   }
 
-  da->pages = da->pages + (resize_by >> 12);
+  da->pages = da->pages + resize_by_pages; // Always increased (or decreased) to the next largest page
 
   if (da->handler_routine != 0) {
 WriteS( " Post-grow" );

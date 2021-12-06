@@ -54,29 +54,207 @@ WriteS( "Read Vdu Var " ); WriteNum( *var ); WriteS( " = " ); WriteNum( *val ); 
   return true;
 }
 
-bool do_OS_ReadModeVariable( svc_registers *regs )
+static bool ReadLegacyModeVariable( uint32_t selector, uint32_t var, uint32_t *val )
 {
   uint32_t legacy_mode_vars[21][13] = {
     [20] = { 0, 79, 63, 15, 1, 1, 320, 163840, 6, 2, 2, 639, 511 }
   };
 
-  // "The C flag is set if variable or mode numbers were invalid"
+  if (selector >= number_of( legacy_mode_vars ))
+    return false;
 
-  if ((regs->r[0] != -1 && regs->r[1] >= number_of( legacy_mode_vars )) 
-   || (regs->r[1] >= number_of( workspace.vdu.modevars ))) {
-    regs->spsr |= CF;
+  uint32_t *modevars = legacy_mode_vars[selector];
+
+  *val = modevars[var];
+
+  return true;
+}
+
+static bool ReadCurrentModeVariable( uint32_t selector, uint32_t var, uint32_t *val )
+{
+  *val = workspace.vdu.modevars[var];
+
+  return true;
+}
+
+static uint32_t NColour_from_type( uint32_t type )
+{
+  static const uint32_t known_types[] = { 0xbadf00d, 1, 3, 15,
+                               63, 65535, -1, -1,
+                               (1 << 24)-1, 0xbadf00d, 65535, 0xbadf00d,
+                               0xbadf00d, 0xbadf00d, 0xbadf00d, 0xbadf00d,
+                               4095, 420, 422 };
+  if (type >= number_of( known_types )) {
+    return 0xbadf00d;
+  }
+  return known_types[type];
+}
+
+static uint32_t Log2BPP_from_type( uint32_t type )
+{
+  static const uint32_t known_types[] = { 0xbadf00d, 0, 1, 2,
+                               3, 4, 5, 5,
+                               6, 0xbadf00d, 4, 0xbadf00d,
+                               0xbadf00d, 0xbadf00d, 0xbadf00d, 0xbadf00d,
+                               4, 7, 7 };
+  if (type >= number_of( known_types )) {
+    return 0xbadf00d;
+  }
+  return known_types[type];
+}
+
+static bool ReadRO5SpriteModeVariable( uint32_t selector, uint32_t var, uint32_t *val )
+{
+  union {
+    struct __attribute__(( packed )) {
+      uint32_t one:1;
+      uint32_t three_zeros:3;
+      uint32_t xdpi:2;
+      uint32_t ydpi:2;
+      uint32_t flags:8;
+      uint32_t zeros:4;
+      uint32_t type:7;
+      uint32_t ones:4;
+      uint32_t alphamask:1;
+    };
+    uint32_t raw;
+  } specifier = { .raw = selector };
+
+asm( "bkpt 40" );
+
+  return false;
+}
+
+static bool ReadEigFromDPI( uint32_t dpi, uint32_t *val )
+{
+  switch (dpi) {
+  case 180: *val = 0; return true;
+  case 90: *val = 1; return true;
+  case 45: *val = 2; return true;
+  case 23: *val = 3; return true;
+  case 22: *val = 3; return true;
+  default: return false;
+  }
+}
+
+static bool ReadSpriteModeVariable( uint32_t selector, uint32_t var, uint32_t *val )
+{
+  union {
+    struct __attribute__(( packed )) {
+      uint32_t one:1;
+      uint32_t xdpi:12;
+      uint32_t ydpi:12;
+      uint32_t type:4;
+      uint32_t alphamask:1;
+    };
+    uint32_t raw;
+  } specifier = { .raw = selector };
+
+  if (specifier.type == 15) {
+    return ReadRO5SpriteModeVariable( selector, var, val );
+  }
+
+  bool result = true;
+
+  switch (var) {
+  case 0: *val = 0x40; break; // No hardware scrolling
+  case 1: *val = 0; break;    // Don't know the size
+  case 2: *val = 0; break;    // Don't know the size
+  case 3: *val = NColour_from_type( specifier.type ); break;
+  case 4: result = ReadEigFromDPI( specifier.xdpi, val ); break;
+  case 5: result = ReadEigFromDPI( specifier.ydpi, val ); break;
+  case 6: *val = 0; break;
+  case 7: *val = 0; break;
+  case 8: *val = 0; break;
+  case 9: *val = Log2BPP_from_type( specifier.type ); break;
+  case 10: *val = Log2BPP_from_type( specifier.type ); break; // No "double-pixel" modes
+  case 11: *val = 0; break;
+  case 12: *val = 0; break;
+  default:
+    result = false;
+  }
+
+  return result;
+}
+
+static bool ReadModeSelectorBlockVariable( uint32_t selector, uint32_t var, uint32_t *val )
+{
+  const mode_selector_block *mode = (void*) selector;
+
+  bool result = true;
+
+  switch (var) {
+  case 0: *val = mode->mode_selector_flags; break;
+  case 1: *val = mode->xres/8; break; // I think this is characters, not pixels
+  case 2: *val = mode->yres/8; break;
+  case 3: *val = (1 << mode->log2bpp) - 1; break;
+  case 9: *val = mode->log2bpp; break;
+  case 10: *val = mode->log2bpp; break; // No "double-pixel" mode->
+  case 11: *val = mode->xres; break;
+  case 12: *val = mode->yres; break;
+  default:
+    {
+      int i = 0;
+      result = false;
+      while (mode->mode_variables[i].variable != -1) {
+        if (mode->mode_variables[i].variable == var) {
+          *val = mode->mode_variables[i].value;
+          result = true;
+          break;
+        }
+        i++;
+      }
+    }
+  }
+
+  return result;
+}
+
+static bool ReadSpriteAreaModeVariable( uint32_t selector, uint32_t var, uint32_t *val )
+{
+asm( "bkpt 40" );
+  return false;
+}
+
+bool do_OS_ReadModeVariable( svc_registers *regs )
+{
+  // "The C flag is set if variable or mode numbers were invalid"
+  bool success = false;
+
+  if (regs->r[1] >= number_of( workspace.vdu.modevars )) {
+    success = false;
   }
   else {
-    regs->spsr &= ~CF;
-
-    uint32_t *modevars;
-    if (regs->r[0] == -1)
-      modevars = workspace.vdu.modevars;
-    else
-      modevars = legacy_mode_vars[regs->r[0]];
-
-    regs->r[2] = modevars[regs->r[1]];
+    if (0xffffffff == regs->r[0]) {
+      // Current mode
+      success = ReadCurrentModeVariable( regs->r[0], regs->r[1], &regs->r[2] );
+    }
+    else if (255 >= regs->r[0]) {
+      // Mode number
+      success = ReadLegacyModeVariable( regs->r[0], regs->r[1], &regs->r[2] );
+    }
+    else if (1 == (regs->r[0] & 1)) {
+      // Sprite Mode word
+      success = ReadSpriteModeVariable( regs->r[0], regs->r[1], &regs->r[2] );
+    }
+    else if (0 == (regs->r[0] & 2)) {
+      // ModeSelectorBlock, or SpriteArea
+      uint32_t *p = (void*) regs->r[0];
+      if (0 == (*p & 1))
+        success = ReadSpriteAreaModeVariable( regs->r[0], regs->r[1], &regs->r[2] );
+      else
+        success = ReadModeSelectorBlockVariable( regs->r[0], regs->r[1], &regs->r[2] );
+    }
+    else {
+      // Invalid selector
+      success = false;
+    }
   }
+
+  if (success)
+    regs->spsr &= ~CF;
+  else
+    regs->spsr |=  CF;
 
   return true;
 }

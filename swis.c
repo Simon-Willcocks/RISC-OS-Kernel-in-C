@@ -753,18 +753,6 @@ static bool do_OS_AddCallBack( svc_registers *regs )
 static bool do_OS_ReadDefaultHandler( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SetECFOrigin( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
-typedef struct {
-  uint32_t mode_selector_flags;
-  uint32_t xres;
-  uint32_t yres;
-  uint32_t log2bpp;
-  uint32_t frame_rate;
-  struct {
-    uint32_t variable;
-    uint32_t value;
-  } mode_variables[];
-} mode_selector_block;
-
 
 // OS_ReadSysInfo 6 values
 // Not all of these will be needed or supported.
@@ -1157,8 +1145,10 @@ static bool convert_decimal( svc_registers *regs, uint32_t mask )
   uint32_t n = regs->r[0] & mask;
   regs->r[0] = regs->r[1];
 
-  if (recursive_convert_decimal( regs, n ))
-    return write_converted_character( regs, '\0' );
+  if (recursive_convert_decimal( regs, n )) {
+    *(char*) regs->r[1] = '\0';
+    return true;
+  }
 
   return false;
 }
@@ -1180,7 +1170,14 @@ static bool do_OS_ConvertCardinal3( svc_registers *regs )
 
 static bool do_OS_ConvertCardinal4( svc_registers *regs )
 {
-  return convert_decimal( regs, 0xffffffff );
+WriteS( "ConvertCardinal4: " ); WriteNum( regs->r[0] ); WriteS( ", " ); WriteNum( regs->r[1] );  WriteS( ", " ); WriteNum( regs->r[2] ); NewLine;
+
+  if ( convert_decimal( regs, 0xffffffff ) ) {
+WriteS( "ConvertCardinal4: " ); WriteNum( regs->r[0] ); WriteS( ", " ); WriteNum( regs->r[1] );  WriteS( ", " ); WriteNum( regs->r[2] ); NewLine;
+Write0( regs->r[0] ); NewLine;
+    return true;
+  }
+  return false;
 }
 
 static bool convert_signed_decimal( svc_registers *regs, uint32_t sign_bit )
@@ -1192,7 +1189,7 @@ static bool convert_signed_decimal( svc_registers *regs, uint32_t sign_bit )
     n = sign_bit - n;
   }
 
-  return recursive_convert_decimal( regs, n );
+  return convert_decimal( regs, n );
 }
 
 static bool do_OS_ConvertInteger1( svc_registers *regs )
