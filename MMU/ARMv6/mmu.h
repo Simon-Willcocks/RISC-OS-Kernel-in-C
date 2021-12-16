@@ -35,7 +35,8 @@ typedef struct TaskSlot TaskSlot;
 typedef struct physical_memory_block { // All 4k pages
   uint32_t virtual_base;
   uint32_t physical_base;
-  uint32_t size;
+  uint32_t size:20;
+  uint32_t res:12;
 } physical_memory_block;
 
 uint32_t pre_mmu_allocate_physical_memory( uint32_t size, uint32_t alignment, volatile startup *startup );
@@ -55,15 +56,13 @@ static inline bool naturally_aligned( uint32_t location )
 struct MMU_workspace {
   uint32_t *l1tt_pa;
   uint32_t *l2tt_pa; // 4 tables, of 256 entries each, bottom, top MiB, top two MiB of TaskSlot (as needed)
-  TaskSlot *current;
 };
 
 struct MMU_shared_workspace {
   uint32_t lock;
-  uint32_t slots_memory;
 };
 
-physical_memory_block Kernel_physical_address( TaskSlot *slot, uint32_t va );
+physical_memory_block Kernel_physical_address( uint32_t va );
 TaskSlot *MMU_new_slot();
 void TaskSlot_add( TaskSlot *slot, physical_memory_block memory );
 uint32_t TaskSlot_asid( TaskSlot *slot );

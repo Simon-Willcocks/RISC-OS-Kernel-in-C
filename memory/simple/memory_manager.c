@@ -54,6 +54,7 @@ void Initialise_system_DAs()
   // Screen (shared, not protected)
   // Font cache (shared, not protected) - not created by FontManager
   // Sprite Area (per core)
+  // RamFS DA, expected by WindowManager
 
   // Create a Relocatable Module Area, and initialise a heap in it.
 
@@ -152,6 +153,22 @@ memset( (void*) 0x7000, '\0', 4096 );
 
   // Now the non-shared DAs, can be done in parallel
 
+  {
+  // Empty RamFS, TODO
+    DynamicArea *da = rma_allocate( sizeof( DynamicArea ), &regs );
+    if (da == 0) goto nomem;
+    da->number = 5;
+    da->permissions = 6; // rw-
+    da->shared = 0; // Will be, but non-shared zero size for now
+    da->virtual_page = 0xbadf00d;
+    da->pages = 0;
+    da->actual_pages = da->pages;
+    da->start_page = 0xbadbad;
+
+    da->next = workspace.memory.dynamic_areas;
+    workspace.memory.dynamic_areas = da;
+  }
+
   { // "Free Pool" - hopefully obsolete, expected by WindowManager init, at least
   // TODO Add names, handlers to DAs
     extern uint32_t free_pool;
@@ -230,7 +247,10 @@ static inline bool Error_UnknownDA( svc_registers *regs )
 
 bool do_OS_ChangeDynamicArea( svc_registers *regs )
 {
+// https://www.riscosopen.org/forum/forums/11/topics/16963?page=1#posts-129122
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
   WriteS( "Resizing DA " ); WriteNum( regs->r[0] ); NewLine;
+#endif
   DynamicArea *da = find_DA( regs->r[0] );
   int32_t resize_by = (int32_t) regs->r[1];
   int32_t resize_by_pages = resize_by >> 12;
@@ -239,19 +259,17 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs )
     return Error_UnknownDA( regs );
   }
 
-  if (resize_by == 0) { // Just reading size
-    regs->r[1] = da->pages << 12;
+  if (resize_by == 0) { // Doing nothing
     return true;
   }
 
   if (0 != (resize_by & 0xfff)) {
-    if (resize_by > 0)
-      resize_by_pages ++;
-    else
-      resize_by_pages --;
+    resize_by_pages ++;
   }
 
-  WriteS( "Resizing DA " ); WriteNum( regs->r[0] ); WriteS( " from " ); WriteNum( da->pages<<12 ); WriteS( " by " ); WriteNum( resize_by ); WriteS( " (actual = " ); WriteNum( da->actual_pages << 12 ); WriteS( ")" ); NewLine;
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+  WriteS( "Resizing DA " ); WriteNum( regs->r[0] ); WriteS( " from " ); WriteNum( da->pages<<12 ); WriteS( " by " ); WriteNum( resize_by_pages << 12 ); WriteS( " (actual = " ); WriteNum( da->actual_pages << 12 ); WriteS( ")" ); NewLine;
+#endif
 
   if (da->actual_pages != 0 && (da->pages << 12) + resize_by > (da->actual_pages << 12)) {
     static error_block error = { 999, "DA maximum size exceeded" };
@@ -260,12 +278,45 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs )
     return false;
   }
 
-  if (da->handler_routine != 0) {
-WriteS( "  Pre-grow" );
+  if (da->handler_routine != 0 && resize_by < 0) {
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+WriteS( "  Pre-shrink " ); WriteNum( resize_by_pages << 12 );
+#endif
+    register uint32_t code asm ( "r0" ) = 2;
+    register uint32_t shrink_by asm ( "r3" ) = -resize_by_pages << 12;
+    register uint32_t current_size asm ( "r4" ) = da->pages << 12;
+    register uint32_t page_size asm ( "r5" ) = 4096;
+    register uint32_t workspace asm ( "r12" ) = da->workarea;
+    register uint32_t error asm( "r0" );
+    register uint32_t permitted asm ( "r3" );
+    asm ( "blx %[preshrink]"
+        : "=r" (error)
+        , "=r" (permitted)
+        : "r" (code)
+        , "r" (shrink_by)
+        , "r" (current_size)
+        , "r" (page_size)
+        , "r" (workspace)
+        , [preshrink] "r" (da->handler_routine) );
+    if (error != 2) { // pre-shrink code
+      regs->r[0] = error;
+      return false;
+    }
+    resize_by_pages = -permitted;
+    resize_by = resize_by_pages << 12;
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+WriteS( " permitted = " ); WriteNum( resize_by_pages << 12 ); NewLine;
+#endif
+  } 
+
+  if (da->handler_routine != 0 && resize_by > 0) {
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+WriteS( "  Pre-grow " ); WriteNum( resize_by_pages << 12 );
+#endif
     register uint32_t code asm ( "r0" ) = 0;
     register uint32_t page_block asm ( "r1" ) = 0xbadf00d;
-    register uint32_t pages asm ( "r2" ) = resize_by >> 12;
-    register uint32_t grow_by asm ( "r3" ) = resize_by;
+    register uint32_t pages asm ( "r2" ) = resize_by_pages;
+    register uint32_t grow_by asm ( "r3" ) = resize_by_pages << 12;
     register uint32_t current_size asm ( "r4" ) = da->pages << 12;
     register uint32_t page_size asm ( "r5" ) = 4096;
     register uint32_t workspace asm ( "r12" ) = da->workarea;
@@ -287,31 +338,39 @@ WriteS( "  Pre-grow" );
   } 
 
   if (da->start_page == 0) {
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
 WriteS( " Allocate" );
+#endif
     // Give everything a MiB, for now
     uint32_t memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
     da->start_page = memory >> 12;
     da->actual_pages = natural_alignment >> 12;
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
 WriteS( " Allocated " ); WriteNum( memory ); NewLine;
 
 WriteS( " Mapping" );
+#endif
     if (da->shared) {
       MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->actual_pages << 12 );
     }
     else {
       MMU_map_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->actual_pages << 12 );
     }
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
 WriteS( " Mapped" );
+#endif
   }
 
   da->pages = da->pages + resize_by_pages; // Always increased (or decreased) to the next largest page
 
-  if (da->handler_routine != 0) {
+  if (da->handler_routine != 0 && resize_by > 0) {
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
 WriteS( " Post-grow" );
+#endif
     register uint32_t code asm ( "r0" ) = 1;
     register uint32_t page_block asm ( "r1" ) = 0xbadf00d;
-    register uint32_t pages asm ( "r2" ) = resize_by >> 12;
-    register uint32_t grown_by asm ( "r3" ) = resize_by;
+    register uint32_t pages asm ( "r2" ) = resize_by_pages;
+    register uint32_t grown_by asm ( "r3" ) = resize_by_pages << 12;
     register uint32_t current_size asm ( "r4" ) = da->pages << 12;
     register uint32_t page_size asm ( "r5" ) = 4096;
     register uint32_t workspace asm ( "r12" ) = da->workarea;
@@ -331,6 +390,13 @@ WriteS( " Post-grow" );
       return false;
     }
   }
+
+  {
+    regs->r[1] = 0x4e; // Service_MemoryMoved
+    do_OS_ServiceCall( regs );
+  }
+
+  regs->r[1] = resize_by_pages << 12;
 
   return true;
 }

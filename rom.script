@@ -20,24 +20,26 @@ SECTIONS
   minimum_ram = 256 << 20 ; /* Boot configuration. */
 
   /* Virtual addresses */
-  free_pool = 0xc0000000 ; /* This will hopefully disappear (Wimp Sprites?) */
-  va_base = 0xfc000000 ;
-  shared = 0xfffef000 ; /* Make sure it doesn't overlap the workspace */
-  workspace = 0xffff0000 ;
-  translation_tables = 0xfff00000 ;
-  task_slots = 0xfff70000 ;
-  devices = 0xfff80000 ;
-  rma_base = 0x20000000 ;
-  rma_heap = 0x20000000 ;
-  frame_buffer = 0xef000000 ;
-  system_heap = 0x30000000 ; /* To match legacy expectations. Had proposed 0xffe00000 */
-  dynamic_areas_base = 0x31000000 ; /* Where DAs start from. */
+  free_pool             = 0xc0000000 ; /* This will hopefully disappear (Wimp Sprites?) */
+  va_base               = 0xfc000000 ;
+  shared                = 0xfffef000 ; /* Make sure it doesn't overlap the workspace */
+  workspace             = 0xffff0000 ;
+  translation_tables    = 0xfff00000 ;
+  task_slots            = 0xfff70000 ; /* probably needs more space */
+  tasks                 = 0xfff80000 ; /* probably needs more space */
+  devices               = 0xfff90000 ;
+  rma_base              = 0x20000000 ;
+  rma_heap              = 0x20000000 ;
+  frame_buffer          = 0xef000000 ;
+  system_heap           = 0x30000000 ; /* To match legacy expectations. Had proposed 0xffe00000 */
+  dynamic_areas_base    = 0x31000000 ; /* Where DAs start from. */
 
   _binary_AllMods_start = 0xfc0217a8 ; /* Complete hack, matches SysModules_Info(+4?) in my RISC OS ROM */
   system_font = 0xfc040f94 ; /* Ditto, HardFont, from vdufontl1 */
   JTABLE = 0xfc01014c ; /* SWI table from ROM. */
   SpriteVecHandler = 0xfc036cd0 ; /* Avoiding BranchNotJustUs */
   ByteVarInitTable = 0xfc041a35 ; /* Read only, ROM defaults */
+  VduInit = 0xfc02fd70 ; /* Initialise the vdu driver */
 
  . = va_base ;
  .text : {

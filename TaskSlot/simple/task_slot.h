@@ -15,10 +15,12 @@
 
 typedef struct Task Task;
 
-TaskSlot *MMU_new_slot();
+TaskSlot *TaskSlot_new();
+Task *Task_new( TaskSlot *slot );
+
 void TaskSlot_add( TaskSlot *slot, physical_memory_block memory );
 uint32_t TaskSlot_asid( TaskSlot *slot );
-physical_memory_block Kernel_physical_address( TaskSlot *slot, uint32_t va );
+physical_memory_block Kernel_physical_address( uint32_t va );
 
 struct Task {
   integer_registers regs;
@@ -29,10 +31,14 @@ struct Task {
 struct TaskSlot_workspace {
   Task *running;        // The task that is running on this core
   Task *runnable;       // The tasks that may only run on this core
+  bool memory_mapped;   // Have the shared.task_slot.tasks_memory and shared.task_slot.slots_memory been mapped into this core's MMU?
 };
 
 struct TaskSlot_shared_workspace {
   uint32_t lock;
+
+  uint32_t slots_memory; // FIXME more than one page, extendible, etc.
+  uint32_t tasks_memory;
 
   Task *bottleneck_owner;
   Task *next_to_own;

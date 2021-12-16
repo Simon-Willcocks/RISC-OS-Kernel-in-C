@@ -368,7 +368,9 @@ extern void Kernel_failed_data_abort();
 static void map_block( physical_memory_block block )
 {
   // All RISC OS memory is RWX.
-  l2tt_entry entry = l2_urwx;
+  // FIXME: Even the stuff that isn't meant to be at the moment... Lowest common denominator
+  // All lazily mapped memory is shared (task slots, and the associated storage in the kernel)
+  l2tt_entry entry = { .XN = 0, .small_page = 1, .TEX = 0b101, .C = 0, .B = 1, .unprivileged_access = 1, .AF = 1, .S = 1, .nG = 1 };
 
   about_to_remap_memory();
 
@@ -384,11 +386,14 @@ static void map_block( physical_memory_block block )
 // There is no need for this routine to examine the fault generating instruction or the registers.
 static bool __attribute__(( noinline )) handle_data_abort()
 {
-  if (0x807 == data_fault_type() && workspace.mmu.current != 0) {
+  uint32_t fault_type = data_fault_type();
+  if (0x807 == fault_type || 7 == fault_type) {
     uint32_t fa = fault_address();
+WriteS( "Data abort that can be handled " ); WriteNum( fa ); NewLine;
     claim_lock( &shared.mmu.lock );
-    physical_memory_block block = Kernel_physical_address( workspace.mmu.current, fa );
+    physical_memory_block block = Kernel_physical_address( fa );
     release_lock( &shared.mmu.lock );
+WriteS( "Data abort physical: " ); WriteNum( block.physical_base ); NewLine;
     if (block.size != 0) {
       map_block( block );
       return true;
@@ -436,7 +441,6 @@ void MMU_switch_to( TaskSlot *slot )
   for (int i = 0x8000 >> 12; i < 0x100000 >> 12; i++) {
     bottom_MiB_tt[i] = 0;
   }
-  workspace.mmu.current = slot;
   // Set CONTEXTIDR
   asm ( "mcr p15, 0, %[asid], c13, c0, 1" : : [asid] "r" (TaskSlot_asid( slot )) );
   // FIXME: clear out L2TTs, or disable walks until one is needed, then clear them

@@ -478,7 +478,7 @@ describe_service_call( regs );
     regs->r[12] = (uint32_t) m->private_word;
     if (0 != m->header->offset_to_service_call_handler) {
 #ifdef DEBUG__SHOW_SERVICE_CALLS
-Write0( title_string( m->header ) ); WriteS( " " );
+Write0( title_string( m->header ) ); WriteS( " " ); WriteNum( m->header->offset_to_service_call_handler + (uint32_t) m->header ); NewLine;
 #endif
       result = run_service_call_handler_code( regs, m );
     }
@@ -1089,16 +1089,13 @@ bool excluded( const char *name )
                                   , "BCMSound"          // ???
 
 // Probably don't work, I can't be bothered to see if their problems are solved already
-                     //             , "BufferManager"     // Full RMA? Something odd, anyway.
-                     //             , "ColourTrans"     // Full RMA? Something odd, anyway.
                                   , "SoundDMA"          // Uses OS_Memory
                                   , "SoundChannels"     // ???
                                   , "SoundScheduler"    // Sound_Tuning
-                                  // , "SpriteExtend" // ReadSysInfo
                                   , "TaskManager"       // Initialisation returns an error
                                   , "ScreenModes"       // Doesn't return, afaics
                                   , "BCMVideo"          // Tries to use OS_MMUControl
-                                  , "FilterManager"     // Uses Wimp_ReadSysInfo
+                                  , "FilterManager"     // Uses Wimp_ReadSysInfo 
                                   , "WaveSynth"         // throws exception
                                   , "StringLib"         // ?
                                   , "Percussion"         // ?
@@ -1112,7 +1109,7 @@ bool excluded( const char *name )
                                   , "SDFS"              // 0x8600003f
                                   , "SDCMOS"              // 0x8600003f
                                   , "ColourPicker"      // 0x8600003f
-                     //             , "DrawFile"          // 0x8600003f - are these SharedCLib users?
+                     //             , "DrawFile"          // Data abort on InvalidateCache service call?
                      //             , "BootCommands"      // 0x8600003f
                                   , "WindowScroll"      // 0x8600003f OS_Pointer not yet supported
                                   , "Internet"          // 0x8600003f
@@ -1128,15 +1125,15 @@ bool excluded( const char *name )
                                   , "EtherGENET"
                                   , "EtherUSB"
                                   , "DHCP"
-                                  , "!Edit"
-                                  , "!Draw"
-                                  , "!Paint"
-                                  , "!Alarm"
-                                  , "!Chars"
-                                  , "!Help"
-                                  , "Toolbox"
-                                  , "Window"
-                                  , "ToolAction"
+                     //             , "!Edit"
+                     //             , "!Draw"
+                     //             , "!Paint"
+                     //             , "!Alarm"
+                     //             , "!Chars"
+                     //             , "!Help"
+                                  , "Toolbox"           // Tries to RMLoad System:FilterManager
+                                  , "Window"            // Requires Toolbox
+                                  , "ToolAction"        // Requires Window
                                   , "Menu"
                                   , "Iconbar"
                                   , "ColourDbox"
@@ -1323,7 +1320,7 @@ static inline uint32_t Font_FindFont( const char *name, uint32_t xpoints, uint32
   register uint32_t rxdpi asm( "r4" ) = xdpi;
   register uint32_t rydpi asm( "r5" ) = ydpi;
 
-  asm ( "swi %[swi]"
+  asm volatile ( "swi %[swi]"
         : "=r" (result)
         : "r" (rname)
         , "r" (rxpoints)
@@ -1343,7 +1340,7 @@ static inline void ColourTrans_SetFontColours( uint32_t font, uint32_t fg, uint3
   register uint32_t Rbg asm( "r2" ) = bg;
   register uint32_t Rmaxdiff asm( "r3" ) = maxdiff;
 
-  asm ( "swi %[swi]"
+  asm volatile ( "swi %[swi]"
         :
         : "r" (Rfont)
         , "r" (Rfg)
@@ -1353,10 +1350,51 @@ static inline void ColourTrans_SetFontColours( uint32_t font, uint32_t fg, uint3
         : "lr" );
 }
 
+static inline void usr_OS_ConvertCardinal4( uint32_t number, char *buffer, uint32_t buffer_size, char *old_buffer, char **terminator, uint32_t *remaining_size )
+{
+  // Do any calculations or variable initialisations here, before
+  // declaring any register variables.
+  // This is important because the compiler may insert function calls
+  // like memcpy or memset, which will corrupt already declared registers.
+
+  // The inputs to the SWI
+  register uint32_t n asm( "r0" ) = number;
+  register char *buf asm( "r1" ) = buffer;
+  register uint32_t s asm( "r2" ) = buffer_size;
+
+  // The outputs from the SWI
+  register uint32_t oldbuf asm( "r0" );
+  register char *term asm( "r1" );
+  register uint32_t rem asm( "r2" );
+
+  // Call the SWI
+  asm volatile ( "svc %[swi]"
+    : "=r" (oldbuf) // List all the output variables
+    , "=r" (term)   // or they will be optimised away.
+    , "=r" (rem)
+    : [swi] "i" (OS_ConvertCardinal4) // Can use an enum for the SWI number
+    , "r" (n)       // List all the input register variables,
+    , "r" (buf)     // or they will be optimised away.
+    , "r" (s)
+    : // If the SWI corrupts any registers, list them here
+      // If the function is to be called in a priviledged mode, include "lr"
+      "memory"
+  );
+
+  // Store the output values
+  // Don't worry about the apparent inefficiency, the compiler will
+  // optimise out unused values.
+  // Again, don't do anything other than simple storage or assignments
+  // to non-register variables.
+  if (old_buffer != 0) *old_buffer = oldbuf;
+  if (terminator != 0) *terminator = term;
+  if (remaining_size != 0) *remaining_size = rem;
+}
+
 void Font_Paint( uint32_t font, const char *string, uint32_t type, uint32_t startx, uint32_t starty, uint32_t length )
 {
   register uint32_t rHandle asm( "r0" ) = font;
-  register uint32_t rString asm( "r1" ) = string;
+  register const char *rString asm( "r1" ) = string;
   register uint32_t rType asm( "r2" ) = type;
   register uint32_t rx asm( "r3" ) = startx;
   register uint32_t ry asm( "r4" ) = starty;
@@ -1427,7 +1465,8 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     case 0x1c: regs[2] = 0b00000010; break; // FIXME made up!
 
     // Font Cache pages: 512k
-    case 0x86: regs[2] = 128; break;
+    // case 0x86: regs[2] = 128; break;
+    case 0x86: regs[2] = 0; break; // Bug in font caching, does this turn it off?
 
     // Time zone (15 mins as signed)
     case 0x8b: regs[2] = 0; break;
@@ -1454,7 +1493,8 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     case 0xc5: regs[2] = 0x6f; break; // FIXME
 
     // FontMax, FontMax1-5
-    case 0xc8 ... 0xcd: regs[2] = 32; break;
+    // case 0xc8 ... 0xcd: regs[2] = 32; break;
+    case 0xc8 ... 0xcd: regs[2] = 0; break; // Bug in font caching, does this turn it off?
 
     // Alarm flags/DST ???
     case 0xdc: regs[2] = 0; break;
@@ -2079,6 +2119,9 @@ WriteS( "Page size 0x1000" );
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol = 1920-1;
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow = 1080-1;
 
+  // Used by SpriteOp 60 (at least)
+  workspace.vectors.zp.VduDriverWorkSpace.ws.VduSaveAreaPtr = &workspace.vectors.zp.VduDriverWorkSpace.ws.VduSaveArea;
+
   // I know, we need to not have the frame buffer at a fixed address, 
   // and probably allow for more than one at a time...
 
@@ -2101,6 +2144,23 @@ WriteS( "Page size 0x1000" );
   workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenEndAddr = (uint32_t) &(&frame_buffer)[1920*1080-1];
   workspace.vectors.zp.VduDriverWorkSpace.ws.TotalScreenSize = 1920 * 1080 * 4;
   workspace.vectors.zp.VduDriverWorkSpace.ws.TrueVideoPhysAddr = (uint32_t) &frame_buffer;
+
+  // Like VduInit, without calling internal routines. Can assume workspace already zeroed. Kernel/s/vdu/vdudriver
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenBlankDPMSState = 255;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.CurrentGraphicsVDriver = ~1; // GraphicsVInvalid; this means only one display?
+  workspace.vectors.zp.VduDriverWorkSpace.ws.SpriteMaskSelect = 0x23c; // =RangeC+SpriteReason_SwitchOutputToSprite
+  workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags = 0x7a00; // From VduInit
+  workspace.vectors.zp.VduDriverWorkSpace.ws.WrchNbit = 0xbbadf00d; // Should be NUL (mov pc, lr), but when does this happen?
+  workspace.vectors.zp.VduDriverWorkSpace.ws.HLineAddr = (uint32_t) fast_horizontal_line_draw;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GcolOraEorAddr = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.MaxMode = 53; // "Constant now"
+  // etc...
+
+  { // FIXME this should be system heap
+    svc_registers regs;
+    regs.spsr = 0; // OS_Heap fails if entered with V flag set
+    workspace.vectors.zp.VduDriverWorkSpace.ws.TextExpandArea = rma_allocate( 2048, &regs );
+  }
 
   // Start the HAL, a multiprocessing-aware module that initialises essential features before
   // the boot sequence can start.
@@ -2132,7 +2192,15 @@ WriteS( "Page size 0x1000" );
   NewLine; WriteS( "All modules initialised, starting USR mode code" ); NewLine;
 
 
-  TaskSlot *slot = MMU_new_slot();
+  TaskSlot *slot = TaskSlot_new();
+  WriteS( "Slot: " ); WriteNum( (uint32_t) slot ); NewLine;
+  Task *task = Task_new( slot );
+  WriteS( "Task: " ); WriteNum( (uint32_t) task ); NewLine;
+  if (task->slot != slot) {
+    WriteS( "WTF" );
+  }
+  workspace.task_slot.running = task;
+
   physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( 4096, 4096 ), .size = 4096 };
   TaskSlot_add( slot, block );
   MMU_switch_to( slot );
@@ -2576,15 +2644,6 @@ static uint32_t path3[] = {
     }
   }
 
-  {
-    char output[20] = { "BINGO" };
-    register uint32_t n asm( "r0" ) = 845;
-    register char *buffer asm( "r1" ) = &output[0];
-    register uint32_t size asm( "r2" ) = sizeof( output );
-    asm ( "svc %[swi]" : : [swi] "i" (OS_ConvertCardinal4), "r" (n), "r" (buffer), "r" (size) );
-    NewLine; Write0( output ); NewLine;
-  }
-
   { // Try a GSTrans, it fails in FindFont
     char buffer[256];
     const char var[] = "<Font$Path>";
@@ -2626,13 +2685,19 @@ OSCLI( "Echo Hello" );
     register const uint8_t *file asm( "r1" ) = sprite_area;
     register const char *sprite_name asm( "r2" ) = sprite;
     register uint32_t x asm( "r3" ) = column;
-    register uint32_t y asm( "r4" ) = 1024;
+    register uint32_t y asm( "r4" ) = 2000; // OS Units, apparently
     register uint32_t action asm( "r5" ) = 24; // Use mask, Translation table can be ignored
     register uint32_t scaling asm( "r6" ) = 0;
     register uint32_t translation asm( "r7" ) = 0;
     asm ( "svc %[swi]" : : [swi] "i" (OS_SpriteOp), "r" (code), "r" (file), "r" (sprite_name), "r" (x), "r" (y), "r" (action), "r" (scaling), "r" (translation) );
   }
   WriteS( "\\n\\rRendered sprite\\n\\r" );
+
+{
+char buffer[20];
+usr_OS_ConvertCardinal4( 666, buffer, sizeof( buffer ), 0, 0, 0 );
+WriteS( "666 = " ); Write0( buffer ); NewLine;
+}
 
 if (0) {
 const char *filename = "Resources:$.Resources.Alarm.Messages";
@@ -2651,11 +2716,18 @@ if (font > 255) {
 }
   WriteS( "Found font " ); WriteNum( font ); NewLine;
 
-  ColourTrans_SetFontColours( font, 0xffffffff, 0x00000000, 14 );
+WriteS( "Setting text colours" ); NewLine;
+  ColourTrans_SetFontColours( font, 0xff44ff44, 0x00004400, 14 );
+
+WriteS( "Setting text colours again" ); NewLine;
+    // Set text colours
+    SetColour( (1 << 6), 0xffffffff );
+    SetColour( (1 << 6) | (1 << 4), 0x00000000 );
 
 // OS units, not pixels?
-const char string[] = { 19, 0, 255, 0, 255, 255, 0, 'H', 'e', 'l', 'l', 'o', ' ', 'W', 'o', 'r', 'l', 'd', '\0' };
-Font_Paint( font, string, (1 << 4), 1000 + 1000 * core_number, 800, sizeof( string ) );
+const char string[] = "H      e"; //ello world?"; // { 19, 0, 255, 0, 255, 255, 0, 'H', 'e', 'l', 'l', 'o', ' ', 'W', 'o', 'r', 'l', 'd', '\0' };
+WriteS( "Writing" ); NewLine;
+if (core_number == 2) Font_Paint( font, string, (1 << 4), 1000 + 1000 * core_number, 800, sizeof( string ) );
 
   for (int loop = 0;; loop++) {
 

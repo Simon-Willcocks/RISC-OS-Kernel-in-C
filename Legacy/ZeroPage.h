@@ -910,7 +910,7 @@ typedef struct {
       // (0 if output is to screen)
       uint32_t VduSprite ; // Pointer to VDU output sprite (0 if output to screen)
 
-      uint32_t VduSaveAreaPtr ; // Pointer to save area for VDU variables
+      uint32_t *VduSaveAreaPtr ; // Pointer to save area for VDU variables
 
 
       // with ClipBoxEnable immediately before it

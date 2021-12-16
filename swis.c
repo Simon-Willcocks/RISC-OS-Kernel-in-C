@@ -734,6 +734,9 @@ static bool do_OS_SetMemMapEntries( svc_registers *regs ) { return Kernel_Error_
 
 static bool do_OS_AddCallBack( svc_registers *regs )
 {
+#ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
+  WriteS( "New transient callback: " ); WriteNum( regs->r[0] ); WriteS( ", " ); WriteNum( regs->r[1] ); NewLine;
+#endif
   transient_callback *callback = workspace.kernel.transient_callbacks_pool;
   if (callback == 0) {
     callback = rma_allocate( sizeof( transient_callback ), regs );
@@ -1170,14 +1173,7 @@ static bool do_OS_ConvertCardinal3( svc_registers *regs )
 
 static bool do_OS_ConvertCardinal4( svc_registers *regs )
 {
-WriteS( "ConvertCardinal4: " ); WriteNum( regs->r[0] ); WriteS( ", " ); WriteNum( regs->r[1] );  WriteS( ", " ); WriteNum( regs->r[2] ); NewLine;
-
-  if ( convert_decimal( regs, 0xffffffff ) ) {
-WriteS( "ConvertCardinal4: " ); WriteNum( regs->r[0] ); WriteS( ", " ); WriteNum( regs->r[1] );  WriteS( ", " ); WriteNum( regs->r[2] ); NewLine;
-Write0( regs->r[0] ); NewLine;
-    return true;
-  }
-  return false;
+  return convert_decimal( regs, 0xffffffff );
 }
 
 static bool convert_signed_decimal( svc_registers *regs, uint32_t sign_bit )
@@ -1644,6 +1640,7 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
       switch (number) {
       case 0x61500 ... 0x6153f: // MessageTrans
       case 0x63040 ... 0x6307f: // Territory
+      case 0x606c0 ... 0x606ff: // Hourglass
         break;
       default:
         WriteS( "Unimplemented!" ); NewLine;
@@ -1674,6 +1671,10 @@ void run_transient_callbacks()
     callback->next = workspace.kernel.transient_callbacks_pool;
     workspace.kernel.transient_callbacks_pool = callback;
     workspace.kernel.transient_callbacks = latest.next;
+
+#ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
+  WriteS( "Call transient callback: " ); WriteNum( latest.code ); WriteS( ", " ); WriteNum( latest.private_word ); NewLine;
+#endif
 
     run_handler( latest.code, latest.private_word );
   }
@@ -1773,6 +1774,8 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
         // These SWIs expect only a single program running on a single processor
         Task *blocked = 0;
 
+retry: // This is not its final form
+
         claim_lock( &shared.task_slot.lock );
 
         bool already_owner = (shared.task_slot.bottleneck_owner == workspace.task_slot.running);
@@ -1785,6 +1788,13 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
           }
         }
         else {
+#if 1
+// Implementation assumes the owner is on another core
+// Final implementation puts the current task to sleep until the bottleneck is cleared up again
+release_lock( &shared.task_slot.lock );
+for (int i = 0; i < 1000000; i++) { asm ( "" ); }
+goto retry;
+#else
           // First come, first served, and we're not first!
           blocked = workspace.task_slot.running;
 
@@ -1801,8 +1811,8 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
           }
 
           shared.task_slot.last_to_own = blocked;
+#endif
         }
-
         release_lock( &shared.task_slot.lock );
 
         if (0 == blocked) { // This task owns the filesystem

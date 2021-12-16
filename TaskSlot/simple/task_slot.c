@@ -45,6 +45,7 @@ struct TaskSlot {
 };
 
 extern TaskSlot task_slots[];
+extern Task tasks[];
 
 /* Handlers. Per slot, or per thread, I wonder? I'll go for per slot, to start with (matches with the idea of
    cleaning up the handlers on exit).
@@ -99,39 +100,113 @@ void __attribute__(( naked )) default_os_changeenvironment()
   asm ( "pop { r0-r3, pc }" );
 }
 
-physical_memory_block Kernel_physical_address( TaskSlot *slot, uint32_t va )
+static bool is_in_tasks( uint32_t va )
 {
-  for (int i = 0; i < number_of( slot->blocks ); i++) {
-    if (slot->blocks[i].virtual_base <= va && slot->blocks[i].virtual_base + slot->blocks[i].size > va) {
-      return slot->blocks[i];
+  // FIXME More pages!
+  return va >= (uint32_t) tasks && va < 4096 + (uint32_t) tasks;
+}
+
+static bool is_in_task_slots( uint32_t va )
+{
+  // FIXME More pages!
+  return va >= (uint32_t) task_slots && va < 4096 + (uint32_t) task_slots;
+}
+
+physical_memory_block Kernel_physical_address( uint32_t va )
+{
+#ifdef GOTITDONE
+  // FIXME : More than a couple of slots or tasks!
+  // FIXME : access privileges (in res)
+  if (is_in_tasks( va )) {
+    physical_memory_block block = { .virtual_base = ((uint32_t) tasks) >> 12,
+                                    .physical_base = shared.task_slot.tasks_memory >> 12,
+                                    .size = 1 };
+    return block;
+  }
+
+  if (is_in_task_slots( va )) {
+    physical_memory_block block = { .virtual_base = ((uint32_t) task_slots) >> 12,
+                                    .physical_base = shared.task_slot.slots_memory >> 12,
+                                    .size = 1 };
+    return block;
+  }
+#endif
+
+  Task *running = workspace.task_slot.running;
+
+  if (running == 0) { asm ( "bkpt 54" ); }
+
+  TaskSlot *slot = running->slot;
+
+WriteS( "Searching slot " ); WriteNum( (uint32_t) slot ); WriteS( " for address " ); WriteNum( va ); NewLine;
+  if (slot != 0) {
+    for (int i = 0; i < number_of( slot->blocks ) && slot->blocks[i].size != 0 && slot->blocks[i].virtual_base <= va; i++) {
+WriteS( "Block: " ); WriteNum( slot->blocks[i].virtual_base ); WriteS( ", " ); WriteNum( slot->blocks[i].size ); NewLine;
+      if (slot->blocks[i].virtual_base <= va && slot->blocks[i].virtual_base + slot->blocks[i].size > va) {
+        return slot->blocks[i];
+      }
     }
   }
+  else WriteS( "No current slot" );
+
+WriteS( "No memory found" ); NewLine;
+asm ( "bkpt 44" );
   physical_memory_block fail = { 0, 0, 0 };
   return fail;
 }
 
-TaskSlot *MMU_new_slot()
+static void free_task( Task *task )
+{
+  task->regs.pc = 1; // Never a valid pc, so unallocated
+}
+
+static void free_task_slot( TaskSlot *slot )
+{
+  slot->allocated = 0;
+}
+
+static void allocate_taskslot_memory()
+{
+  // Only called when lock acquired
+
+  if (shared.task_slot.slots_memory == 0) {
+    shared.task_slot.slots_memory = Kernel_allocate_pages( 4096, 4096 );
+    shared.task_slot.tasks_memory = Kernel_allocate_pages( 4096, 4096 );
+  }
+
+  // No lazy address decoding for the kernel, yet
+
+  if (!workspace.task_slot.memory_mapped) {
+    MMU_map_shared_at( (void*) &tasks, shared.task_slot.slots_memory, 4096 );
+    MMU_map_shared_at( (void*) &task_slots, shared.task_slot.tasks_memory, 4096 );
+    workspace.task_slot.memory_mapped = true;
+  }
+
+  WriteS( "Initialising tasks and task slots" );
+  bzero( task_slots, 4096 );
+  bzero( tasks, 4096 );
+  for (int i = 0; i < 4096/sizeof( TaskSlot ); i++) {
+    free_task_slot( &task_slots[i] );
+  }
+  for (int i = 0; i < 4096/sizeof( Task ); i++) {
+    free_task( &tasks[i] );
+  }
+  NewLine;
+}
+
+// Which comes first, the slot or the task? Privileged (module?) tasks don't need a slot.
+TaskSlot *TaskSlot_new()
 {
   TaskSlot *result = 0;
 
   claim_lock( &shared.mmu.lock );
 
-  bool first_core = 0 == shared.mmu.slots_memory;
+  if (!workspace.task_slot.memory_mapped) allocate_taskslot_memory();
 
-  if (first_core) // Allocate physical memory, to be shared
-    shared.mmu.slots_memory = Kernel_allocate_pages( 4096, 4096 );
-
-  // First call to this routine for this core? (Assumes MMU_switch_to will be
-  // called before the second call to MMU_new_slot.)
-  if (workspace.mmu.current == 0) {
-    MMU_map_shared_at( &task_slots, shared.mmu.slots_memory, 4096 );
-
-    if (first_core)
-      bzero( &task_slots, 4096 ); // FIXME make expandable
-  }
-
+  // FIXME: make this a linked list of free objects
   for (int i = 0; i < 4096/sizeof( TaskSlot ) && result == 0; i++) {
     if (!task_slots[i].allocated) {
+WriteS( "Allocated TaskSlot " ); WriteNum( i ); NewLine;
       result = &task_slots[i];
       result->allocated = true;
     }
@@ -139,7 +214,32 @@ TaskSlot *MMU_new_slot()
 
   release_lock( &shared.mmu.lock );
 
-  if (result == 0) for (;;) {} // FIXME: expand
+  if (result == 0) for (;;) { asm ( "bkpt 32" ); } // FIXME: expand
+
+  return result;
+}
+
+Task *Task_new( TaskSlot *slot )
+{
+  Task *result = 0;
+
+  claim_lock( &shared.mmu.lock );
+
+  if (!workspace.task_slot.memory_mapped) allocate_taskslot_memory();
+
+  // FIXME: make this a linked list of free objects
+  for (int i = 0; i < 4096/sizeof( Task ) && result == 0; i++) {
+    if (0 != (tasks[i].regs.pc & 1)) {
+      result = &tasks[i];
+      result->regs.pc = 0; // Allocated
+    }
+  }
+
+  release_lock( &shared.mmu.lock );
+
+  if (result == 0) for (;;) { asm ( "bkpt 33" ); } // FIXME: expand
+
+  result->slot = slot;
 
   return result;
 }
