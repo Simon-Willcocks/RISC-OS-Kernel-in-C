@@ -38,10 +38,11 @@ typedef struct {
 
 struct module {
   module_header *header;
-  uint32_t *private_word;
+  uint32_t *private_word;       // Points to either the local_private_word, below, or the shared local_private_word
   uint32_t local_private_word;
   uint32_t instance;
   module *next;  // Simple singly-linked list
+  char postfix[];
 };
 
 static inline uint32_t start_code( module_header *header )
@@ -493,43 +494,43 @@ Write0( title_string( m->header ) ); WriteS( " " ); WriteNum( m->header->offset_
   return result;
 }
 
-error_block UnknownCall = { 0x105, "Unknown OS_Module call" };
+static bool Unknown_OS_Module_call( svc_registers *regs )
+{
+  static error_block error = { 0x105, "Unknown OS_Module call" };
+  regs->r[0] = (uint32_t)&error;
+  return false;
+}
 
 #define OSMERR( f, l ) do { WriteS( f l ); for (;;) {}; } while (0)
 
 static bool do_Module_Run( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static bool do_Module_Load( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static bool do_Module_Enter( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static bool do_Module_ReInit( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static bool do_Module_Delete( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static bool do_Module_DescribeRMA( svc_registers *regs )
@@ -581,15 +582,13 @@ static bool do_Module_Free( svc_registers *regs )
 static bool do_Module_Tidy( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static bool do_Module_Clear( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static void pre_init_service( module_header *m, uint32_t size_plus_4 )
@@ -604,9 +603,10 @@ static void post_init_service( module_header *m, uint32_t size_plus_4 )
   do_OS_ServiceCall( &serviceregs );
 }
 
-static module *new_instance( module_header *m, svc_registers *regs )
+static module *new_instance( module_header *m, svc_registers *regs, const char *postfix )
 {
-  module *instance = rma_allocate( sizeof( module ), regs );
+  int len = postfix == 0 ? 1 : strlen( postfix ) + 1;
+  module *instance = rma_allocate( sizeof( module ) + len, regs );
 
   if (instance != 0) {
     instance->header = m;
@@ -614,6 +614,14 @@ static module *new_instance( module_header *m, svc_registers *regs )
     instance->local_private_word = 0;
     instance->instance = 0;
     instance->next = 0;
+    if (len == 1) {
+      instance->postfix[0] = 0;
+    }
+    else {
+      for (int i = 0; i < len; i++) {
+        instance->postfix[i] = postfix[i];
+      }
+    }
   }
 
   return instance;
@@ -648,7 +656,7 @@ static bool do_Module_InsertFromMemory( svc_registers *regs )
     if (shared_instance == 0) {
       // No core has initialised this module, yet.
       // Store a copy in the shared list.
-      shared_instance = new_instance( new_mod, regs );
+      shared_instance = new_instance( new_mod, regs, 0 );
 
       if (shared_instance != 0) {
         if (shared.kernel.module_list_tail == 0) {
@@ -667,13 +675,13 @@ static bool do_Module_InsertFromMemory( svc_registers *regs )
   }
 
   if (success) {
-    instance = new_instance( new_mod, regs );
+    instance = new_instance( new_mod, regs, 0 );
     success = instance != 0; 
 
     if (success && shared_instance != 0) {
       instance->private_word = shared_instance->private_word;
       while (instance->private_word != &shared_instance->local_private_word) {
-        asm ( "wfi" );
+        asm ( "bkpt 86" );
       }
     }
 
@@ -710,15 +718,13 @@ static bool do_Module_InsertFromMemory( svc_registers *regs )
 static bool do_Module_InsertAndRelocateFromMemory( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static bool do_Module_ExtractModuleInfo( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static bool do_Module_ExtendBlock( svc_registers *regs )
@@ -739,45 +745,65 @@ static bool do_Module_ExtendBlock( svc_registers *regs )
 static bool do_Module_CreateNewInstantiation( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static bool do_Module_RenameInstantiation( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static bool do_Module_MakePreferredInstantiation( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static bool do_Module_AddExpansionCardModule( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+  return Unknown_OS_Module_call( regs );
 }
 
 static bool do_Module_LookupModuleName( svc_registers *regs )
 {
   // Actually Lookup Module BY Name
+#ifdef DEBUG__SHOW_MODULE_LOOKUPS
+Write0( __func__ ); WriteS( " " ); Write0( regs->r[1] );
+#endif
 
-Write0( __func__ ); Write0( regs->r[1] ); // Initially called by Wimp during init, just to find ROM location
+  // Initially called by Wimp during init, just to find ROM location
+
   const char *name = (void*) regs->r[1];
-  if (name[0] == 'U' && name[7] == 'M' && name[13] == 0) { // FIXME
-    WriteS( "Returning UtilityModule address (hack) \\x06 " );
-    extern uint32_t va_base;
-    regs->r[3] = (uint32_t) &va_base;
-    return true;
+  module *m = workspace.kernel.module_list_head;
+  int number = 0;
+  while (m != 0 && 0 != riscoscmp( title_string( m->header ), name, true )) {
+#ifdef DEBUG__SHOW_MODULE_LOOKUPS
+WriteS( ", not " ); Write0( title_string( m->header ) );
+#endif
+    m = m->next;
+    number++;
   }
-  regs->r[0] = (uint32_t) &UnknownCall;
-  return false;
+
+  if (m == 0) {
+    // TODO personalised error messages will have to be stored associated with a task
+    static error_block error = { 258, "Module not found" }; // FIXME "Module %s not found"
+    regs->r[0] = (uint32_t) &error;
+    return false;
+  }
+  else {
+    regs->r[1] = number;
+    regs->r[2] = m->instance;
+    regs->r[3] = (uint32_t) m->header;
+    regs->r[4] = (uint32_t) m->private_word;
+    regs->r[5] = m->postfix[0] == '\0' ? 0 : (uint32_t) &m->postfix;
+#ifdef DEBUG__SHOW_MODULE_LOOKUPS
+WriteS( ", found: " ); Write0( title_string( m->header ) ); NewLine;
+#endif
+  }
+
+  return true;
 }
 
 static int module_state( module_header *header )
@@ -902,8 +928,7 @@ bool do_OS_Module( svc_registers *regs )
   case EnumerateROMModulesWithVersion: return do_Module_EnumerateROMModulesWithVersion( regs );
   case FindEndOfROM_ModuleChain: return do_Module_FindEndOfROM_ModuleChain( regs );
   default:
-    regs->r[0] = (uint32_t) &UnknownCall;
-    return false;
+    return Unknown_OS_Module_call( regs );
   }
 }
 
@@ -2195,9 +2220,10 @@ WriteS( "Page size 0x1000" );
   TaskSlot *slot = TaskSlot_new();
   WriteS( "Slot: " ); WriteNum( (uint32_t) slot ); NewLine;
   Task *task = Task_new( slot );
-  WriteS( "Task: " ); WriteNum( (uint32_t) task ); NewLine;
+  WriteS( "Task: " ); WriteNum( (uint32_t) task ); WriteS( ", slot: " ); WriteNum( (uint32_t) slot ); NewLine;
   if (task->slot != slot) {
     WriteS( "WTF" );
+    asm ( "bkpt 99" );
   }
   workspace.task_slot.running = task;
 
@@ -2716,18 +2742,16 @@ if (font > 255) {
 }
   WriteS( "Found font " ); WriteNum( font ); NewLine;
 
-WriteS( "Setting text colours" ); NewLine;
-  ColourTrans_SetFontColours( font, 0xff44ff44, 0x00004400, 14 );
+  SetColour( (1 << 6), Blue );
+//  SetColour( (1 << 6) | (1 << 4), Yellow ); // This doesn't seem to do anything
 
-WriteS( "Setting text colours again" ); NewLine;
-    // Set text colours
-    SetColour( (1 << 6), 0xffffffff );
-    SetColour( (1 << 6) | (1 << 4), 0x00000000 );
+  // This doesn't seem to do anything, but not having it means no colour is set!
+  ColourTrans_SetFontColours( font, 0xffffff & Green, 0xffffff & Red, 14 );
 
 // OS units, not pixels?
 const char string[] = "H      e"; //ello world?"; // { 19, 0, 255, 0, 255, 255, 0, 'H', 'e', 'l', 'l', 'o', ' ', 'W', 'o', 'r', 'l', 'd', '\0' };
 WriteS( "Writing" ); NewLine;
-if (core_number == 2) Font_Paint( font, string, (1 << 4), 1000 + 1000 * core_number, 800, sizeof( string ) );
+Font_Paint( font, string, (1 << 4), 1000 + 1000 * core_number, 800, sizeof( string ) );
 
   for (int loop = 0;; loop++) {
 

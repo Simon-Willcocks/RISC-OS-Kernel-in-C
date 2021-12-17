@@ -168,8 +168,9 @@ static void free_task_slot( TaskSlot *slot )
 static void allocate_taskslot_memory()
 {
   // Only called when lock acquired
+  bool first_core = (shared.task_slot.slots_memory == 0);
 
-  if (shared.task_slot.slots_memory == 0) {
+  if (first_core) {
     shared.task_slot.slots_memory = Kernel_allocate_pages( 4096, 4096 );
     shared.task_slot.tasks_memory = Kernel_allocate_pages( 4096, 4096 );
   }
@@ -182,16 +183,18 @@ static void allocate_taskslot_memory()
     workspace.task_slot.memory_mapped = true;
   }
 
-  WriteS( "Initialising tasks and task slots" );
-  bzero( task_slots, 4096 );
-  bzero( tasks, 4096 );
-  for (int i = 0; i < 4096/sizeof( TaskSlot ); i++) {
-    free_task_slot( &task_slots[i] );
+  if (first_core) {
+    WriteS( "Initialising tasks and task slots" );
+    bzero( task_slots, 4096 );
+    bzero( tasks, 4096 );
+    for (int i = 0; i < 4096/sizeof( TaskSlot ); i++) {
+      free_task_slot( &task_slots[i] );
+    }
+    for (int i = 0; i < 4096/sizeof( Task ); i++) {
+      free_task( &tasks[i] );
+    }
+    NewLine;
   }
-  for (int i = 0; i < 4096/sizeof( Task ); i++) {
-    free_task( &tasks[i] );
-  }
-  NewLine;
 }
 
 // Which comes first, the slot or the task? Privileged (module?) tasks don't need a slot.

@@ -1024,10 +1024,9 @@ static bool do_OS_PlatformFeatures( svc_registers *regs )
     return true;
   }
   else if (34 == regs->r[0]) {
-    if (20 == regs->r[1]) {
-      regs->r[0] = 1; // Half word accesses supported
-      return true;
-    }
+    // FIXME: Make this a 64-bit bitmap from processor and extract the appropriate bit?
+    regs->r[0] = 1; // Everything supported
+    return true;
   }
 
   regs->r[0] = (uint32_t) &error;

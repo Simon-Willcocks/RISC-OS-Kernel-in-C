@@ -58,7 +58,7 @@ void Initialise_system_DAs()
 
   // Create a Relocatable Module Area, and initialise a heap in it.
 
-  uint32_t initial_rma_size = natural_alignment;
+  uint32_t initial_rma_size = 2 * natural_alignment;
   svc_registers regs;
 
   claim_lock( &shared.memory.dynamic_areas_setup_lock ); 
@@ -102,7 +102,7 @@ memset( (void*) 0x7000, '\0', 4096 );
 
     // But there may not be any memory to allocate, yet...
     while (-1 == RMA) {
-      RMA = Kernel_allocate_pages( 2*natural_alignment, 2*natural_alignment );
+      RMA = Kernel_allocate_pages( initial_rma_size, natural_alignment );
     }
 
     MMU_map_shared_at( &rma_heap, RMA, initial_rma_size );

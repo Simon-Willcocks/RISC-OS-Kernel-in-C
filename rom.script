@@ -39,7 +39,6 @@ SECTIONS
   JTABLE = 0xfc01014c ; /* SWI table from ROM. */
   SpriteVecHandler = 0xfc036cd0 ; /* Avoiding BranchNotJustUs */
   ByteVarInitTable = 0xfc041a35 ; /* Read only, ROM defaults */
-  VduInit = 0xfc02fd70 ; /* Initialise the vdu driver */
 
  . = va_base ;
  .text : {
