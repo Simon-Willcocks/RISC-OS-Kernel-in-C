@@ -2181,14 +2181,19 @@ WriteS( "Page size 0x1000" );
 
   // These three read together in vduplot
   workspace.vectors.zp.VduDriverWorkSpace.ws.XShftFactor = 0;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GColAdr = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcf;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GColAdr = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor;
   workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenStart = (uint32_t) &frame_buffer;
+
+  // What's the difference between GcolOraEorAddr and GColAdr?
 
   // The above is set from this, in Kernel/s/vdu/vdugrafl:
   workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayScreenStart = (uint32_t) &frame_buffer;
 
   // This is something to do with the colour to be written, set a recognisable value, and see if it changes
-  workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcf[0] = 0x77777777;
+  for (int i = 0; i < number_of( workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor ); i++) {
+    workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[i].orr = 0xffffffff;
+    workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[i].eor = 0xffffffff;
+  }
   // Changed by instruction at 0xfc030fb0 (to 0xffffffff)
   // Then to zero at instruction at 0xfc030f08
   // Then ScreenStart is set to 0x32803c4c at 0xfc03a59c (lr = 0xfc02e8e4)
@@ -2228,32 +2233,28 @@ WriteS( "Page size 0x1000" );
     asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
   }
 
+if (0) {
+
+static EcfOraEor my_ecf = { { 0xff00ffff, 0xcc33cc33 },
+                            { 0xf0f0f0f0, 0 },
+                            { 0xffffff00, 0 },
+                            { 0x0f0f0f0f, 0 }, 
+                            { 0xfffff00f, 0 }, 
+                            { 0xaaaaaaaa, 0 }, 
+                            { 0x55550055, 0 }, 
+                            { 0xffffffff, 0 } };
+
+
+// Internal (pixel) coordinates from bottom left
 for (int y = 100; y < 1000; y++ ) { // Get ExportedHLine working...
   register uint32_t left asm( "r0" ) = workspace.core_number * 100;
   register uint32_t right asm( "r2" ) = workspace.core_number * 100 + 50;
   register uint32_t yy asm( "r1" ) = y;
-  register uint32_t mode asm( "r3" ) = 1;
+  register EcfOraEor *mode asm( "r3" ) = &my_ecf;
 
   asm ( "blx %[code]" : : [code] "r" (0xfc0342ac), "r" (left), "r" (right), "r" (yy), "r" (mode) : "lr", "cc" );
 }
-  for (;;) { asm ( "wfi" ); }
-
-  init_modules();
-/*
-  init_module( "UtilityModule" );
-
-  init_module( "DrawMod" );
-  init_module( "FileSwitch" );
-  init_module( "ResourceFS" );
-  init_module( "TerritoryManager" );
-  init_module( "Messages" );
-  init_module( "MessageTrans" );
-  init_module( "UK" );
-  init_module( "BlendTable" );
-  init_module( "ColourTrans" );
-  init_module( "FontManager" );
-  init_module( "ROMFonts" );
-*/
+}
 
   // To avoid problems in SWIPlot Kernel/s/vdu/vduswis
   // Rather than doing its job, it will put a stream of characters into the WrchV queue, if
@@ -2269,6 +2270,34 @@ WriteS( ", " ); WriteNum( workspace.vectors.zp.VduDriverWorkSpace.ws.ModeFlags )
 NewLine;
   workspace.vectors.zp.OsbyteVars.VDUqueueItems = 0; // Isn't this already zeroed?
   // Will cause an exception if it's actually followed, but BranchNotJustUs just checks if it's "in ROM"
+
+{
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[0].orr = Blue;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[1].orr = Yellow;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[2].orr = Green;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[3].orr = White;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[4].orr = Red;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[5].orr = Black;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[6].orr = 0xff4c5c5c;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[7].orr = 0;
+
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[0].eor = 0;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[1].eor = 0;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[2].eor = 0;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[3].eor = 0;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[4].eor = 0;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[5].eor = 0;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[6].eor = 0;
+workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor[7].eor = 0;
+
+static const char triangle[] = { 42, 25, 4, 100, 0, 100, 0, 25, 4, 0, 0, 0xe8, 3, 25, 85, 100, 0, 0xe8, 3, 42 };
+for (int i = 0; i < number_of( triangle ); i++) {
+  register char c asm( "r0" ) = triangle[i];
+  asm ( "svc 0" : : "r" (c) );
+}
+}
+
+  init_modules();
 
   NewLine; WriteS( "All modules initialised, starting USR mode code" ); NewLine;
 
@@ -2866,7 +2895,7 @@ Font_Paint( font, string, (1 << 4), 1000 + 1000 * core_number, 800, sizeof( stri
 
     SetColour( 0, 0x4c4c4c );
 
-static const char triangle[] = { 42, 25, 4, 100, 0, 100, 0, 25, 4, 0xe8, 3, 0xe8, 3, 25, 85, 0xe8, 3, 100, 0, 42 };
+static const char triangle[] = { 42, 25, 4, 100, 0, 100, 0, 25, 4, 0, 0, 0xe8, 3, 25, 85, 100, 0, 0xe8, 3, 42 };
 for (int i = 0; i < number_of( triangle ); i++) {
   register char c asm( "r0" ) = triangle[i];
   asm ( "svc 0" : : "r" (c) );

@@ -69,3 +69,37 @@ asm ( "bkpt 4" );
   }
   return true;
 }
+
+
+/* Notes about ECF patterns that are used by legacy code.
+
+   Each one is 8 word pairs:
+     typedef struct {
+       uint32_t orr;
+       uint32_t eor;
+     } ECF[8];
+
+  static const ECF NoEffect = { { 0, 0 },
+                              { 0, 0 },
+                              { 0, 0 },
+                              { 0, 0 }, 
+                              { 0, 0 }, 
+                              { 0, 0 }, 
+                              { 0, 0 }, 
+                              { 0, 0 } };
+
+  static const ECF Invert = { { 0, 0xffffffff },
+                              { 0, 0xffffffff },
+                              { 0, 0xffffffff },
+                              { 0, 0xffffffff }, 
+                              { 0, 0xffffffff }, 
+                              { 0, 0xffffffff }, 
+                              { 0, 0xffffffff }, 
+                              { 0, 0xffffffff } };
+
+  Pixels, I think, are set by new = (old ^ ecf[y&7].eor) | ecf[y&7].orr;
+
+  Once identified (NoEffect, Invert, workspace...FgEcfOraEor, or workspace...BgEcfOraEor), address stored in workspace...GColAdr.
+
+  HLine called.
+*/

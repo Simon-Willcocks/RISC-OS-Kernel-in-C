@@ -347,6 +347,7 @@ void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace 
           register ry asm( "r2" ) = y;
           asm ( "svc %[swi]" : : [swi] "i" (0x20045), "r" (rt), "r" (rx), "r" (ry) : "lr", "cc" );
 add_to_display( 'P', workspace );
+show_character_at( workspace->x, workspace->y, 'p', core( workspace ), Blue, workspace->shared );
 workspace->queue[0] = 42;
 workspace->queue[1] = 42;
 workspace->queue[2] = 42;

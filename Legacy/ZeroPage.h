@@ -210,6 +210,10 @@ struct __attribute__(( packed )) OsbyteVars {
   uint8_t pad2[3];
 };
 
+typedef struct {
+  uint32_t orr;
+  uint32_t eor;
+} EcfOraEor[8];
 
 typedef struct {
   uint32_t vectors_and_fiq[0x40];
@@ -580,7 +584,7 @@ typedef struct {
 
       uint32_t XShftFactor ; // Number of places to shift XCoord in address generation,
       // holds 2,3,4 or 5 for 8,4,2,1 bits per pixel respectivly
-      uint32_t *GColAdr ; // Address of Ecf to plot - either FgEcf or BgEcf
+      EcfOraEor *GColAdr ; // FgEcfOraEor, BgEcfOraEor, Invert, or NoEffect afaik 12/21
 
       uint32_t ScreenStart ; // Start address of screen (for VDU drivers)
 
@@ -843,11 +847,11 @@ typedef struct {
 
       uint8_t  AlignSpace64_1[2];
 
-      uint32_t FgEcfOraEor[16]; // Interleaved zgora & zgeor
+      EcfOraEor FgEcfOraEor; // Interleaved zgora & zgeor
 
-      uint32_t BgEcfOraEor[16]; // Interleaved zgora & zgeor
+      EcfOraEor BgEcfOraEor; // Interleaved zgora & zgeor
 
-      uint32_t BgEcfStore[16];  // Interleaved zgora & zgeor to store background
+      EcfOraEor BgEcfStore;  // Interleaved zgora & zgeor to store background
 
       uint32_t LineDotCnt ; // Count down to restarting pattern
       uint32_t LineDotPatLSW ; // Current state of pattern LSWord
