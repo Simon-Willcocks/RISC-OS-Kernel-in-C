@@ -127,7 +127,6 @@ failed:
 
 static error_block *run_command( module *m, uint32_t code_offset, const char *params, uint32_t count )
 {
-WriteNum( code_offset + (uint32_t) m->header ); // 22504
   error_block *error = 0;
   register uint32_t non_kernel_code asm( "r14" ) = code_offset + (uint32_t) m->header;
   register uint32_t *private_word asm( "r12" ) = m->private_word;
@@ -1069,7 +1068,7 @@ void init_module( const char *name )
   workspace.kernel.start_time = 0x0101010101ull;
 
 #ifdef DEBUG__SHOW_MODULE_INIT
-  WriteS( "\x09NIT: " );
+  WriteS( "INIT: " );
   Write0( name );
 #endif
 
@@ -1233,7 +1232,7 @@ void init_modules()
     workspace.kernel.env = title_string( header );
 
 #ifdef DEBUG__SHOW_MODULE_INIT
-    WriteS( "\x09NIT: " );
+    WriteS( "INIT: " );
     Write0( workspace.kernel.env );
 #endif
     if (!excluded( workspace.kernel.env )) {
@@ -1444,7 +1443,9 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
   register uint32_t *regs;
   asm ( "push { r0-r11 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
 
+#ifdef DEBUG__SHOW_OS_BYTE
   WriteS( "OS_Byte " );
+#endif
 
   switch (r0) {
   case 0x47: // Read/Write alphabet or keyboard
@@ -1461,7 +1462,9 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     break;
   case 0xa1:
     {
+#ifdef DEBUG__SHOW_OS_BYTE
     WriteS( "Read CMOS " ); WriteNum( r1 ); WriteS( " " ); WriteNum( r2 );
+#endif
     switch (r1) {
 
     // No loud beep, scrolling allowed, no boot from disc, serial data format code 0
@@ -1535,12 +1538,16 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
 #endif
     default: WriteS( " CMOS byte " ); WriteNum( r1 ); asm ( "bkpt 61" );
     }
+#ifdef DEBUG__SHOW_OS_BYTE
     WriteS( " = " ); WriteNum( regs[2] );
+#endif
     }
     break;
   case 0xa2:
     {
+#ifdef DEBUG__SHOW_OS_BYTE
     WriteS( "Write CMOS " ); WriteNum( r1 ); WriteS( " " ); WriteNum( r2 );
+#endif
     switch (r1) {
     case 0x10: WriteS( "Misc flags" ); break;
     default: asm ( "bkpt 71" );
@@ -1549,6 +1556,7 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     break;
   case 0xa8 ... 0xff:
     {
+#ifdef DEBUG__SHOW_OS_BYTE
     if (r1 == 0 && r2 == 255) {
       WriteS( " read " );
     }
@@ -1559,6 +1567,7 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
       WriteS( " " ); WriteNum( r1 );
       WriteS( " " ); WriteNum( r2 );
     }
+#endif
     // All treated the same, a place for storing a byte.
     // "; All calls &A8 to &FF are implemented together."
     // "; <NEW VALUE> = (<OLD VALUE> AND R2 ) EOR R1"
@@ -1570,8 +1579,13 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     *v = ((*v) & r2) ^ r1;
 
     switch (r0) {
+#ifdef DEBUG__SHOW_OS_BYTE
     case 0xc6: WriteS( " Exec handle" ); break;
     case 0xc7: WriteS( " Spool handle" ); break;
+#else
+    case 0xc6: break;
+    case 0xc7: break;
+#endif
     default: asm( "bkpt 81" ); // Catch used variables I haven't identified yet
     }
     }
@@ -1587,7 +1601,9 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
     break;
   default: asm ( "bkpt 91" );
   }
+#ifdef DEBUG__SHOW_OS_BYTE
   NewLine;
+#endif
   asm ( "pop { r0-r11, pc }" );
 }
 
@@ -1605,10 +1621,6 @@ WriteFunc;
 
 bool do_OS_WriteC( svc_registers *regs )
 {
-if (regs->r[0] == 0) {
-  register int r0 asm( "r0" ) = regs->lr;
-  asm ( "bkpt 15" : : "r" (r0) );
-}
   return run_vector( 3, regs );
 }
 
@@ -1946,7 +1958,10 @@ static error_block *run_module_command( const char *command )
             return &mistake;
           }
 
-          WriteS( "Running command " ); Write0( command ); WriteS( " in " ); Write0( title_string( header ) ); WriteS( " at " ); WriteNum( c->code_offset ); NewLine;
+#ifdef DEBUG__SHOW_COMMANDS
+          WriteS( "Running command " ); Write0( command ); WriteS( " in " ); Write0( title_string( header ) ); WriteS( " at " ); WriteNum( c->code_offset + (uint32_t) header ); NewLine;
+#endif
+
           return run_command( m, c->code_offset, params, count );
         }
       }
@@ -2163,9 +2178,25 @@ WriteS( "Page size 0x1000" );
   workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPP = 5;
   workspace.vectors.zp.VduDriverWorkSpace.ws.ScrRCol = 0;
   workspace.vectors.zp.VduDriverWorkSpace.ws.ScrBRow = 0;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.XShftFactor = 0;
 
+  // These three read together in vduplot
+  workspace.vectors.zp.VduDriverWorkSpace.ws.XShftFactor = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GColAdr = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcf;
   workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenStart = (uint32_t) &frame_buffer;
+
+  // The above is set from this, in Kernel/s/vdu/vdugrafl:
+  workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayScreenStart = (uint32_t) &frame_buffer;
+
+  // This is something to do with the colour to be written, set a recognisable value, and see if it changes
+  workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcf[0] = 0x77777777;
+  // Changed by instruction at 0xfc030fb0 (to 0xffffffff)
+  // Then to zero at instruction at 0xfc030f08
+  // Then ScreenStart is set to 0x32803c4c at 0xfc03a59c (lr = 0xfc02e8e4)
+  // 0xffffffff at 0xfc030f08
+  // 0xfc03a59c changes ScreenStart back to &frame_buffer
+  // 0xfc030f08 zeros
+
+
   workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenEndAddr = (uint32_t) &(&frame_buffer)[1920*1080-1];
   workspace.vectors.zp.VduDriverWorkSpace.ws.TotalScreenSize = 1920 * 1080 * 4;
   workspace.vectors.zp.VduDriverWorkSpace.ws.TrueVideoPhysAddr = (uint32_t) &frame_buffer;
@@ -2197,6 +2228,16 @@ WriteS( "Page size 0x1000" );
     asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
   }
 
+for (int y = 100; y < 1000; y++ ) { // Get ExportedHLine working...
+  register uint32_t left asm( "r0" ) = workspace.core_number * 100;
+  register uint32_t right asm( "r2" ) = workspace.core_number * 100 + 50;
+  register uint32_t yy asm( "r1" ) = y;
+  register uint32_t mode asm( "r3" ) = 1;
+
+  asm ( "blx %[code]" : : [code] "r" (0xfc0342ac), "r" (left), "r" (right), "r" (yy), "r" (mode) : "lr", "cc" );
+}
+  for (;;) { asm ( "wfi" ); }
+
   init_modules();
 /*
   init_module( "UtilityModule" );
@@ -2213,6 +2254,21 @@ WriteS( "Page size 0x1000" );
   init_module( "FontManager" );
   init_module( "ROMFonts" );
 */
+
+  // To avoid problems in SWIPlot Kernel/s/vdu/vduswis
+  // Rather than doing its job, it will put a stream of characters into the WrchV queue, if
+  //  * the WrchV handler is not the default (in the unused VecPtrTab, assuming anything above 0xfc000000 is default
+  //  * either WrchDest or SpoolFileH are not zero
+  //  * there's anything in the VDU queue
+  //  * the VduDisabled bit is set in CursorFlags (0x4000000, bit 26?)
+  //  * the ModeFlag_NonGraphic bit is set in ModeFlags (1, bit 0)
+  workspace.vectors.zp.VecPtrTab[3] = 0xffffffe0;
+WriteS( "Setting up legacy values for SWIPlot " ); WriteNum( workspace.vectors.zp.OsbyteVars.VDUqueueItems );
+WriteS( ", " ); WriteNum( workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags );
+WriteS( ", " ); WriteNum( workspace.vectors.zp.VduDriverWorkSpace.ws.ModeFlags );
+NewLine;
+  workspace.vectors.zp.OsbyteVars.VDUqueueItems = 0; // Isn't this already zeroed?
+  // Will cause an exception if it's actually followed, but BranchNotJustUs just checks if it's "in ROM"
 
   NewLine; WriteS( "All modules initialised, starting USR mode code" ); NewLine;
 
@@ -2692,6 +2748,51 @@ OSCLI( "Echo Hello" );
 // OSCLI( "Eval 1 + 1" ); Fails with data abort attempting to read from 0 
 // OSCLI( "ROMModules" ); Fails with lots of Buffer overflows.
 
+  if (core_number == 0) { // Sprite Save Area experiments
+{
+    register uint32_t code asm( "r0" ) = 62;
+    register uint32_t area asm( "r1" ) = 0;
+    register uint32_t screen asm( "r2" ) = 0;
+    register uint32_t save_area_size asm( "r3" );
+    WriteS( "Reading Save Area Size... " );
+    asm ( "svc %[swi]" : "=r" (save_area_size) : [swi] "i" (OS_SpriteOp), "r" (code), "r" (area), "r" (screen) );
+    WriteS( "Save Area Size: " ); WriteNum( save_area_size ); NewLine;
+}
+{
+    uint32_t my_save_area[384/4]; // Don't use a fixed array like this!
+    my_save_area[0] = 0; // Uninitialised
+
+    register uint32_t code asm( "r0" ) = 60;
+    register uint32_t area asm( "r1" ) = 0;
+    register uint32_t screen asm( "r2" ) = 0;
+    register uint32_t save_area asm( "r3" ) = my_save_area;
+    register uint32_t restore_code asm( "r0" );
+    register uint32_t restore_area asm( "r1" );
+    register uint32_t restore_screen asm( "r2" );
+    register uint32_t restore_save_area asm( "r3" );
+    asm ( "svc %[swi]" 
+          : "=r" (restore_code), "=r" (restore_area), "=r" (restore_screen), "=r" (restore_save_area)
+          : [swi] "i" (OS_SpriteOp), "r" (code), "r" (area), "r" (screen), "r" (save_area) );
+
+    struct {
+      uint32_t code;
+      uint32_t area;
+      uint32_t screen;
+      uint32_t save_area;
+    } restore = { restore_code, restore_area, restore_screen, restore_save_area };
+{
+    register uint32_t restore_code asm( "r0" ) = restore.code;
+    register uint32_t restore_area asm( "r1" ) = restore.area;
+    register uint32_t restore_screen asm( "r2" ) = restore.screen;
+    register uint32_t restore_save_area asm( "r3" ) = restore.save_area;
+    asm ( "svc %[swi]" 
+          :
+          : [swi] "i" (OS_SpriteOp), "r" (restore_code), "r" (restore_area), "r" (restore_screen), "r" (restore_save_area) );
+WriteS( "Restore codes: " ); WriteNum( restore.code ); WriteS( ", " ); WriteNum( restore.area ); WriteS( ", " ); WriteNum( restore.screen ); WriteS( ", " ); WriteNum( restore.save_area ); NewLine;
+}
+}
+  }
+
   WriteS( "\\n\\rLoading sprite\\n\\r" );
   const char sprite_file[] = "Resources:$.Resources.Wimp.Sprites";
 
@@ -2742,7 +2843,9 @@ if (font > 255) {
 }
   WriteS( "Found font " ); WriteNum( font ); NewLine;
 
-  SetColour( (1 << 6), Blue );
+  uint32_t core_colours[4] = { Red, Blue, Green, Yellow };
+
+  SetColour( (1 << 6), core_colours[core_number] );
 //  SetColour( (1 << 6) | (1 << 4), Yellow ); // This doesn't seem to do anything
 
   // This doesn't seem to do anything, but not having it means no colour is set!
@@ -2750,9 +2853,24 @@ if (font > 255) {
 
 // OS units, not pixels?
 const char string[] = "H      e"; //ello world?"; // { 19, 0, 255, 0, 255, 255, 0, 'H', 'e', 'l', 'l', 'o', ' ', 'W', 'o', 'r', 'l', 'd', '\0' };
+// Comes out on top of each other; there's a direction setting for text, maybe it's set to 0, when it should be +/-1?
 WriteS( "Writing" ); NewLine;
 Font_Paint( font, string, (1 << 4), 1000 + 1000 * core_number, 800, sizeof( string ) );
 
+{
+  register uint32_t type asm( "r0" ) = 4; // Move, absolute
+  register uint32_t x asm( "r1" ) = 100;
+  register uint32_t y asm( "r2" ) = 1000;
+  asm ( "svc %[swi]" : : [swi] "i" (OS_Plot), "r" (type), "r" (x), "r" (y) );
+}
+
+    SetColour( 0, 0x4c4c4c );
+
+static const char triangle[] = { 42, 25, 4, 100, 0, 100, 0, 25, 4, 0xe8, 3, 0xe8, 3, 25, 85, 0xe8, 3, 100, 0, 42 };
+for (int i = 0; i < number_of( triangle ); i++) {
+  register char c asm( "r0" ) = triangle[i];
+  asm ( "svc 0" : : "r" (c) );
+}
   for (int loop = 0;; loop++) {
 
     matrix[0] =  draw_cos( angle );

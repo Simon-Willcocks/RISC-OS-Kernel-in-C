@@ -587,7 +587,7 @@ R8 	Pointer to name of area
     break;
   case 27:
     {
-      WriteS( "\\x08 Lying to the Wimp (probably) about free memory" );
+      WriteS( "Lying to the Wimp (probably) about free memory" );
       regs->r[2] = 500;
     }
     break;

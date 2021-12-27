@@ -1461,7 +1461,7 @@ static swifn os_swis[256] = {
   [OS_SubstituteArgs] =  do_OS_SubstituteArgs,
 
   [OS_PrettyPrint] =  do_OS_PrettyPrint,
-  [OS_Plot] =  do_OS_Plot,
+  // [OS_Plot] =  do_OS_Plot,
   [OS_WriteN] =  do_OS_WriteN,
   [OS_AddToVector] =  do_OS_AddToVector,
 
@@ -1623,15 +1623,24 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
       asm ( "bkpt 15" );
     }
     else {
-      if (e->code != 0x124 && number != 0x61506) {
-        WriteNum( number );
-        WriteS( " " );
-        WriteNum( r0 );
-        WriteS( " " );
-        WriteNum( regs->r[1] );
-        WriteS( " " );
-        WriteNum( regs->r[2] );
-        WriteS( " \\x18" ); Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
+      switch (number) {
+      case 0x61500 ... 0x6153f: // MessageTrans
+      case 0x63040 ... 0x6307f: // Territory
+      case 0x606c0 ... 0x606ff: // Hourglass
+        break;
+      default:
+        if (e->code != 0x124) {
+          WriteNum( number );
+          WriteS( " " );
+          WriteNum( r0 );
+          WriteS( " " );
+          WriteNum( regs->r[1] );
+          WriteS( " " );
+          WriteNum( regs->r[2] );
+          WriteS( " " );
+          Write0( (char *)(regs->r[0] + 4 ) );
+          NewLine;
+        }
       }
     }
 

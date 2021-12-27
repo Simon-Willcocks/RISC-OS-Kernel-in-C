@@ -19,6 +19,8 @@
  * In time, this should all be made to disappear.
  */
 
+#define PAD( n ) uint8_t pad##__LINE__[n];
+
 struct DANode {
   uint32_t DANode_Link; //  points to next node (in address order)
   uint32_t DANode_Number; //  number of this area
@@ -44,117 +46,117 @@ struct __attribute__(( packed )) OsbyteVars {
   uint8_t KBTran[2]; // &AC,&AD
   uint8_t VDUvars[2]; // &AE,&AF
 
-  uint8_t CFStime[1]; // &B0
-  uint8_t InputStream[1]; // &B1
-  uint8_t KeyBdSema[1]; // &B2
+  uint8_t CFStime; // &B0
+  uint8_t InputStream; // &B1
+  uint8_t KeyBdSema; // &B2
 
-  uint8_t ROMPollSema[1]; // &B3
-  uint8_t OSHWM[1]; // &B4
+  uint8_t ROMPollSema; // &B3
+  uint8_t OSHWM; // &B4
 
-  uint8_t RS423mode[1]; // &B5
-  uint8_t NoIgnore[1]; // &B6
-  uint8_t CFSRFS[1]; // &B7
+  uint8_t RS423mode; // &B5
+  uint8_t NoIgnore; // &B6
+  uint8_t CFSRFS; // &B7
   uint8_t VULAcopy[2]; // &B8,&B9
 
-  uint8_t ROMatBRK[1]; // &BA
-  uint8_t BASICROM[1]; // &BB
+  uint8_t ROMatBRK; // &BA
+  uint8_t BASICROM; // &BB
 
-  uint8_t ADCchanel[1]; // &BC
-  uint8_t ADCmaxchn[1]; // &BD
-  uint8_t ADCconv[1]; // &BE
+  uint8_t ADCchanel; // &BC
+  uint8_t ADCmaxchn; // &BD
+  uint8_t ADCconv; // &BE
 
-  uint8_t RS423use[1]; // &BF
-  uint8_t RS423conflag[1]; // &C0
+  uint8_t RS423use; // &BF
+  uint8_t RS423conflag; // &C0
 
-  uint8_t FlashCount[1]; // &C1
-  uint8_t SpacPeriod[1]; // &C2
-  uint8_t MarkPeriod[1]; // &C3
+  uint8_t FlashCount; // &C1
+  uint8_t SpacPeriod; // &C2
+  uint8_t MarkPeriod; // &C3
 
-  uint8_t KeyRepDelay[1]; // &C4
-  uint8_t KeyRepRate[1]; // &C5
+  uint8_t KeyRepDelay; // &C4
+  uint8_t KeyRepRate; // &C5
 
-  uint8_t ExecFileH[1]; // &C6
-  uint8_t SpoolFileH[1]; // &C7
+  uint8_t ExecFileH; // &C6
+  uint8_t SpoolFileH; // &C7
 
-  uint8_t ESCBREAK[1]; // &C8 (200)
+  uint8_t ESCBREAK; // &C8 (200)
 
-  uint8_t KeyBdDisable[1]; // &C9
-  uint8_t KeyBdStatus[1]; // &CA
+  uint8_t KeyBdDisable; // &C9
+  uint8_t KeyBdStatus; // &CA
 
-  uint8_t RS423HandShake[1]; // &CB
-  uint8_t RS423InputSupr[1]; // &CC
-  uint8_t RS423CFSFlag[1]; // &CD
+  uint8_t RS423HandShake; // &CB
+  uint8_t RS423InputSupr; // &CC
+  uint8_t RS423CFSFlag; // &CD
 
-  uint8_t EconetOScall[1]; // &CE
-  uint8_t EconetOSrdch[1]; // &CF
-  uint8_t EconetOSwrch[1]; // &D0
+  uint8_t EconetOScall; // &CE
+  uint8_t EconetOSrdch; // &CF
+  uint8_t EconetOSwrch; // &D0
 
-  uint8_t SpeechSupr[1]; // &D1
-  uint8_t SoundSupr[1]; // &D2
+  uint8_t SpeechSupr; // &D1
+  uint8_t SoundSupr; // &D2
 
-  uint8_t BELLchannel[1]; // &D3
-  uint8_t BELLinfo[1]; // &D4
-  uint8_t BELLfreq[1]; // &D5
-  uint8_t BELLdur[1]; // &D6
+  uint8_t BELLchannel; // &D3
+  uint8_t BELLinfo; // &D4
+  uint8_t BELLfreq; // &D5
+  uint8_t BELLdur; // &D6
 
-  uint8_t StartMessSupr[1]; // &D7
+  uint8_t StartMessSupr; // &D7
 
-  uint8_t SoftKeyLen[1]; // &D8
+  uint8_t SoftKeyLen; // &D8
 
-  uint8_t PageModeLineCount[1]; // &D9
+  uint8_t PageModeLineCount; // &D9
 
-  uint8_t VDUqueueItems[1]; // &DA
+  uint8_t VDUqueueItems; // &DA
 
-  uint8_t TABch[1]; // &DB
-  uint8_t ESCch[1]; // &DC
+  uint8_t TABch; // &DB
+  uint8_t ESCch; // &DC
 
   uint8_t IPbufferCh[4]; // &DD,&DE,&DF,&E0
   uint8_t RedKeyCh[4]; // &E1,&E2,&E3,&E4
 
-  uint8_t ESCaction[1]; // &E5
-  uint8_t ESCeffect[1]; // &E6
+  uint8_t ESCaction; // &E5
+  uint8_t ESCeffect; // &E6
 
-  uint8_t u6522IRQ[1]; // &E7
-  uint8_t s6850IRQ[1]; // &E8
-  uint8_t s6522IRQ[1]; // &E9
+  uint8_t u6522IRQ; // &E7
+  uint8_t s6850IRQ; // &E8
+  uint8_t s6522IRQ; // &E9
 
-  uint8_t TubeFlag[1]; // &EA
+  uint8_t TubeFlag; // &EA
 
-  uint8_t SpeechFlag[1]; // &EB
+  uint8_t SpeechFlag; // &EB
 
-  uint8_t WrchDest[1]; // &EC
-  uint8_t CurEdit[1]; // &ED
+  uint8_t WrchDest; // &EC
+  uint8_t CurEdit; // &ED
 
-  uint8_t KeyBase[1]; // &EE
-  uint8_t Shadow[1]; // &EF
-  uint8_t Country[1]; // &F0
+  uint8_t KeyBase; // &EE
+  uint8_t Shadow; // &EF
+  uint8_t Country; // &F0
 
-  uint8_t UserFlag[1]; // &F1
+  uint8_t UserFlag; // &F1
 
-  uint8_t SerULAreg[1]; // &F2
+  uint8_t SerULAreg; // &F2
 
-  uint8_t TimerState[1]; // &F3
+  uint8_t TimerState; // &F3
 
-  uint8_t SoftKeyConsist[1]; // &F4
+  uint8_t SoftKeyConsist; // &F4
 
-  uint8_t PrinterDrivType[1]; // &F5
-  uint8_t PrinterIgnore[1]; // &F6
+  uint8_t PrinterDrivType; // &F5
+  uint8_t PrinterIgnore; // &F6
 
   uint8_t BREAKvector[3]; // &F7,&F8,&F9
 
-  uint8_t MemDriver[1]; // &FA - where the VDU drivers write to
-  uint8_t MemDisplay[1]; // &FB - where we display from
+  uint8_t MemDriver; // &FA - where the VDU drivers write to
+  uint8_t MemDisplay; // &FB - where we display from
 
-  uint8_t LangROM[1]; // &FC
+  uint8_t LangROM; // &FC
 
-  uint8_t LastBREAK[1]; // &FD
+  uint8_t LastBREAK; // &FD
 
-  uint8_t KeyOpt[1]; // &FE
+  uint8_t KeyOpt; // &FE
 
-  uint8_t StartOptions[1]; // &FF
+  uint8_t StartOptions; // &FF
 
-  uint8_t SerialInHandle[1]; // Handle for serial input stream  (0 if not open currently)
-  uint8_t SerialOutHandle[1]; // Handle for serial output stream (-----------""----------)
+  uint8_t SerialInHandle; // Handle for serial input stream  (0 if not open currently)
+  uint8_t SerialOutHandle; // Handle for serial output stream (-----------""----------)
 
         // AlignSpace
 
@@ -172,38 +174,40 @@ struct __attribute__(( packed )) OsbyteVars {
 // Event generated when Zero is reached
 // bottom byte aligned to word boundary
 
-  uint8_t SecondsTime[1]; // the soft copy (centi-)seconds of the RTC
-  uint8_t CentiTime[1]; // """"""""""""""""""""""""""""""""""""""""
+  uint8_t SecondsTime; // the soft copy (centi-)seconds of the RTC
+  uint8_t CentiTime; // """"""""""""""""""""""""""""""""""""""""
 
-  uint8_t FlashState[1]; // which flash colours are we using
+  uint8_t FlashState; // which flash colours are we using
 
-  uint8_t SecondsDirty[1]; // the dirty flag for start up!
+  uint8_t SecondsDirty; // the dirty flag for start up!
 
-  uint8_t MinTick[1]; // the minutes odd/even state
+  uint8_t MinTick; // the minutes odd/even state
 
-  uint8_t DCDDSRCopy[1]; // copy of ACIA bits to check for change
+  uint8_t DCDDSRCopy; // copy of ACIA bits to check for change
 
-  uint8_t TVVertical[1]; // *TV first parameter
+  uint8_t TVVertical; // *TV first parameter
 
-  uint8_t TVInterlace[1]; // *TV second parameter
+  uint8_t TVInterlace; // *TV second parameter
 
-  uint8_t CentiCounter[1]; // Counter for VDU CTRL timing
+  uint8_t CentiCounter; // Counter for VDU CTRL timing
 
-  uint8_t Alphabet[1]; // Current alphabet number
+  uint8_t Alphabet; // Current alphabet number
 
-  uint8_t Keyboard[1]; // Current keyboard number
+  uint8_t Keyboard; // Current keyboard number
 
-  uint8_t KeyAlphabet[1]; // Alphabet associated with current keyboard
+  uint8_t KeyAlphabet; // Alphabet associated with current keyboard
 
   char PrinterPrefix[sizeof( "PrinterType$" )]; // -1?
 
   char PrinterTypeName[sizeof( "PrinterType$" )+6];
 
         // AlignSpace
+  uint8_t pad[2];
 
   uint8_t SerialFlags[4]; // New serial flags
 
-  uint8_t XONXOFFChar[1]; // Character to send before rest (0 if none)
+  uint8_t XONXOFFChar; // Character to send before rest (0 if none)
+  uint8_t pad2[3];
 };
 
 
@@ -230,9 +234,9 @@ typedef struct {
       uint32_t PAbHan;
       uint32_t DAbHan;
       uint32_t AdXHan;
-      uint32_t ErrHan;
+      uint32_t ErrHan;          // 0x130
       uint32_t ErrBuf;
-      uint32_t ErrHan_ws;
+      uint32_t ErrHan_ws;       // 0x138
       uint32_t CallAd_ws; //  smart Rs ordering:
       uint32_t CallAd; //  can do LDMIA of r12, pc
       uint32_t CallBf;
@@ -343,13 +347,14 @@ typedef struct {
   uint32_t IICBus_Base[5][3];        // #    IICBus_Size*IICBus_Count
   uint32_t PageTable_PageFlags; //  Page flags used for page tables. L2PT uses this directly, L1PT adds in PageFlags_Unavailable.
                   // AlignSpace 16   ; skipped bit must end on 16-byte boundary (ClearPhysRAM does 4 words at a time for skipped areas)
+  PAD( 12 );
   // SkippedTablesEnd #      0
   // NVRAM support
-  uint8_t  NVRamSize; //  Size of NVRam (E2ROM & CMOS) fitted in 256byte units
+  uint8_t  NVRamSize; //  Size of NVRam (E2ROM & CMOS) fitted in 256byte units  ffff0350
   uint8_t  NVRamBase; //  Base of NVRam
   uint8_t  NVRamSpeed; //  Clock hold time in 0.5us units
   uint8_t  NVRamPageSize; //  Page size for writing (log2)
-  uint8_t  NVRamWriteSize; //  Size of writable region (256byte units)
+  uint8_t  NVRamWriteSize; //  Size of writable region (256byte units)          ffff0354
                      // AlignSpace
   struct DANode AppSpaceDANode; // Dummy area node for application space (not on list)
   struct DANode FreePoolDANode; // Area node for free pool
@@ -361,7 +366,7 @@ typedef struct {
   uint32_t DeviceTable; //  pointer to table
 
   // Unused
-  uint32_t ProcVec_Branch0; //  Branch through zero
+  uint32_t ProcVec_Branch0; //  Branch through zero     ffff0420
   uint32_t ProcVec_UndInst; //  Undefined instruction vector
   uint32_t ProcVec_SWI; //  SWI vector
   uint32_t ProcVec_PrefAb; //  Prefetch abort vector
@@ -371,54 +376,51 @@ typedef struct {
   uint32_t ProcVecPreVeneers[4];
 
   uint32_t ExtendedROMFooter; //  Pointer to the extended ROM footer structure. 0 if not initialised, -1 if not found.
-  uint32_t CPUFeatures[2];
+  uint32_t CPUFeatures[2];      // ffff0450
 
-  uint8_t free[0xb4]; // e0]; // Kernel/hdr/ExportVals/values
+  uint8_t pad1[0xa8];
 
-  uint32_t CamMapCorruptDebugBlock[16]; // somewhere to dump registers in case of emergency
+  uint32_t CamMapCorruptDebugBlock[16]; // somewhere to dump registers in case of emergency   ffff0500
   uint32_t MaxCamEntry32; //  maximum index into the cam map which has a
                                   // 32bit physical address, for easy detection by
                                   // page number (all RAM banks with 32bit
                                   // addresses come first)
-  uint8_t padding[0x24]; // Kernel/hdr/ExportVals/values
+  uint8_t padding[0x20]; // Kernel/hdr/ExportVals/values
 
   uint32_t CamEntriesPointer; //  points to where CAM soft copy is
-  uint32_t MaxCamEntry; //  maximum index into the cam map, ie
+  uint32_t MaxCamEntry; //  maximum index into the cam map, ie                          ffff0568
                                   // 511 for 16MByte machines, 383 for 12MBytes
                                   // 255 for 8MBytes, otherwise 127
   uint32_t RAMLIMIT; //  Number of pages of RAM
   uint32_t ROMPhysAddr;
   uint32_t HiServ_ws;
   uint32_t HiServ;
-  uint32_t SExitA;
-  uint32_t SExitA_ws;
+  uint32_t SExitA;      // ffff057c
+  uint32_t SExitA_ws;   // ffff0580
   uint32_t UpCallHan_ws;
   uint32_t UpCallHan;
   uint32_t ROMModuleChain; //  pointer to head of ROM module chain
-  // now a section that it's handy to have in simply loadable places
-               // AlignSpace 16
-  uint8_t KeyWorkSpace[0x200];
+  uint8_t KeyWorkSpace[0x200];          // ffff0590
 
-  uint32_t ChocolateCBBlocks; //  -> array of quick access blocks for Callback
+  uint32_t ChocolateCBBlocks; //  -> array of quick access blocks for Callback          ffff0790
   uint32_t ChocolateSVBlocks; //  -> array of quick access blocks for software vectors
   uint32_t ChocolateTKBlocks; //  -> array of quick access blocks for tickers
   uint32_t ChocolateMRBlocks; //  -> array of blocks for ROM module nodes (reduces no. of individual blocks in heap)
   uint32_t ChocolateMABlocks; //  -> array of blocks for active module nodes (reduces no. of individual blocks in heap)
   uint32_t ChocolateMSBlocks; //  -> array of blocks for module SWI hash nodes (reduces no. of individual blocks in heap)
   // !!!! Free Space (40 bytes)
-  uint8_t OldSWIHashspace[10];
+  uint32_t OldSWIHashspace[10];
   uint32_t Module_List;
-  uint32_t Curr_Active_Object;
+  uint32_t Curr_Active_Object;          // Should be 7d4
   // Vector Claim & Release tables etc
-  uint32_t VecPtrTab[96];
-  uint32_t ExceptionDump;
-  uint8_t spare[68+12]; // 12 is AlignSpace
-              // AlignSpace  16 ; Ensures we can MOV rn, #OsbyteVars if <=&1000
+  uint32_t VecPtrTab[96];               // Should be 7d8
+  uint32_t ExceptionDump;               // ffff0958
+  uint8_t spare[52];
   struct OsbyteVars OsbyteVars;
                               // (and stored in) OS_Bytes &A6,&A7. SKS
 
-  uint32_t BuffInPtrs[10];
-  uint32_t BuffOutPtrs[10];
+  uint32_t BuffInPtrs[10];      // ffff0a64
+  uint32_t BuffOutPtrs[10];     // ffff0a8c
 
   uint32_t VariableList;
   // Oscli stuff
@@ -447,7 +449,7 @@ typedef struct {
 
   uint32_t Page_Size;
 
-  uint8_t CMOSRAMCache[256];
+  uint8_t CMOSRAMCache[256];    // ffff0b34
 
   uint8_t ModuleSHT_Padding0[12];
   uint32_t ModuleSWI_HashTab[128];
@@ -578,7 +580,7 @@ typedef struct {
 
       uint32_t XShftFactor ; // Number of places to shift XCoord in address generation,
       // holds 2,3,4 or 5 for 8,4,2,1 bits per pixel respectivly
-      uint32_t GColAdr ; // Address of Ecf to plot - either FgEcf or BgEcf
+      uint32_t *GColAdr ; // Address of Ecf to plot - either FgEcf or BgEcf
 
       uint32_t ScreenStart ; // Start address of screen (for VDU drivers)
 
@@ -786,7 +788,7 @@ typedef struct {
       uint32_t TCharSpaceY  ; // vertical   ------------------""-----------------
 
       uint32_t HLineAddr      ; // address of exported HLine
-      uint32_t GcolOraEorAddr ; // address of FgEcfOraEor etc
+      uint32_t *GcolOraEorAddr ; // address of FgEcfOraEor etc
 
       uint32_t BlankPalAddr  ; // address of block for blank palette
       uint32_t FirPalAddr    ; // address of block for first flash state palette

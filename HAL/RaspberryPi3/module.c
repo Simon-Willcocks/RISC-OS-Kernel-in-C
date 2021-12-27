@@ -16,7 +16,7 @@
 const unsigned module_flags = 3;
 // Bit 0: 32-bit compatible
 // Bit 1: Multiprocessing
-//   New feature: instead of one private word per core, r12 points to a shared 
+//   New feature: instead of one private word per core, r12 points to a shared
 //   word, initialised by the first core to initialise the module.
 
 // Explicitly no SWIs provided (it's the default, anyway)
@@ -76,7 +76,7 @@ void *memset(void *s, int c, size_t n)
 }
 
 #define WriteS( string ) asm ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "lr" )
-#define Write0( string ) { register uint32_t r0 asm( "r0" ) = (uint32_t) (string); asm ( "push { r0-r12, lr }\nsvc 2\n  pop {r0-r12, lr}" : : "r" (r0) ); } 
+#define Write0( string ) { register uint32_t r0 asm( "r0" ) = (uint32_t) (string); asm ( "push { r0-r12, lr }\nsvc 2\n  pop {r0-r12, lr}" : : "r" (r0) ); }
 
 // Return the relocated address of the item in the module: function or constant.
 static void * local_ptr( const void *p )
@@ -98,6 +98,8 @@ struct workspace {
   uint32_t *frame_buffer;
   struct core_workspace {
     struct workspace *shared;
+    uint8_t queued;
+    uint8_t queue[15];
     uint32_t x;
     uint32_t y;
     char display[40][60];
@@ -229,9 +231,17 @@ static void new_line( struct core_workspace *workspace )
   show_line( workspace->y, core( workspace ), Green, workspace->shared );
 }
 
-void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace *workspace )
+static void add_to_display( char c, struct core_workspace *workspace )
 {
-if (core( workspace ) == 0) { workspace->shared->uart[0] = (c < ' ' && c != '\n' && c != '\r') ? (c + '@') : c; }
+  if (core( workspace ) == 0) {
+    // Duplicate core 0 output on uart (no checks for overflows)
+    if (c < ' ' && c != '\r' && c != '\n') {
+      workspace->shared->uart[0] = '|';
+      workspace->shared->uart[0] = c + '@';
+    }
+    else
+      workspace->shared->uart[0] = c;
+  }
 
   if (workspace->x == 58 || c == '\n') {
     new_line( workspace );
@@ -240,21 +250,137 @@ if (core( workspace ) == 0) { workspace->shared->uart[0] = (c < ' ' && c != '\n'
     workspace->x = 0;
   }
 
-  if (c != '\n' && c != '\r') {
-    // This part is temporary, until the display update can be triggered by an interrupt FIXME
-    // The whole "screen" will be displayed, with a cache flush, and the top line will be (workspace->y + 1) % 40
-
-if (0 != workspace->shared->frame_buffer) {
-    if (c < ' ')
-      show_character_at( workspace->x, workspace->y, c + '@', core( workspace ), Red, workspace->shared );
-    else
-      show_character_at( workspace->x, workspace->y, c, core( workspace ), White, workspace->shared );
-
-    asm ( "svc 0xff" : : : "lr", "cc" );
-    // End of temporary implementation
+  if (c != '\n' && c != '\r') workspace->display[workspace->y][workspace->x++] = c;
 }
 
-    workspace->display[workspace->y][workspace->x++] = c;
+static void add_string( const char *s, struct core_workspace *workspace )
+{
+  s = local_ptr( s );
+  while (*s != 0) {
+    add_to_display( *s++, workspace );
+  }
+}
+
+static void add_num( uint32_t number, struct core_workspace *workspace )
+{
+  for (int nibble = 7; nibble >= 0; nibble--) {
+    char c = '0' + ((number >> (nibble*4)) & 0xf);
+    if (c > '9') c += ('a' - '0' - 10);
+    add_to_display( c, workspace );
+  }
+}
+
+int32_t int16_at( uint8_t *p )
+{
+  int32_t result = p[1];
+  result = (result << 8) | p[0];
+  return result;
+}
+
+const char *const specials[] = {
+"##ignored\n\r",
+"##Next char to printer only (ignore both)\n\r",
+"##Enable printer (ignored)\n\r",
+"##Disable printer (ignored)\n\r",
+"##Split cursors\n\r",
+"##Join cursors (print text at graphics cursor)\n\r",
+"##Enable VDU drivers (see also VDU 21 and OS_Byte 117)\n\r",
+"##Bell\n\r",
+"##Backspace (does not delete last character)\n\r",
+"##Horizontal tab\n\r",
+"##Line feed\n\r",
+"##Vertical tab (back one line)\n\r",
+"##Form feed/clear screen\n\r",
+"##Carriage return\n\r",
+"##Paged mode on\n\r",
+"##Paged mode off\n\r",
+"##Clear graphics window\n\r",
+"##Set text colour (6 bit RGB, obsolete?)\n\r",
+"##GCOL action, colour\n\r",
+"##Set palette, logical, mode, r, g, b (obsolete?)\n\r",
+"##Restore default colours\n\r",
+"##Disable screen display (see VDU 6)\n\r",
+"##Change display mode\n\r",
+"##Miscellaneous commands\n\r",
+"##Define graphics window, x1; y1; x2; y2\n\r",
+"##Plot, type, x; y;\n\r",
+"##Restore default windows\n\r",
+"##No operation\n\r",
+"##Define text window, x1, y1, x2, y2 obsolete with 4K monitors, no?\n\r",
+"##Set graphics origin, x; y;\n\r",
+"##Home text (or graphics) cursor for text\n\r",
+"##Position text cursor, x, y\n\r" };
+
+void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace *workspace )
+{
+  static const uint8_t bytes[32] = { 1, 2, 1, 1,  1, 1, 1, 1,
+                                     1, 1, 1, 1,  1, 1, 1, 1,
+                                     1, 2, 3, 6,  1, 1, 2, 21,
+                                     9, 6, 1, 1,  5, 5, 1, 3 };
+  const uint8_t *parameter_bytes = local_ptr( bytes );
+
+  if (workspace->queued != 0) {
+    workspace->queue[workspace->queued] = c;
+    workspace->queued++;
+  }
+  else if (c < ' ') {
+    // VDU codes?
+    workspace->queue[0] = c;
+    workspace->queued = 1;
+  }
+
+  if (workspace->queued != 0) {
+    if (workspace->queued == parameter_bytes[workspace->queue[0]]) {
+      // Got all the bytes we need to perform the action
+      workspace->queued = 0;
+
+      switch (workspace->queue[0]) {
+      case 10: add_to_display( c, workspace ); break;       // Line feed
+      case 13: add_to_display( c, workspace ); break;       // Carriage return
+      case 25: // Plot
+        {
+          uint8_t type = workspace->queue[1];
+          int32_t x = int16_at( &workspace->queue[2] );
+          int32_t y = int16_at( &workspace->queue[4] );
+          register rt asm( "r0" ) = type;
+          register rx asm( "r1" ) = x;
+          register ry asm( "r2" ) = y;
+          asm ( "svc %[swi]" : : [swi] "i" (0x20045), "r" (rt), "r" (rx), "r" (ry) : "lr", "cc" );
+add_to_display( 'P', workspace );
+workspace->queue[0] = 42;
+workspace->queue[1] = 42;
+workspace->queue[2] = 42;
+workspace->queue[3] = 42;
+workspace->queue[4] = 42;
+workspace->queue[5] = 42;
+workspace->queue[6] = 42;
+workspace->queue[7] = 42;
+workspace->queue[8] = 42;
+        }
+        break;
+      default:
+        {
+          const char *const *s = local_ptr( specials );
+          add_string( s[workspace->queue[0]], workspace );
+          asm ( "bkpt 1" ); break;
+        }
+      }
+    }
+  }
+  else {
+    add_to_display( c, workspace );
+
+    // This part is temporary, until the display update can be triggered by an interrupt FIXME
+    // The whole "screen" will be displayed, with a cache flush, and the top line will be (workspace->y + 1) % 40
+    if (0 != workspace->shared->frame_buffer) {
+      if (c < ' ')
+        show_character_at( workspace->x, workspace->y, c + '@', core( workspace ), Red, workspace->shared );
+      else
+        show_character_at( workspace->x, workspace->y, c, core( workspace ), White, workspace->shared );
+
+      asm ( "svc 0xff" : : : "lr", "cc" );
+    }
+    // End of temporary implementation
   }
 
   clear_VF();
@@ -494,6 +620,7 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   workspace->frame_buffer = map_screen_into_memory( workspace->fb_physical_address );
 
   workspace->core_specific[this_core].shared = workspace;
+  workspace->core_specific[this_core].queued = 0; // VDU code queue size, including character that started it filling
   workspace->core_specific[this_core].x = 0;
   workspace->core_specific[this_core].y = 0;
   for (int y = 0; y < 40; y++) {

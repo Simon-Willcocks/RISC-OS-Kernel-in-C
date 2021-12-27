@@ -51,7 +51,7 @@ static void solid_line( plotter plot )
 
 bool do_OS_Plot( svc_registers *regs )
 {
-asm ( "wfi" );
+asm ( "bkpt 4" );
   if (0 == (regs->r[0] & 4))
     new_relative_point( regs );
   else
