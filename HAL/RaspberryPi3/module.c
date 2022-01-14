@@ -164,10 +164,10 @@ static struct workspace *new_workspace( uint32_t number_of_cores )
 enum fb_colours {
   Black   = 0xff000000,
   Grey    = 0xff888888,
-  Blue    = 0xff0000ff,
+  Blue    = 0xffff0000,
   Green   = 0xff00ff00,
-  Red     = 0xffff0000,
-  Yellow  = 0xffffff00,
+  Red     = 0xff0000ff,
+  Yellow  = 0xff00ffff,
   Magenta = 0xffff00ff,
   White   = 0xffffffff };
 
@@ -342,21 +342,12 @@ void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace 
           uint8_t type = workspace->queue[1];
           int32_t x = int16_at( &workspace->queue[2] );
           int32_t y = int16_at( &workspace->queue[4] );
-          register rt asm( "r0" ) = type;
-          register rx asm( "r1" ) = x;
-          register ry asm( "r2" ) = y;
+          register uint32_t rt asm( "r0" ) = type;
+          register uint32_t rx asm( "r1" ) = x;
+          register uint32_t ry asm( "r2" ) = y;
           asm ( "svc %[swi]" : : [swi] "i" (0x20045), "r" (rt), "r" (rx), "r" (ry) : "lr", "cc" );
 add_to_display( 'P', workspace );
 show_character_at( workspace->x, workspace->y, 'p', core( workspace ), Blue, workspace->shared );
-workspace->queue[0] = 42;
-workspace->queue[1] = 42;
-workspace->queue[2] = 42;
-workspace->queue[3] = 42;
-workspace->queue[4] = 42;
-workspace->queue[5] = 42;
-workspace->queue[6] = 42;
-workspace->queue[7] = 42;
-workspace->queue[8] = 42;
         }
         break;
       default:
@@ -519,7 +510,7 @@ static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
   dma_tags[index++] = 0x00048006;    // Pixel order
   dma_tags[index++] = 4;
   dma_tags[index++] = 0;
-  dma_tags[index++] = 0;             // 0 = BGR, 1 = RGB
+  dma_tags[index++] = 1;             // 0 = BGR, 1 = RGB
   dma_tags[index++] = 0x00048003;    // Set physical (display) width/height
   dma_tags[index++] = 8;
   dma_tags[index++] = 0;

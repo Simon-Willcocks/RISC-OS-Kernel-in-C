@@ -160,7 +160,7 @@ memset( (void*) 0x7000, '\0', 4096 );
     da->number = 5;
     da->permissions = 6; // rw-
     da->shared = 0; // Will be, but non-shared zero size for now
-    da->virtual_page = 0xbadf00d;
+    da->virtual_page = 0xbad;
     da->pages = 0;
     da->actual_pages = da->pages;
     da->start_page = 0xbadbad;
@@ -225,6 +225,9 @@ nomem:
 
 static DynamicArea *find_DA( uint32_t n )
 {
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+WriteS( "Looking for DA " ); WriteNum( n ); NewLine;
+#endif
   DynamicArea *da = workspace.memory.dynamic_areas;
   while (da != 0 && da->number != n) {
     da = da->next;
@@ -249,7 +252,7 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs )
 {
 // https://www.riscosopen.org/forum/forums/11/topics/16963?page=1#posts-129122
 #ifdef DEBUG__WATCH_DYNAMIC_AREAS
-  WriteS( "Resizing DA " ); WriteNum( regs->r[0] ); NewLine;
+  WriteS( "Resizing DA " ); WriteNum( regs->r[0] ); WriteS( " caller " ); WriteNum( regs->lr ); NewLine;
 #endif
   DynamicArea *da = find_DA( regs->r[0] );
   int32_t resize_by = (int32_t) regs->r[1];
@@ -260,7 +263,11 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs )
   }
 
   if (resize_by == 0) { // Doing nothing
-    return true;
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+  WriteS( "Resizing DA by 0 bytes" ); NewLine;
+  WriteS( "What if this call is to ensure the callbacks are called?" ); NewLine;
+#endif
+    //return true;
   }
 
   if (0 != (resize_by & 0xfff)) {
@@ -309,9 +316,9 @@ WriteS( " permitted = " ); WriteNum( resize_by_pages << 12 ); NewLine;
 #endif
   } 
 
-  if (da->handler_routine != 0 && resize_by > 0) {
+  if (da->handler_routine != 0 && resize_by >= 0) {
 #ifdef DEBUG__WATCH_DYNAMIC_AREAS
-WriteS( "  Pre-grow " ); WriteNum( resize_by_pages << 12 );
+WriteS( "  Pre-grow +" ); WriteNum( resize_by_pages << 12 ); WriteS( ", from " ); WriteNum( da->pages << 12 ); NewLine;
 #endif
     register uint32_t code asm ( "r0" ) = 0;
     register uint32_t page_block asm ( "r1" ) = 0xbadf00d;
@@ -347,8 +354,6 @@ WriteS( " Allocate" );
     da->actual_pages = natural_alignment >> 12;
 #ifdef DEBUG__WATCH_DYNAMIC_AREAS
 WriteS( " Allocated " ); WriteNum( memory ); NewLine;
-
-WriteS( " Mapping" );
 #endif
     if (da->shared) {
       MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->actual_pages << 12 );
@@ -357,13 +362,13 @@ WriteS( " Mapping" );
       MMU_map_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->actual_pages << 12 );
     }
 #ifdef DEBUG__WATCH_DYNAMIC_AREAS
-WriteS( " Mapped" );
+WriteS( " Mapped " ); WriteNum( da->virtual_page << 12 ); NewLine;
 #endif
   }
 
   da->pages = da->pages + resize_by_pages; // Always increased (or decreased) to the next largest page
 
-  if (da->handler_routine != 0 && resize_by > 0) {
+  if (da->handler_routine != 0 && resize_by >= 0) {
 #ifdef DEBUG__WATCH_DYNAMIC_AREAS
 WriteS( " Post-grow" );
 #endif
@@ -403,11 +408,36 @@ WriteS( " Post-grow" );
 
 bool do_OS_ReadDynamicArea( svc_registers *regs )
 {
-  DynamicArea *da = find_DA( regs->r[0] );
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+  WriteS( "Reading DA " ); WriteNum( regs->r[0] ); NewLine;
+#endif
+
+  if (regs->r[0] == 0xffffffff) {
+    // Special case, PRM 5a-43
+    TaskSlot *slot = workspace.task_slot.running->slot;
+    regs->r[0] = 0x8000;
+    regs->r[1] = 0;
+    regs->r[2] = 0x1fff8000;
+
+    return true;
+  }
+
+  DynamicArea *da = find_DA( regs->r[0] & ~(1 << 7) );
 
   if (da != 0) {
+    bool max_size_requested = 0 != (regs->r[0] & (1 << 7));
+    if (max_size_requested) {
+      regs->r[2] = da->actual_pages << 12;
+    }
     regs->r[0] = da->virtual_page << 12;
     regs->r[1] = da->pages << 12;
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+  WriteS( "DA Address " ); WriteNum( regs->r[0] ); NewLine;
+  WriteS( "DA Size " ); WriteNum( regs->r[1] ); NewLine;
+  if (max_size_requested) {
+    WriteS( "DA Max Size " ); WriteNum( regs->r[2] ); NewLine;
+  }
+#endif
     return true;
   }
   // FIXME Bit 7
@@ -456,6 +486,10 @@ bool do_OS_DynamicArea( svc_registers *regs )
       // Grow to minimum of requested size and maximum size (with callbacks)
       const char *name = (void*) regs->r[8];
 
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+  WriteS( "New DA " ); WriteNum( regs->r[1] ); WriteS( " caller " ); WriteNum( regs->lr ); NewLine;
+  WriteNum( regs->r[6] ); WriteS( " " ); WriteNum( regs->r[7] ); WriteS( " " ); Write0( regs->r[8] ); NewLine;
+#endif
       DynamicArea *da = rma_allocate( sizeof( DynamicArea ) + strlen( name ) + 1, regs );
       if (da == 0) goto nomem;
 
@@ -465,6 +499,9 @@ bool do_OS_DynamicArea( svc_registers *regs )
       if (number == -1) {
         number = shared.memory.user_da_number++;
         regs->r[1] = number;
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+  WriteS( "DA Allocated number " ); WriteNum( regs->r[1] ); NewLine;
+#endif
       }
       da->number = number;
 
@@ -489,7 +526,7 @@ bool do_OS_DynamicArea( svc_registers *regs )
       }
 
       da->permissions = 6; // rw- FIXME: There's also privileged only...
-      // Only non-shared?
+      // Only non-shared? Depends on module being shared? TODO
       da->shared = 0;
       da->pages = 0;            // Initial state, allocated and expanded by OS_ChangeDynamicArea
       da->start_page = 0;       // Initial state, allocated and expanded by OS_ChangeDynamicArea
@@ -503,6 +540,9 @@ bool do_OS_DynamicArea( svc_registers *regs )
         svc_registers cda;
         cda.r[0] = da->number;
         cda.r[1] = regs->r[2];
+
+        cda.lr = 0xfeeef000;
+
         if (!do_OS_ChangeDynamicArea( &cda )) {
           regs->r[0] = cda.r[0];
           return false;

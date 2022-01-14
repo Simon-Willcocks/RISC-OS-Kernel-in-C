@@ -56,7 +56,9 @@ WriteS( "Read Vdu Var " ); WriteNum( *var ); WriteS( " = " ); WriteNum( *val ); 
 
 static bool ReadLegacyModeVariable( uint32_t selector, uint32_t var, uint32_t *val )
 {
-  uint32_t legacy_mode_vars[21][13] = {
+  static const uint32_t legacy_mode_vars[21][13] = {
+    [0]  = { 0, 79, 31, 1, 1, 2, 80, 20480, 4, 0, 0, 639, 255 },
+    [18] = { 0, 79, 63, 1, 1, 1, 80, 40960, 6, 0, 0, 639, 511 },
     [20] = { 0, 79, 63, 15, 1, 1, 320, 163840, 6, 2, 2, 639, 511 }
   };
 
@@ -64,6 +66,12 @@ static bool ReadLegacyModeVariable( uint32_t selector, uint32_t var, uint32_t *v
     return false;
 
   uint32_t *modevars = legacy_mode_vars[selector];
+
+  // Not all filled in yet
+  if (modevars[1] == 0) {
+    WriteS( "Unknown mode: " ); WriteNum( selector ); NewLine;
+    asm ( "bkpt 22" );
+  }
 
   *val = modevars[var];
 
@@ -120,7 +128,7 @@ static bool ReadRO5SpriteModeVariable( uint32_t selector, uint32_t var, uint32_t
     uint32_t raw;
   } specifier = { .raw = selector };
 
-asm( "bkpt 40" );
+asm( "bkpt 40" : : "r" (specifier) );
 
   return false;
 }

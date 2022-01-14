@@ -16,10 +16,10 @@
 enum fb_colours {
   Black   = 0xff000000,
   Grey    = 0xff888888,
-  Blue    = 0xff0000ff,
+  Blue    = 0xffff0000,
   Green   = 0xff00ff00,
-  Red     = 0xffff0000,
-  Yellow  = 0xffffff00,
+  Red     = 0xff0000ff,
+  Yellow  = 0xff00ffff,
   Magenta = 0xffff00ff,
   White   = 0xffffffff };
 

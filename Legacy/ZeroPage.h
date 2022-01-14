@@ -211,9 +211,11 @@ struct __attribute__(( packed )) OsbyteVars {
 };
 
 typedef struct {
-  uint32_t orr;
-  uint32_t eor;
-} EcfOraEor[8];
+  struct {
+    uint32_t orr;
+    uint32_t eor;
+  } line[8];
+} EcfOraEor;
 
 typedef struct {
   uint32_t vectors_and_fiq[0x40];
@@ -792,7 +794,7 @@ typedef struct {
       uint32_t TCharSpaceY  ; // vertical   ------------------""-----------------
 
       uint32_t HLineAddr      ; // address of exported HLine
-      uint32_t *GcolOraEorAddr ; // address of FgEcfOraEor etc
+      EcfOraEor *GcolOraEorAddr ; // address of FgEcfOraEor etc
 
       uint32_t BlankPalAddr  ; // address of block for blank palette
       uint32_t FirPalAddr    ; // address of block for first flash state palette
@@ -831,7 +833,7 @@ typedef struct {
       uint32_t TextFgColour; // Fg/Bg colour stored as a colour number, computed on VDU 18 and re-poked!
       uint32_t TextBgColour; //
 
-      uint32_t TextExpandArea ; // Pointer to Text expand area (in system heap)
+      void *TextExpandArea ; // Pointer to Text expand area (in system heap)
 
       uint32_t pad2[2];
 

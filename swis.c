@@ -983,25 +983,26 @@ static bool do_OS_SetColour( svc_registers *regs )
 {
   OS_SetColour_Flags flags = { .raw = regs->r[0] };
 
-  if (flags.action != 0) {
+  if (flags.action != 0 || flags.ECF_pattern) {
     return Kernel_Error_UnimplementedSWI( regs );
   }
 
-  union {
-    struct {
-      uint32_t A:8;
-      uint32_t R:8;
-      uint32_t G:8;
-      uint32_t B:8;
-    };
-    uint32_t raw;
-  } os_colour = { .raw = regs->r[1] };
-  uint32_t colour = (255 << 24) | (os_colour.R << 16) | (os_colour.G << 8) | os_colour.B;
-
-  if (flags.background)
-    workspace.vdu.vduvars[154 - 128] = colour;
-  else
-    workspace.vdu.vduvars[153 - 128] = colour;
+  EcfOraEor *ecf;
+  if (flags.background) {
+    workspace.vdu.vduvars[154 - 128] = regs->r[1];
+    ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgEcfOraEor;
+  }
+  else {
+    workspace.vdu.vduvars[153 - 128] = regs->r[1];
+    ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor;
+  }
+  for (int i = 0; i < number_of( ecf->line ); i++) {
+    // orr + eor allows you to set bits from the original pixel, or clear ones that you've set by the orr.
+    // orr => ignore these bits in the original pixel
+    // eor => invert these bits, afterwards.
+    ecf->line[i].orr = 0xffffffff;
+    ecf->line[i].eor = ~regs->r[1];
+  }
   return true;
 }
 
@@ -1607,6 +1608,9 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
   regs->spsr &= ~CF;
   return;
 }
+      switch (number) {
+      case 0x606c0 ... 0x606ff: return; // Hourglass
+      }
 
   uint32_t r0 = regs->lr;
 
@@ -1619,7 +1623,7 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
     error_block *e = (void*) regs->r[0];
 
     if (e == 0) {
-      WriteS( "Error indicated, but NULL error block\n\r" );
+      WriteS( "Error indicated, but NULL error block\\n\\r" );
       asm ( "bkpt 15" );
     }
     else {
@@ -1630,6 +1634,7 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
         break;
       default:
         if (e->code != 0x124) {
+          WriteS( "Returned error: " );
           WriteNum( number );
           WriteS( " " );
           WriteNum( r0 );
@@ -1652,6 +1657,7 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
         break;
       default:
         WriteS( "Unimplemented!" ); NewLine;
+        asm ( "bkpt 1" );
         //asm ( "bkpt 1" ); // WindowManager initialisation uses OS_DynamicArea to get free pool, and OS_Memory to allocate from it; let them continue
       }
     }

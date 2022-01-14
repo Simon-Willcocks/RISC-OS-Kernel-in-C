@@ -81,6 +81,6 @@ arm-linux-gnueabi-gcc-8 -Wall -I . \
   $* &&
 
 arm-linux-gnueabi-objcopy -R .ignoring -O binary rom.elf rom.bin &&
-arm-linux-gnueabi-objdump -x --disassemble-all rom.elf > rom.dump &&
+arm-linux-gnueabi-objdump -x --disassemble-all rom.elf | sed -n '1,/fc010000 <_binary_ro_rom_img_start>:/p' > rom.dump &&
 ls -l rom.bin
 

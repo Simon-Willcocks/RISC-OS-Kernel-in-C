@@ -73,7 +73,26 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
   if (regs[0] > 16) {
     asm( "bkpt 1" );
   }
-  handler *h = &workspace.task_slot.running->slot->handlers[regs[0]];
+
+#if 0
+  // Called for 14, from DeviceFS initialisation
+  // Do I need DeviceFS yet?
+  if (workspace.task_slot == 0 || workspace.task_slot.running == 0) {
+    regs[1] = 0;
+    regs[2] = 0;
+    regs[3] = 0;
+    return true;
+  }
+#endif
+  assert( workspace.task_slot.running != 0 );
+
+  Task *running = workspace.task_slot.running;
+
+  assert( running->slot != 0 );
+
+  TaskSlot *slot = running->slot;
+
+  handler *h = &slot->handlers[regs[0]];
   handler old = *h;
   if (regs[1] != 0) {
     h->code = regs[1];
@@ -132,9 +151,11 @@ physical_memory_block Kernel_physical_address( uint32_t va )
   }
 #endif
 
+  assert( workspace.task_slot.running != 0 );
+
   Task *running = workspace.task_slot.running;
 
-  if (running == 0) { asm ( "bkpt 54" ); }
+  assert( running->slot != 0 );
 
   TaskSlot *slot = running->slot;
 
@@ -218,6 +239,32 @@ WriteS( "Allocated TaskSlot " ); WriteNum( i ); NewLine;
   release_lock( &shared.mmu.lock );
 
   if (result == 0) for (;;) { asm ( "bkpt 32" ); } // FIXME: expand
+
+  static const handler default_handlers[17] = {
+    { 0, 0, 0 },                // RAM Limit for program (0x8000 + amount of RAM)
+    { 0xbadf00d1, 0, 0 },
+    { 0xbadf00d2, 0, 0 },
+    { 0xbadf00d3, 0, 0 },
+    { 0xbadf00d4, 0, 0 },
+    { 0xbadf00d5, 0, 0 },
+    { 0xbadf00d6, 0, 0 },
+    { 0xbadf00d7, 0, 0 },
+    { 0xbadf00d8, 0, 0 },
+    { 0xbadf00d9, 0, 0 },
+    { 0xbadf00da, 0, 0 },
+    { 0xbadf00db, 0, 0 },
+    { 0xbadf00dc, 0, 0 },
+    { 0xbadf00dd, 0, 0 },
+    { 0, 0, 0 },                // Application space (When does this not = RAM Limit?)
+    { 0xbadf00df, 0, 0 },
+    { 0xbadf00e0, 0, 0 }
+  };
+
+  for (int i = 0; i < number_of( result->handlers ); i++) {
+    assert( i < number_of( default_handlers ) );
+
+    result->handlers[i] = default_handlers[i];
+  }
 
   return result;
 }
