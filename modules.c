@@ -2452,6 +2452,14 @@ WriteS( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
 
 static void user_mode_code( int core_number )
 {
+  uint32_t font = Font_FindFont( "Trinity.Medium", 0xc0, 0xc0, 96, 96 );
+  Font_Paint( font, "HxX", 0, 100, 100, 3 );
+
+  for (;;) {}
+  __builtin_unreachable();
+}
+
+#if 0
 static uint32_t path1[] = {
  0x00000002, 0x00000400, 0xffff7400,
  0x00000008, 0x00006900, 0xffff9e00,
@@ -2790,177 +2798,22 @@ static uint32_t path3[] = {
   int angle = odd ? 0 : 22; // Starting angle
   int step = 2;
 
-  {
-    char buffer[256];
-    const char var[] = "Font$Path";
-    WriteS( "Reading " ); Write0( var ); NewLine;
-
-    register const char *var_name asm( "r0" ) = var;
-    register char *value asm( "r1" ) = buffer;
-    register uint32_t size asm( "r2" ) = sizeof( buffer )-1;
-    register uint32_t context asm( "r3" ) = 0;
-    register uint32_t convert asm( "r4" ) = 0;
-    register error_block *error;
-    asm ( "svc 0x20023\n  movvs %[error], r0\n  movvc %[error], #0" : [error] "=r" (error), "=r" (size) : "r" (var_name), "r" (value), "r" (size), "r" (context), "r" (convert) : "lr", "cc" );
-    if (error != 0) {
-      WriteS( "Error: " ); Write0( error->desc ); NewLine;
-    }
-    else {
-      WriteS( "Value size = " ); WriteNum( size ); NewLine;
-      WriteS( "Value \\\"" ); buffer[size] = '\0'; Write0( buffer ); WriteS( "\\\"" ); NewLine;
-    }
-  }
-
-  { // Try a GSTrans, it fails in FindFont
-    char buffer[256];
-    const char var[] = "<Font$Path>";
-
-    register const char *var_name asm( "r0" ) = var;
-    register char *value asm( "r1" ) = buffer;
-    register uint32_t size asm( "r2" ) = sizeof( buffer )-1;
-    register error_block *error;
-    asm ( "svc 0x20027\n  movvs %[error], r0\n  movvc %[error], #0" : [error] "=r" (error), "=r" (size) : "r" (var_name), "r" (value), "r" (size) : "lr", "cc" );
-    if (error != 0) {
-      WriteS( "Error: " ); Write0( error->desc ); NewLine;
-    }
-    else {
-      WriteS( "Value size = " ); WriteNum( size ); NewLine;
-      WriteS( "Value \\\"" ); buffer[size] = '\0'; Write0( buffer ); WriteS( "\\\"" ); NewLine;
-    }
-  }
-
 OSCLI( "Echo Hello" );
 // OSCLI( "Eval 1 + 1" ); Fails with data abort attempting to read from 0 
 // OSCLI( "ROMModules" ); Fails with lots of Buffer overflows.
 
-  if (0 && core_number == 0) { // Sprite Save Area experiments
-{
-    register uint32_t code asm( "r0" ) = 62;
-    register uint32_t area asm( "r1" ) = 0;
-    register uint32_t screen asm( "r2" ) = 0;
-    register uint32_t save_area_size asm( "r3" );
-    WriteS( "Reading Save Area Size... " );
-    asm ( "svc %[swi]" : "=r" (save_area_size) : [swi] "i" (OS_SpriteOp), "r" (code), "r" (area), "r" (screen) );
-    WriteS( "Save Area Size: " ); WriteNum( save_area_size ); NewLine;
-}
-{
-    uint32_t my_save_area[384/4]; // Don't use a fixed array like this!
-    my_save_area[0] = 0; // Uninitialised
-
-    register uint32_t code asm( "r0" ) = 60;
-    register uint32_t area asm( "r1" ) = 0;
-    register uint32_t screen asm( "r2" ) = 0;
-    register uint32_t *save_area asm( "r3" ) = my_save_area;
-    register uint32_t restore_code asm( "r0" );
-    register uint32_t restore_area asm( "r1" );
-    register uint32_t restore_screen asm( "r2" );
-    register uint32_t restore_save_area asm( "r3" );
-    asm ( "svc %[swi]" 
-          : "=r" (restore_code), "=r" (restore_area), "=r" (restore_screen), "=r" (restore_save_area)
-          : [swi] "i" (OS_SpriteOp), "r" (code), "r" (area), "r" (screen), "r" (save_area) );
-
-    struct {
-      uint32_t code;
-      uint32_t area;
-      uint32_t screen;
-      uint32_t save_area;
-    } restore = { restore_code, restore_area, restore_screen, restore_save_area };
-{
-    register uint32_t restore_code asm( "r0" ) = restore.code;
-    register uint32_t restore_area asm( "r1" ) = restore.area;
-    register uint32_t restore_screen asm( "r2" ) = restore.screen;
-    register uint32_t restore_save_area asm( "r3" ) = restore.save_area;
-    asm ( "svc %[swi]" 
-          :
-          : [swi] "i" (OS_SpriteOp), "r" (restore_code), "r" (restore_area), "r" (restore_screen), "r" (restore_save_area) );
-WriteS( "Restore codes: " ); WriteNum( restore.code ); WriteS( ", " ); WriteNum( restore.area ); WriteS( ", " ); WriteNum( restore.screen ); WriteS( ", " ); WriteNum( restore.save_area ); NewLine;
-}
-}
-  }
-
-if (0) { // SpriteOp
-  WriteS( "\\n\\rLoading sprite\\n\\r" );
-  const char sprite_file[] = "Resources:$.Resources.Wimp.Sprites";
-
-  uint8_t *sprite_file_data = read_file_into_memory( sprite_file );
-  char sprite[13] = "file_fff";
-  sprite[7] -= core_number;
-
-  const uint8_t *sprite_area = (void*) sprite_file_data - 4;
-  WriteS( "\\n\\rRendering sprite " ); Write0( sprite ); WriteS( "\\n\\r" );
-
-  {
-    // Always ensure all calculations, initialisations, etc. are before you
-    // start talking about register variables to be passed to assembler.
-    uint32_t column = 100 + core_number * 200;
-
-    register uint32_t code asm( "r0" ) = 52 | 0x100; // User sprite area, sprite name
-    register const uint8_t *file asm( "r1" ) = sprite_area;
-    register const char *sprite_name asm( "r2" ) = sprite;
-    register uint32_t x asm( "r3" ) = column;
-    register uint32_t y asm( "r4" ) = 2000; // OS Units, apparently
-    register uint32_t action asm( "r5" ) = 24; // Use mask, Translation table can be ignored
-    register uint32_t scaling asm( "r6" ) = 0;
-    register uint32_t translation asm( "r7" ) = 0;
-    asm ( "svc %[swi]" : : [swi] "i" (OS_SpriteOp), "r" (code), "r" (file), "r" (sprite_name), "r" (x), "r" (y), "r" (action), "r" (scaling), "r" (translation) );
-  }
-  WriteS( "\\n\\rRendered sprite\\n\\r" );
-}
-
-{
-char buffer[20];
-usr_OS_ConvertCardinal4( 666, buffer, sizeof( buffer ), 0, 0, 0 );
-WriteS( "666 = " ); Write0( buffer ); NewLine;
-}
-
-if (0) {
-const char *filename = "Resources:$.Resources.Alarm.Messages";
-uint32_t file_handle = open_file_to_read( filename );
-
-WriteS( "Opened file " ); Write0( filename ); WriteS( " handle: " ); WriteNum( file_handle ); NewLine;
-
-register uint32_t handle asm( "r1" ) = file_handle;
-asm ( "0: svc 0x0a\n  svccc 0\n  bcc 0b" : : "r" (handle) );
-}
-
-WriteS( "Looking for Trinity.Medium" ); NewLine;
-uint32_t font = Font_FindFont( "Trinity.Medium", 12 * 16, 12 * 16, 96, 96 );
-if (font > 255) {
-  Write0( (const char*) (font + 4) );
-}
-  WriteS( "Found font " ); WriteNum( font ); NewLine;
-
-  uint32_t core_colours[4] = { Red, Blue, Green, Yellow };
-
-  SetColour( (1 << 6), core_colours[core_number] );
-//  SetColour( (1 << 6) | (1 << 4), Yellow ); // This doesn't seem to do anything
-
-  // This doesn't seem to do anything, but not having it means no colour is set!
-  ColourTrans_SetFontColours( font, 0xffffff & Green, 0xffffff & Red, 14 );
-
-// OS units, not pixels?
-const char string[] = "HXHIHH" ; // ello world?";
-// Comes out on top of each other; there's a direction setting for text, maybe it's set to 0, when it should be +/-1?
-WriteS( "Writing" ); NewLine;
-// Coordinates are OS units, paintchar seems to have these values in r8, r7...
-Font_Paint( font, string, (1 << 4) | (1 << 8) | (1 << 7), 1000 + 400 * core_number, 800, sizeof( string ) );
-
-    SetGraphicsFgColour( 0x7280fa00 );
-
-Plot( 4, 100 + 200 * core_number, 1000 );
-for (int i = 0; i < 8; i++)
-Plot( 96 + 5, 200 + 50*(i & 1) + 200 * core_number, 1000 - 50 * i );
 
     SetGraphicsFgColour( 0x7280fa00 );
 
 WriteS( "Displaying triangle?" );
 //static const char triangle[] = { 42, 25, 4, 100, 0, 100, 0, 25, 4, 0, 0, 0xe8, 3, 25, 85, 100, 0, 0xe8, 3, 42 };
-static const char triangle[] = { 42, 25, 4, 0, 0, 0, 0, 25, 4, 0xe8, 3, 0xe8, 3, 25, 85, 0, 0, 0xe8, 3, 42 };
+static const char triangle[] = { 42, 25, 4, 0, 0, 0, 0, 25, 4, 0xe8, 0, 0xe8, 0, 25, 85, 0, 0, 0xe8, 0, 42 };
 for (int i = 0; i < number_of( triangle ); i++) {
   register char c asm( "r0" ) = triangle[i];
   asm ( "svc 0" : : "r" (c) );
 }
 NewLine;
+
   for (int loop = 0;; loop++) {
 
     matrix[0] =  draw_cos( angle );
@@ -2995,4 +2848,4 @@ NewLine;
   }
   __builtin_unreachable();
 }
-
+#endif
