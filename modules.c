@@ -2453,6 +2453,7 @@ WriteS( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
 static void user_mode_code( int core_number )
 {
   uint32_t font = Font_FindFont( "Trinity.Medium", 0xc0, 0xc0, 96, 96 );
+  ColourTrans_SetFontColours( font, 0xffffff00, 0x00ff0000, 14 );
   Font_Paint( font, "HxX", 0, 100, 100, 3 );
 
   for (;;) {}
