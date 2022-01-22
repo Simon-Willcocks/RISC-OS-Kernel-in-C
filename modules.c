@@ -477,7 +477,7 @@ describe_service_call( regs );
   while (m != 0 && regs->r[1] != 0 && result) {
     regs->r[12] = (uint32_t) m->private_word;
     if (0 != m->header->offset_to_service_call_handler) {
-#ifdef DEBUG__SHOW_SERVICE_CALLS
+#if DEBUG__SHOW_SERVICE_CALLS==ALL
 Write0( title_string( m->header ) ); WriteS( " " ); WriteNum( m->header->offset_to_service_call_handler + (uint32_t) m->header ); NewLine;
 #endif
       result = run_service_call_handler_code( regs, m );
@@ -1782,6 +1782,9 @@ void __attribute__(( naked )) fast_horizontal_line_draw( uint32_t left, uint32_t
 {
   // FIXME needs to work in sprites as well, I think
 
+  // FIXME These things need to be moved into some graphics context. The Kernel/s/vdu stuff accesses this directly, but the DrawMod uses the ReadVduVariables interface.
+  extern uint32_t *vduvarloc[];
+
   asm ( "push { r0-r12, lr }" );
 
   // EcfOraEor *ecf;
@@ -1794,7 +1797,7 @@ void __attribute__(( naked )) fast_horizontal_line_draw( uint32_t left, uint32_t
   case 1: // Foreground
     {
     uint32_t *p = l;
-    uint32_t c = screen_colour_from_os_colour( workspace.vdu.vduvars[153 - 128] );
+    uint32_t c = screen_colour_from_os_colour( 0x80808000 | *vduvarloc[153 - 128] );
     while (p <= r) {
       *p = c;
       p++;
@@ -1813,7 +1816,7 @@ void __attribute__(( naked )) fast_horizontal_line_draw( uint32_t left, uint32_t
   case 3: // Background
     {
     uint32_t *p = l;
-    uint32_t c = screen_colour_from_os_colour( workspace.vdu.vduvars[154 - 128] );
+    uint32_t c = screen_colour_from_os_colour( *vduvarloc[154 - 128] );
     while (p <= r) {
       *p = c;
       p++;
@@ -2161,6 +2164,7 @@ WriteS( "Page size 0x1000" );
     workspace.vdu.modevars[i] = modevars[i];
 
   extern uint32_t frame_buffer;
+  extern uint32_t *vduvarloc[];
   static const uint32_t vduvars[45] = {
     0x0,                                // 0x80
     0x0,
@@ -2200,17 +2204,19 @@ WriteS( "Page size 0x1000" );
   // TODO set these from information from the HAL
 
   for (int i = 0; i < number_of( vduvars ); i++)
-    workspace.vdu.vduvars[i] = vduvars[i];
+    *vduvarloc[i] = vduvars[i];
 
   workspace.vdu.textwindow[0] = 0xef;
   workspace.vdu.textwindow[1] = 0x43;
 
+#if 0
   // OK, there must be a better way...
   // Set up graphics window
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = 0;
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = 0;
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol = 1920-1;
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow = 1080-1;
+#endif
 
   // Used by SpriteOp 60 (at least)
   workspace.vectors.zp.VduDriverWorkSpace.ws.VduSaveAreaPtr = &workspace.vectors.zp.VduDriverWorkSpace.ws.VduSaveArea;
@@ -2343,7 +2349,7 @@ NewLine;
     register uint32_t Rmax asm( "r5" ) = 0x2000000;
     register uint32_t Rhandler asm( "r6" ) = 0xfc01e454; // DynAreaHandler_FontArea;
     register uint32_t Rworkspace asm( "r7" ) = 0xbaabab00;
-    register uint32_t Rname asm( "r8" ) = "Font Cache";
+    register const char * Rname asm( "r8" ) = "Font Cache";
 
     asm ( "svc %[swi]" : : [swi] "i" (OS_DynamicArea)
        , "r" (Rcode)
@@ -2360,12 +2366,13 @@ NewLine;
   init_modules();
 
   NewLine; WriteS( "All modules initialised, starting USR mode code" ); NewLine;
-
+#if 0
   // This has been changed during initialisation; maybe I've missed a reset command?
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = 0;
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = 0;
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol = 1920-1;
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow = 1080-1;
+#endif
 
   // This will be replaced with code to load an application at 0x8000 and run it...
   physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( 4096, 4096 ), .size = 4096 };
@@ -2452,9 +2459,23 @@ WriteS( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
 
 static void user_mode_code( int core_number )
 {
-  uint32_t font = Font_FindFont( "Trinity.Medium", 0xc0, 0xc0, 96, 96 );
-  ColourTrans_SetFontColours( font, 0xffffff00, 0x00ff0000, 14 );
-  Font_Paint( font, "HxX", 0, 100, 100, 3 );
+  // The size and DPI values really do affect the size of the displayed characters
+WriteS( "Finding font..." ); NewLine;
+  uint32_t font = Font_FindFont( "Trinity.Medium", 0xc0, 0xc0, 4*90, 4*90 );
+
+WriteNum( font );
+WriteS( "Setting font colours..." ); NewLine;
+  // This is necessary before the first Paint
+  ColourTrans_SetFontColours( font, 0xff800000, 0x00000000, 14 );
+WriteS( "Set font colours." ); NewLine;
+
+WriteNum( font );
+  Plot( 4, 100, 100 );
+  // This does not work at all. Although the 100 seems to vary according to the DPI?
+  // No, the text moves up and right according to the size of the font/DPI.
+  // By default offsets are in millipoints, try 1 inch up, 2 across.
+  // Looks the same no matter how many H's.
+  Font_Paint( font, "HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH", 0, 2*72000, 72000, 0 );
 
   for (;;) {}
   __builtin_unreachable();

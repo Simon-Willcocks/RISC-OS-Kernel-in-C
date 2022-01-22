@@ -409,7 +409,7 @@ WriteS( " Post-grow" );
 bool do_OS_ReadDynamicArea( svc_registers *regs )
 {
 #ifdef DEBUG__WATCH_DYNAMIC_AREAS
-  WriteS( "Reading DA " ); WriteNum( regs->r[0] ); NewLine;
+  WriteS( "Reading DA " ); WriteNum( regs->r[0] ); WriteS( ", caller " ); WriteNum( regs->lr ); NewLine;
 #endif
 
   if (regs->r[0] == 0xffffffff) {

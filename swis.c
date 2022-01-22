@@ -984,16 +984,19 @@ static bool do_OS_SetColour( svc_registers *regs )
   OS_SetColour_Flags flags = { .raw = regs->r[0] };
 
   if (flags.action != 0 || flags.ECF_pattern) {
+    asm ( "bkpt 1" );
     return Kernel_Error_UnimplementedSWI( regs );
   }
+WriteS( "Setting colour to " ); WriteNum( regs->r[1] ); NewLine;
+  extern uint32_t *vduvarloc[];
 
   EcfOraEor *ecf;
   if (flags.background) {
-    workspace.vdu.vduvars[154 - 128] = regs->r[1];
+    *vduvarloc[154 - 128] = regs->r[1];
     ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgEcfOraEor;
   }
   else {
-    workspace.vdu.vduvars[153 - 128] = regs->r[1];
+    *vduvarloc[153 - 128] = regs->r[1];
     ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor;
   }
   for (int i = 0; i < number_of( ecf->line ); i++) {
@@ -1608,9 +1611,11 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
   regs->spsr &= ~CF;
   return;
 }
+
       switch (number) {
       case 0x606c0 ... 0x606ff: return; // Hourglass
       }
+      bool read_var_val_for_length = (number == 0x23 && regs->r[2] == -1);
 
   uint32_t r0 = regs->lr;
 
@@ -1633,7 +1638,7 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
       case 0x606c0 ... 0x606ff: // Hourglass
         break;
       default:
-        if (e->code != 0x124) {
+        if (e->code != 0x124 && !read_var_val_for_length) {
           WriteS( "Returned error: " );
           WriteNum( number );
           WriteS( " " );
@@ -1642,6 +1647,8 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
           WriteNum( regs->r[1] );
           WriteS( " " );
           WriteNum( regs->r[2] );
+          WriteS( " " );
+          WriteNum( *(uint32_t *)(regs->r[0]) );
           WriteS( " " );
           Write0( (char *)(regs->r[0] + 4 ) );
           NewLine;

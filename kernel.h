@@ -100,7 +100,8 @@ struct VDU_workspace {
     int16_t y;
   } plot_points[3];
   uint32_t modevars[13];
-  uint32_t vduvars[45];
+  // uint32_t vduvars[45];
+  // FIXME: these should be in a graphics context of some kind
   uint32_t textwindow[2];
 };
 

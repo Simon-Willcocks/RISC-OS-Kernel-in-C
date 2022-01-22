@@ -33,6 +33,78 @@ bool do_OS_ChangedBox( svc_registers *regs )
   return true;
 }
 
+// Horribly incorporate legacy variables so legacy code can access them
+// I'd like to move the used ones to a module's workspace and dump the rest.
+const uint32_t* vduvarloc[173-128] = { 
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol,           // 0x80 128
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TWLCol,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TWBRow,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TWRCol,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TWTRow,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.OrgX,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.OrgY,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCsX,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCsY,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.OlderCsX,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.OlderCsY,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.OldCsX,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.OldCsY,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCsIX,            // 0x90 144
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCsIY,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.NewPtX,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.NewPtY,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenStart,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayStart,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TotalScreenSize,
+
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GPLFMD,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GPLBMD,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GFCOL,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GBCOL,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TForeCol,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TBackCol,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GFTint,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GBTint,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TFTint,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TBTint,           // 0xa0 160
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.MaxMode,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCharSizeX,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCharSizeY,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCharSpaceX,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCharSpaceY,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.HLineAddr,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TCharSizeX,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TCharSizeY,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TCharSpaceX,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.TCharSpaceY,
+  (uint32_t*) &workspace.vectors.zp.VduDriverWorkSpace.ws.GcolOraEorAddr,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.VIDCClockSpeed
+};
+
+uint32_t *const modevarloc[13] = {
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.ModeFlags,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.ScrRCol,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.ScrBRow,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.NColour,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.XEigFactor,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.YEigFactor,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.LineLength,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenSize,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.YShftFactor,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPP,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPC,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.XWindLimit,
+  &workspace.vectors.zp.VduDriverWorkSpace.ws.YWindLimit
+};
+
+uint32_t *const textwindowloc[] = {
+  (void*) 0xaaab00000,
+  (void*) 0xaaab10000
+};
+
 bool do_OS_ReadVduVariables( svc_registers *regs )
 {
   uint32_t *var = (void*) regs->r[0];
@@ -40,9 +112,9 @@ bool do_OS_ReadVduVariables( svc_registers *regs )
 
   while (*var != -1) {
     switch (*var) {
-    case 0 ... 12: *val = workspace.vdu.modevars[*var]; break;
-    case 128 ... 172: *val = workspace.vdu.vduvars[*var - 128]; break;
-    case 256 ... 257: *val = workspace.vdu.textwindow[*var - 256]; break;
+    case 0 ... 12: *val = *modevarloc[*var]; break;
+    case 128 ... 172: *val = *vduvarloc[*var - 128]; break;
+    case 256 ... 257: asm ( "bkpt 99" ); *val = *textwindowloc[*var - 256]; break; // Can't find this in zero page...
     default: for (;;) { asm( "bkpt 68" ); }
     }
 #ifdef DEBUG__SHOW_VDU_VARS
