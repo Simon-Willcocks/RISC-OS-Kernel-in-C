@@ -141,11 +141,15 @@ static bool do_OS_Write0( svc_registers *regs )
 static bool do_OS_NewLine( svc_registers *regs )
 {
   bool result;
+  uint32_t r0 = regs->r[0];
   regs->r[0] = '\r';
   result = do_OS_WriteC( regs );
   if (result) {
     regs->r[0] = '\n';
     result = do_OS_WriteC( regs );
+  }
+  if (result) {
+    regs->r[0] = r0;
   }
 
   return result;

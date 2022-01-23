@@ -2460,16 +2460,13 @@ WriteS( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
 static void user_mode_code( int core_number )
 {
   // The size and DPI values really do affect the size of the displayed characters
-WriteS( "Finding font..." ); NewLine;
   uint32_t font = Font_FindFont( "Trinity.Medium", 0xc0, 0xc0, 4*90, 4*90 );
 
-WriteNum( font );
 WriteS( "Setting font colours..." ); NewLine;
   // This is necessary before the first Paint
   ColourTrans_SetFontColours( font, 0xff800000, 0x00000000, 14 );
 WriteS( "Set font colours." ); NewLine;
 
-WriteNum( font );
   Plot( 4, 100, 100 );
   // This does not work at all. Although the 100 seems to vary according to the DPI?
   // No, the text moves up and right according to the size of the font/DPI.
