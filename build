@@ -40,8 +40,8 @@ if [ "$ROMSRC" = "" ]; then
   ROMSRC=RISCOS/*
 fi
 
-if [ ! -f "$ROMSRC/"ro_rom.o ] ; then
-  "$ROMSRC/"fetch
+if [ ! -f $ROMSRC/ro_rom.o ] ; then
+  $ROMSRC/fetch
 fi
 
 function paddedstring { echo -n $1 | dd bs=4 conv=sync ; }
@@ -69,7 +69,7 @@ arm-linux-gnueabi-gcc-8 -Wall -I . \
   $MMU/*.c -I $MMU \
   $MM/*.c -I $MM \
   Modules/HAL.o \
-  "$ROMSRC"/ro_rom.o \
+  $ROMSRC/ro_rom.o \
   -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static \
   -g \
   -march=armv8-a+nofp \
