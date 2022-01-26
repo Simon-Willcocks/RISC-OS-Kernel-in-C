@@ -22,10 +22,12 @@ bool do_OS_ChangedBox( svc_registers *regs )
   case 0: workspace.vdu.changed_box_tracking_enabled = 0; break;
   case 1: workspace.vdu.changed_box_tracking_enabled = 1; break;
   case 2:
-    workspace.vdu.ChangedBox.left = 0;
-    workspace.vdu.ChangedBox.bottom = 0;
-    workspace.vdu.ChangedBox.right = 0;
-    workspace.vdu.ChangedBox.top = 0;
+    workspace.vdu.ChangedBox.left = 0x7fffffff;
+    workspace.vdu.ChangedBox.bottom = 0x7fffffff;
+    workspace.vdu.ChangedBox.right = 0x80000000;
+    workspace.vdu.ChangedBox.top = 0x80000000;
+    break;
+  default: // Simply read (should be case -1)
     break;
   }
   regs->r[1] = (uint32_t) &workspace.vdu.ChangedBox;
@@ -152,7 +154,7 @@ static bool ReadLegacyModeVariable( uint32_t selector, uint32_t var, uint32_t *v
 
 static bool ReadCurrentModeVariable( uint32_t selector, uint32_t var, uint32_t *val )
 {
-  *val = workspace.vdu.modevars[var];
+  *val = *modevarloc[var];
 
   return true;
 }
@@ -301,7 +303,7 @@ bool do_OS_ReadModeVariable( svc_registers *regs )
   // "The C flag is set if variable or mode numbers were invalid"
   bool success = false;
 
-  if (regs->r[1] >= number_of( workspace.vdu.modevars )) {
+  if (regs->r[1] >= number_of( modevarloc )) {
     success = false;
   }
   else {
@@ -347,25 +349,3 @@ bool do_OS_ReadPoint( svc_registers *regs )
 bool do_OS_RemoveCursors( svc_registers *regs ) { return true; } // What cursors? FIXME
 bool do_OS_RestoreCursors( svc_registers *regs ) { return true; } // What cursors?
 
-static const uint32_t initial_mode_vars[13] = { 
-  0x40,         // Mode flags Hardware scroll never used
-  1920 / 8,     // Character columns
-  1080 / 8,     // Character rows
-  0xffffffff,   // Maximum logical colour (?)
-  0,            // XEigFactor
-  0,            // YEigFactor
-  1920 * 4,     // Line length
-  1920*1080*4,  // Screen size
-  0,            // YShiftFactor (not used)
-  5,            // Log2BPP (32bpp)
-  5,            // Log2BPC
-  1920-1,       // XWindLimit
-  1080-1 };     // YWindLimit
-
-void SetInitialVduVars()
-{
-  memcpy( workspace.vdu.modevars, initial_mode_vars, sizeof( workspace.vdu.modevars ) );
-  uint32_t for_drawmod = Kernel_allocate_pages( 4096, 4096 );
-  MMU_map_at( (void*) 0x4000, for_drawmod, 4096 );
-  for (int i = 0; i < 4096; i+=4) { *(uint32_t*)(0x4000+i) = workspace.core_number; }
-}

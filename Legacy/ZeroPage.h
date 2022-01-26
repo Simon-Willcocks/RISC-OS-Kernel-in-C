@@ -19,6 +19,17 @@
  * In time, this should all be made to disappear.
  */
 
+/* Note that offsets will change if the structure is compiled in 64-bit. */
+#if 4 == __SIZEOF_POINTER__
+typedef struct EcfOraEor EcfOraEor;
+typedef EcfOraEor *EcfOraEorPtr;
+typedef void *VoidPtr;
+#else
+#warning "Being compiled in an 64-bit mode"
+typedef uint32_t EcfOraEorPtr;
+typedef uint32_t VoidPtr;
+#endif
+
 #define PAD( n ) uint8_t pad##__LINE__[n];
 
 struct DANode {
@@ -210,7 +221,7 @@ struct __attribute__(( packed )) OsbyteVars {
   uint8_t pad2[3];
 };
 
-typedef struct {
+typedef struct EcfOraEor {
   struct {
     uint32_t orr;
     uint32_t eor;
@@ -586,7 +597,7 @@ typedef struct {
 
       uint32_t XShftFactor ; // Number of places to shift XCoord in address generation,
       // holds 2,3,4 or 5 for 8,4,2,1 bits per pixel respectivly
-      EcfOraEor *GColAdr ; // FgEcfOraEor, BgEcfOraEor, Invert, or NoEffect afaik 12/21
+      EcfOraEorPtr GColAdr ; // FgEcfOraEor, BgEcfOraEor, Invert, or NoEffect afaik 12/21
 
       uint32_t ScreenStart ; // Start address of screen (for VDU drivers)
 
@@ -794,7 +805,7 @@ typedef struct {
       uint32_t TCharSpaceY  ; // vertical   ------------------""-----------------
 
       uint32_t HLineAddr      ; // address of exported HLine
-      EcfOraEor *GcolOraEorAddr ; // address of FgEcfOraEor etc
+      EcfOraEorPtr GcolOraEorAddr ; // address of FgEcfOraEor etc
 
       uint32_t BlankPalAddr  ; // address of block for blank palette
       uint32_t FirPalAddr    ; // address of block for first flash state palette
@@ -833,7 +844,7 @@ typedef struct {
       uint32_t TextFgColour; // Fg/Bg colour stored as a colour number, computed on VDU 18 and re-poked!
       uint32_t TextBgColour; //
 
-      void *TextExpandArea ; // Pointer to Text expand area (in system heap)
+      VoidPtr TextExpandArea ; // Pointer to Text expand area (in system heap)
 
       uint32_t pad2[2];
 
@@ -910,6 +921,7 @@ typedef struct {
 
       uint32_t RAMMaskTb[32]; // Copy of MaskTb for this mode (up to 32 words)
 
+      // VduOutputCurrentState
       // values of R0-R3 to return from SwitchOutputToSprite
       // or Mask; next 4 must be in this order
       uint32_t SpriteMaskSelect ; // value of R0 to be given to SWI OS_SpriteOp to set up
@@ -918,7 +930,7 @@ typedef struct {
       // (0 if output is to screen)
       uint32_t VduSprite ; // Pointer to VDU output sprite (0 if output to screen)
 
-      uint32_t *VduSaveAreaPtr ; // Pointer to save area for VDU variables
+      VoidPtr VduSaveAreaPtr ; // Pointer to save area for VDU variables
 
 
       // with ClipBoxEnable immediately before it

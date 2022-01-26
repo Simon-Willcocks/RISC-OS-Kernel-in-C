@@ -1,0 +1,24 @@
+#! /bin/bash -
+
+pushd $( dirname $0 )
+
+if [ ! -f ro_rom.o ] ; then
+  mkdir -p rominstall
+  cd rominstall
+
+  wget https://www.riscosopen.org/zipfiles/platform/raspberry-pi/BCM2835.5.28.zip
+  unzip BCM2835.5.28.zip
+
+  # Remove the HAL, the C kernel replaces it
+  dd if=RISCOS.IMG of=ro_rom.img bs=65536 skip=1
+
+  # Make a linkable file
+  arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 --prefix-sections=.modules ro_rom.img ../ro_rom.o
+
+  cd ..
+
+  # Tidy up
+  rm -Rf rominstall
+fi
+
+popd

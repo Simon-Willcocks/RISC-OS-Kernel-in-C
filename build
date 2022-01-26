@@ -36,15 +36,12 @@ if [ "$HAL" = "" ]; then
   HAL=HAL/*
 fi
 
-if [ ! -f ro_rom.o ] ; then
-  mkdir -p rominstall
-  cd rominstall
-  wget https://www.riscosopen.org/zipfiles/platform/raspberry-pi/BCM2835.5.28.zip
-  unzip BCM2835.5.28.zip
-  dd if=RISCOS.IMG of=ro_rom.img bs=65536 skip=1
-  arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 --prefix-sections=.modules ro_rom.img ../ro_rom.o
-  cd ..
-  rm -Rf rominstall
+if [ "$ROMSRC" = "" ]; then
+  ROMSRC=RISCOS/*
+fi
+
+if [ ! -f "$ROMSRC/"ro_rom.o ] ; then
+  "$ROMSRC/"fetch
 fi
 
 function paddedstring { echo -n $1 | dd bs=4 conv=sync ; }
@@ -72,11 +69,11 @@ arm-linux-gnueabi-gcc-8 -Wall -I . \
   $MMU/*.c -I $MMU \
   $MM/*.c -I $MM \
   Modules/HAL.o \
-  ro_rom.o \
+  "$ROMSRC"/ro_rom.o \
   -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static \
   -g \
   -march=armv8-a+nofp \
-  -T rom.script -Os \
+  -T $ROMSRC/rom.script -Os \
   -o rom.elf \
   $* &&
 

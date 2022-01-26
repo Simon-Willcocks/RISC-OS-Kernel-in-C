@@ -1496,7 +1496,7 @@ static swifn os_swis[256] = {
 
   [OS_ReadSysInfo] =  do_OS_ReadSysInfo,
   [OS_Confirm] =  do_OS_Confirm,
-  [OS_ChangedBox] =  do_OS_ChangedBox,
+  //[OS_ChangedBox] =  do_OS_ChangedBox,
   [OS_CRC] =  do_OS_CRC,
 
   [OS_ReadDynamicArea] =  do_OS_ReadDynamicArea,

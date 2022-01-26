@@ -477,7 +477,7 @@ describe_service_call( regs );
   while (m != 0 && regs->r[1] != 0 && result) {
     regs->r[12] = (uint32_t) m->private_word;
     if (0 != m->header->offset_to_service_call_handler) {
-#if DEBUG__SHOW_SERVICE_CALLS==ALL
+#if DEBUG__SHOW_SERVICE_CALLS
 Write0( title_string( m->header ) ); WriteS( " " ); WriteNum( m->header->offset_to_service_call_handler + (uint32_t) m->header ); NewLine;
 #endif
       result = run_service_call_handler_code( regs, m );
@@ -2116,6 +2116,10 @@ void Boot()
   static vector default_CliV = { .next = 0, .code = (uint32_t) default_os_cli, .private_word = 0 };
   static vector do_nothing = { .next = 0, .code = (uint32_t) finish_vector, .private_word = 0 };
 
+  // DrawMod uses ScratchSpace at 0x4000
+  uint32_t for_drawmod = Kernel_allocate_pages( 4096, 4096 );
+  MMU_map_at( (void*) 0x4000, for_drawmod, 4096 );
+
   // SwiSpriteOp does BranchNotJustUs, which accesses internal kernel structures. Avoid this, by going directly
   // to SpriteVecHandler.
   extern void SpriteVecHandler();
@@ -2130,22 +2134,9 @@ void Boot()
   workspace.kernel.vectors[0x1e] = &default_ChEnvV;
   workspace.kernel.vectors[0x1f] = &default_SpriteV;
 
-  SetInitialVduVars();
-
-  // PMF/osinit replacement:
-  // Avoid "Buffer too small" error from BufferManager, which seems not to be returned in r0
-  workspace.vectors.zp.PrinterBufferAddr = 0xfaff2c98; // Where from?
-  workspace.vectors.zp.PrinterBufferSize = 0x1000; // 
-
-  // Kernel/s/HAL
-  workspace.vectors.zp.Page_Size = 0x1000;
-
-WriteS( "Page size 0x1000" );
-  // This is obviously becoming the boot sequence, to be refactored when something's happening...
-
   static const int eigen = 1;
 
-  static const uint32_t modevars[13] = {
+  static const uint32_t initial_mode_vars[13] = {
     0x40,
     0xef,
     0x86,
@@ -2160,8 +2151,21 @@ WriteS( "Page size 0x1000" );
     0x77f,
     0x437
   };
-  for (int i = 0; i < number_of( modevars ); i++)
-    workspace.vdu.modevars[i] = modevars[i];
+  extern uint32_t *const modevarloc[13];
+  for (int i = 0; i < number_of( initial_mode_vars ); i++) {
+    *modevarloc[i] = initial_mode_vars[i];
+  }
+
+  // PMF/osinit replacement:
+  // Avoid "Buffer too small" error from BufferManager, which seems not to be returned in r0
+  workspace.vectors.zp.PrinterBufferAddr = 0xfaff2c98; // Where from?
+  workspace.vectors.zp.PrinterBufferSize = 0x1000; // 
+
+  // Kernel/s/HAL
+  workspace.vectors.zp.Page_Size = 0x1000;
+
+WriteS( "Page size 0x1000" );
+  // This is obviously becoming the boot sequence, to be refactored when something's happening...
 
   extern uint32_t frame_buffer;
   extern uint32_t *vduvarloc[];
@@ -2206,9 +2210,11 @@ WriteS( "Page size 0x1000" );
   for (int i = 0; i < number_of( vduvars ); i++)
     *vduvarloc[i] = vduvars[i];
 
-  workspace.vdu.textwindow[0] = 0xef;
-  workspace.vdu.textwindow[1] = 0x43;
-
+/* Not yet used afaics
+  extern uint32_t *const textwindowloc[];
+  *textwindowloc[0] = 0xef;
+  *textwindowloc[1] = 0x43;
+*/
 #if 0
   // OK, there must be a better way...
   // Set up graphics window
@@ -2459,8 +2465,9 @@ WriteS( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
 
 static void user_mode_code( int core_number )
 {
+  OSCLI( "%FontInstall" );
   // The size and DPI values really do affect the size of the displayed characters
-  uint32_t font = Font_FindFont( "Trinity.Medium", 0xc0, 0xc0, 4*90, 4*90 );
+  uint32_t font = Font_FindFont( "Trinity.Medium", 0xc0, 0xc0, 90, 90 );
 
 WriteS( "Setting font colours..." ); NewLine;
   // This is necessary before the first Paint
