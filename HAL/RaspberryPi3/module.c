@@ -571,7 +571,7 @@ static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
 
 static void WriteNum( uint32_t number )
 {
-  for (int nibble = 8; nibble >= 0; nibble--) {
+  for (int nibble = 7; nibble >= 0; nibble--) {
     char c = '0' + ((number >> (nibble*4)) & 0xf);
     if (c > '9') c += ('a' - '0' - 10);
     register uint32_t r0 asm( "r0" ) = c;

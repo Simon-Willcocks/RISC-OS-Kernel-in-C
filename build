@@ -18,26 +18,54 @@
 
 # While there's only one option, this will choose them for you!
 if [ "$PROC" = "" ]; then
-  PROC=processor/*
+  PROC=$( echo processor/* )
+  if [ ! -d "$PROC" ]; then
+    echo "Please define \$PROC, probably as one of "$PROC
+    exit 1
+  fi
 fi
 if [ "$MM" = "" ]; then
-  MM=memory/*
+  MM=$( echo memory/* )
+  if [ ! -d "$MM" ]; then
+    echo "Please define \$MM, probably as one of "$MM
+    exit 1
+  fi
 fi
 if [ "$MMU" = "" ]; then
-  MMU=MMU/*
+  MMU=$( echo MMU/* )
+  if [ ! -d "$MMU" ]; then
+    echo "Please define \$MMU, probably as one of "$MMU
+    exit 1
+  fi
 fi
 if [ "$BOOT" = "" ]; then
-  BOOT=boot/*
+  BOOT=$( echo boot/* )
+  if [ ! -d "$BOOT" ]; then
+    echo "Please define \$BOOT, probably as one of "$BOOT
+    exit 1
+  fi
 fi
 if [ "$TASK_SLOT" = "" ]; then
-  TASK_SLOT=TaskSlot/*
+  TASK_SLOT=$( echo TaskSlot/* )
+  if [ ! -d "$TASK_SLOT" ]; then
+    echo "Please define \$TASK_SLOT, probably as one of "$TASK_SLOT
+    exit 1
+  fi
 fi
 if [ "$HAL" = "" ]; then
-  HAL=HAL/*
+  HAL=$( echo HAL/* )
+  if [ ! -d "$HAL" ]; then
+    echo "Please define \$HAL, probably as one of "$HAL
+    exit 1
+  fi
 fi
 
 if [ "$ROMSRC" = "" ]; then
-  ROMSRC=RISCOS/*
+  ROMSRC=$( echo RISCOS/* )
+  if [ ! -d "$ROMSRC" ]; then
+    echo "Please define \$ROMSRC, probably as one of "$ROMSRC
+    exit 1
+  fi
 fi
 
 if [ ! -f $ROMSRC/ro_rom.o ] ; then
@@ -61,6 +89,14 @@ arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/HAL &
 arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/HAL --rename-section .data=.text Modules/HAL.o &&
 rm /tmp/module$$.elf &&
 
+arm-linux-gnueabi-gcc-8 FontManager/*.c -Wall -o /tmp/module$$.elf -fpic \
+        -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
+        -g -march=armv8-a+nofp -T module.script -I . -DNO_MODULE_SIZE &&
+arm-linux-gnueabi-objdump -x --disassemble-all /tmp/module$$.elf > FontManager.dump &&
+arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/FontManager &&
+arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/FontManager --rename-section .data=.text Modules/FontManager.o &&
+rm /tmp/module$$.elf &&
+
 arm-linux-gnueabi-gcc-8 -Wall -I . \
   kernel.c swis.c modules.c swis/*.c \
   $PROC/*.c -I $PROC \
@@ -69,6 +105,7 @@ arm-linux-gnueabi-gcc-8 -Wall -I . \
   $MMU/*.c -I $MMU \
   $MM/*.c -I $MM \
   Modules/HAL.o \
+  Modules/FontManager.o \
   $ROMSRC/ro_rom.o \
   -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static \
   -g \

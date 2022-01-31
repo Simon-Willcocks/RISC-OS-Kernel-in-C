@@ -21,7 +21,7 @@
  * arm-linux-gnueabi-objcopy  -R .ignoring -O binary my_module.elf my_module.bin
  *
  * Usage:
- * #define CHUNK <chunk number> (not needed if no SWI chunk)
+ * #define MODULE_CHUNK <chunk number> (not needed if no SWI chunk)
  * #include "module.h"
  * static const uint32_t module_flags = <flags value>; (required)
  *
@@ -87,11 +87,39 @@ typedef unsigned        uint32_t;
 typedef int             int32_t;
 typedef unsigned short  uint16_t;
 typedef short           int16_t;
+typedef signed char     int8_t;
 typedef unsigned char   uint8_t;
 typedef unsigned        size_t;
 typedef unsigned        bool;
 #define true  (0 == 0)
 #define false (0 != 0)
 
+#define assert( c ) while (!(c)) { asm( "bkpt 65535" ); }
+
 #define number_of( arr ) (sizeof( arr ) / sizeof( arr[0] ))
 
+typedef struct {
+  uint32_t code;
+  char desc[];
+} error_block;
+
+#define C_SWI_HANDLER( cfn ) \
+typedef struct { \
+  uint32_t r[10]; \
+  uint32_t number; \
+  struct workspace **private_word; \
+} SWI_regs; \
+ \
+bool __attribute__(( noinline )) cfn( struct workspace *workspace, SWI_regs *regs ); \
+ \
+void __attribute__(( naked )) swi_handler() \
+{ \
+  SWI_regs *regs; \
+  register struct workspace **private_word asm( "r12" ); \
+  asm volatile ( "push {r0-r9, r11, r12, r14}\n  mov %[regs], sp" : [regs] "=r" (regs), "=r" (private_word) ); \
+  if (!cfn( *private_word, regs )) { \
+    /* Error: Set V flag */ \
+    asm ( "msr cpsr_f, #(1 << 28)" ); \
+  } \
+  asm volatile ( "pop {r0-r9, r11, r12, pc}\n  mov r0, sp" ); \
+}

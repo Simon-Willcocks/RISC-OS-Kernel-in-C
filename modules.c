@@ -1211,6 +1211,16 @@ bool excluded( const char *name )
 /**/
   };
 
+  if (0 == strcmp( name, "FontManager" )) {
+    extern uint32_t _binary_Modules_FontManager_start;
+    register uint32_t code asm( "r0" ) = 10;
+    register uint32_t *module asm( "r1" ) = &_binary_Modules_FontManager_start;
+
+    asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
+    WriteS( "Replacement FontManager" ); NewLine;
+    return true;
+  }
+
   for (int i = 0; i < number_of( excludes ); i++) {
     if (0 == strcmp( name, excludes[i] ))
       return true;
@@ -2479,7 +2489,7 @@ WriteS( "Set font colours." ); NewLine;
   // No, the text moves up and right according to the size of the font/DPI.
   // By default offsets are in millipoints, try 1 inch up, 2 across.
   // Looks the same no matter how many H's.
-  Font_Paint( font, "HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH", 0, 2*72000, 72000, 0 );
+  Font_Paint( font, "Hx", 0, 2*72000, 72000, 0 );
 
   for (;;) {}
   __builtin_unreachable();
