@@ -22,7 +22,9 @@ SECTIONS
  .text : {
   *(.text.init) ;
   *(.text) ;
+  *(.got.plt) ;
   *(.rodata*) ;
+  *(.data.rel.ro.local) ;
   . = ALIGN( 4 ) ;
   module_end = . ;
  }

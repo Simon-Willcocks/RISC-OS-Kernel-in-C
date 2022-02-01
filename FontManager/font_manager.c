@@ -103,10 +103,10 @@ void *memset(void *s, int c, size_t n)
 
 #define WriteS( string ) asm ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "lr" )
 
-#define NewLine asm ( "svc 3" )
+#define NewLine asm ( "svc 3" : : : "lr" )
 
-#define Write0( string ) { register uint32_t r0 asm( "r0" ) = (uint32_t) (string); asm ( "push { r0-r12, lr }\nsvc 2\n  pop {r0-r12, lr}" : : "r" (r0) ); }
-#define Write13( string ) do { const char *s = (void*) (string); register uint32_t r0 asm( "r0" ); while (31 < (r0 = *s++)) { asm ( "push { r1-r12, lr }\nsvc 0\n  pop {r1-r12, lr}" : : "r" (r0) ); } } while (0)
+#define Write0( string ) do { register uint32_t r0 asm( "r0" ) = (uint32_t) (string); asm ( "push { r0-r12, lr }\nsvc 2\n  pop {r0-r12, lr}" : : "r" (r0) ); } while (false)
+#define Write13( string ) do { const char *s = (void*) (string); register uint32_t r0 asm( "r0" ); while (31 < (r0 = *s++)) { asm ( "push { r1-r12, lr }\nsvc 0\n  pop {r1-r12, lr}" : : "r" (r0) ); } } while (false)
 
 static void WriteNum( uint32_t number )
 {
@@ -118,7 +118,7 @@ static void WriteNum( uint32_t number )
   }
 }
 
-static void WriteSmallNum( uint32_t number, int min )
+static void Write0mallNum( uint32_t number, int min )
 {
   bool started = false;
   for (int nibble = 7; nibble >= 0; nibble--) {
@@ -133,15 +133,6 @@ static void WriteSmallNum( uint32_t number, int min )
 
 // This needs a defined struct workspace
 C_SWI_HANDLER( c_swi_handler );
-
-
-// Return the relocated address of the item in the module: function or constant.
-static void * local_ptr( const void *p )
-{
-  register uint32_t result;
-  asm ( "adrl %[result], local_ptr" : [result] "=r" (result) );
-  return (void*) (result + (char*) p - (char *) local_ptr);
-}
 
 typedef struct Font Font;
 typedef struct FontHandle FontHandle;
@@ -223,9 +214,9 @@ void init( uint32_t this_core, uint32_t number_of_cores )
     workspace->fonts = the_font;
   }
 
-  WriteS( "FontManager initialised" ); NewLine;
+  Write0( "FontManager initialised" ); NewLine;
 
-  if (first_entry) { WriteS( "FontManager initialised" ); NewLine; }
+  if (first_entry) { Write0( "FontManager initialised" ); NewLine; }
 }
 
 static bool FindFont( struct workspace *workspace, SWI_regs *regs )
@@ -511,10 +502,10 @@ static struct Scaffold ReadScaffold( uint8_t *entry )
                              .linear = scaffold.bits.linear,
                              .width = entry[2] };
 
-  WriteSmallNum( result.coord, 1 ); WriteS( " " );
-  WriteSmallNum( result.link_index, 1 ); WriteS( " " );
-  WriteSmallNum( result.linear, 1 ); WriteS( " " );
-  WriteS( " width " ); WriteSmallNum( result.width, 1 ); NewLine;
+  Write0mallNum( result.coord, 1 ); Write0( " " );
+  Write0mallNum( result.link_index, 1 ); Write0( " " );
+  Write0mallNum( result.linear, 1 ); Write0( " " );
+  Write0( " width " ); Write0mallNum( result.width, 1 ); NewLine;
 
   return result;
 }
@@ -522,7 +513,7 @@ static struct Scaffold ReadScaffold( uint8_t *entry )
 static void ShowScaffoldEntry( uint8_t *entry, uint32_t base )
 {
   // Pointer "entry" points to the byte after the base, whether it's one or two bytes
-  WriteS( "Scaffolding, base char: " ); WriteSmallNum( base, 1 ); NewLine;
+  Write0( "Scaffolding, base char: " ); Write0mallNum( base, 1 ); NewLine;
 
   // Read the flags.
   uint8_t base_x_scaffolds = entry[0];
@@ -541,7 +532,7 @@ static void ShowScaffoldEntry( uint8_t *entry, uint32_t base )
   uint8_t *local_scaffolds = entry + 4;
 
   if (local_x_scaffolds != 0) {
-    WriteS( "Local X scaffolds:" ); NewLine;
+    Write0( "Local X scaffolds:" ); NewLine;
     for (int i = 0; i < 8; i++) {
       if (0 != (local_x_scaffolds & (1 << i))) {
         x_scaffold[i] = ReadScaffold( local_scaffolds );
@@ -550,11 +541,11 @@ static void ShowScaffoldEntry( uint8_t *entry, uint32_t base )
     }
   }
   else {
-    WriteS( "No local X scaffolds" ); NewLine;
+    Write0( "No local X scaffolds" ); NewLine;
   }
 
   if (local_x_scaffolds != 0) {
-    WriteS( "Local Y scaffolds:" ); NewLine;
+    Write0( "Local Y scaffolds:" ); NewLine;
     for (int i = 0; i < 8; i++) {
       if (0 != (local_y_scaffolds & (1 << i))) {
         y_scaffold[i] = ReadScaffold( local_scaffolds );
@@ -563,7 +554,7 @@ static void ShowScaffoldEntry( uint8_t *entry, uint32_t base )
     }
   }
   else {
-    WriteS( "No local Y scaffolds" ); NewLine;
+    Write0( "No local Y scaffolds" ); NewLine;
   }
 }
 
@@ -575,9 +566,9 @@ static void PaintChar( Font *font, uint32_t ch )
   uint32_t max_char = IntMetrics0_num( metrics );
 
   uint16_t index = IntMetrics0_char_index( metrics, ch );
-  WriteS( "Index: " ); WriteNum( index ); NewLine;
+  Write0( "Index: " ); WriteNum( index ); NewLine;
   if (index > max_char) {
-    WriteS( "Character out of range" ); NewLine;
+    Write0( "Character out of range" ); NewLine;
     return;
   }
 
@@ -597,8 +588,8 @@ static void PaintChar( Font *font, uint32_t ch )
     }
     uint16_t *scaffolding = pointer_at_offset_from( outline_font->scaffold_data, off );
     register c asm( "r0" ) = ch;
-    asm( "svc 0" : : "r" (c) );
-    WriteS( " " ); WriteSmallNum( ch, 1 ); WriteS( " " ); WriteSmallNum( off + offset, 1 ); WriteS( " " ); WriteSmallNum( scaffolding, 1 ); NewLine;
+    asm( "svc 0" : : "r" (c) : "lr" );
+    Write0( " " ); Write0mallNum( ch, 1 ); Write0( " " ); Write0mallNum( off + offset, 1 ); Write0( " " ); Write0mallNum( scaffolding, 1 ); NewLine;
     if (base_8bit) {
       uint32_t base = *(uint8_t*) scaffolding;
       ShowScaffoldEntry( pointer_at_offset_from( scaffolding, 1 ), base );
@@ -612,9 +603,9 @@ static void PaintChar( Font *font, uint32_t ch )
 
 static const uint8_t *read_12bit_pair( uint8_t const *v, int16_t* x, int16_t* y )
 {
-  *x = v[0] | ((v[1] & 0xf0) <<4);
+  *x = v[0] | ((v[1] & 0xf) <<8);
   if (0 != (*x & 0x800)) *x |= 0xf000;
-  *y = (v[2] << 4) | (v[1] & 0xf);
+  *y = (v[2] << 4) | ((v[1] & 0xf0) >> 4);
   if (0 != (*y & 0x800)) *y |= 0xf000;
   return v + 3;
 }
@@ -635,13 +626,13 @@ static void ShowCharacter( uint8_t const *ch )
     uint8_t raw;
   } character = { .raw = *ch };
 
-  if (character.coords_12bit) { WriteS( "12 bit coordinates" ); NewLine; }
-  if (character.data_1bpp) { WriteS( "1 bit per pixel (or outline)" ); NewLine; }
-  if (character.initial_pixel_black) { WriteS( "Initial pixel black" ); NewLine; }
-  if (character.outline) { WriteS( "Outline" ); NewLine; }
-  if (character.composite) { WriteS( "composite" ); NewLine; }
-  if (character.has_accent) { WriteS( "Has accent" ); NewLine; }
-  if (character.codes_16bit) { WriteS( "16-bit character codes" ); NewLine; }
+  if (character.coords_12bit) { Write0( "12 bit coordinates" ); NewLine; }
+  if (character.data_1bpp) { Write0( "1 bit per pixel (or outline)" ); NewLine; }
+  if (character.initial_pixel_black) { Write0( "Initial pixel black" ); NewLine; }
+  if (character.outline) { Write0( "Outline" ); NewLine; }
+  if (character.composite) { Write0( "composite" ); NewLine; }
+  if (character.has_accent) { Write0( "Has accent" ); NewLine; }
+  if (character.codes_16bit) { Write0( "16-bit character codes" ); NewLine; }
 
   uint8_t const *next_byte = ch+1;
   uint16_t base_character = 0; // Only important if character.composite
@@ -665,13 +656,13 @@ static void ShowCharacter( uint8_t const *ch )
   Font_BBox bbox = { 0 };
   if (character.outline == 0 || character.composite == 0) {
     if (character.coords_12bit) {
-      WriteS( "12-bits BBox: " );
-      WriteSmallNum( next_byte[0], 2 ); 
-      WriteSmallNum( next_byte[1], 2 ); 
-      WriteSmallNum( next_byte[2], 2 ); 
-      WriteSmallNum( next_byte[3], 2 ); 
-      WriteSmallNum( next_byte[4], 2 ); 
-      WriteSmallNum( next_byte[5], 2 ); 
+      Write0( "12-bits BBox: " );
+      Write0mallNum( next_byte[0], 2 ); 
+      Write0mallNum( next_byte[1], 2 ); 
+      Write0mallNum( next_byte[2], 2 ); 
+      Write0mallNum( next_byte[3], 2 ); 
+      Write0mallNum( next_byte[4], 2 ); 
+      Write0mallNum( next_byte[5], 2 ); 
       NewLine;
 
       next_byte = read_12bit_pair( next_byte, &bbox.left_inclusive, &bbox.bottom_inclusive );
@@ -684,11 +675,11 @@ static void ShowCharacter( uint8_t const *ch )
       bbox.height = *(int8_t*)next_byte++;
     }
 
-    WriteS( "BBox: " );
-    WriteSmallNum( bbox.left_inclusive, 4 ); WriteS( ", " );
-    WriteSmallNum( bbox.bottom_inclusive, 4 ); WriteS( ", " );
-    WriteSmallNum( bbox.width, 4 ); WriteS( ", " );
-    WriteSmallNum( bbox.height, 4 ); NewLine;
+    Write0( "BBox: " );
+    Write0mallNum( bbox.left_inclusive, 4 ); Write0( ", " );
+    Write0mallNum( bbox.bottom_inclusive, 4 ); Write0( ", " );
+    Write0mallNum( bbox.width, 4 ); Write0( ", " );
+    Write0mallNum( bbox.height, 4 ); NewLine;
   }
 
   assert( character.sbz == 0 );
@@ -699,12 +690,38 @@ static void ShowChunk( uint32_t *chunk )
   // File format requires chunks are work aligned.
   assert( 0 == (3 & (uint32_t) chunk) );
 
-  WriteS( "Chunk" ); NewLine;
+  union {
+    struct {
+      uint32_t horizontal_subpixel_placement:1;
+      uint32_t vertical_subpixel_placement:1;
+      uint32_t sbz1:5;
+      uint32_t dependency_bytes:1;
+      uint32_t sbz2:23;
+      uint32_t sbo:1;
+    };
+    uint32_t raw;
+  } flags = { .raw = *chunk };
+
+  Write0( "Chunk" ); NewLine;
   uint32_t *offset = chunk + 1;
   for (int i = 0; i < 8; i++) { // 32 bytes
-    WriteSmallNum( i, 1 ); WriteS( " " ); WriteSmallNum( offset[i], 1 ); NewLine;
+    Write0mallNum( i, 1 ); Write0( " " ); Write0mallNum( offset[i], 1 ); NewLine;
     if (offset[i] != 0)
       ShowCharacter( pointer_at_offset_from( &offset[i], offset[i] ) );
+  }
+
+  uint8_t const *bytes = (void*) (offset + 8);
+
+  if (flags.dependency_bytes) {
+    Write0( "Dependency bytes" ); NewLine;
+    //asm ( "bkpt 1" ); // TODO
+  }
+
+  for (int i = 0; i < 100; i++) {
+    int16_t x;
+    int16_t y;
+    read_12bit_pair( bytes+i, &x, &y );
+    Write0mallNum( x, 1 ); Write0( ", " ); Write0mallNum( y, 1 ); NewLine;
   }
 }
 
@@ -713,50 +730,50 @@ static void ShowFont( Font *font )
   IntMetric0 const * const metrics = font->IntMetrics0;
   OutlineFontFile const * const outline_font = font->Outlines0;
 
-  WriteS( "Font: " ); Write13( metrics->font_name ); NewLine;
+  Write0( "Font: " ); Write13( metrics->font_name ); NewLine;
 
-  WriteS( "BBox: " );
+  Write0( "BBox: " );
 
-  WriteSmallNum( outline_font->font_max_bbox.left_inclusive, 4 ); Write0( ", " );
-  WriteSmallNum( outline_font->font_max_bbox.bottom_inclusive, 4 ); Write0( ", " );
-  WriteSmallNum( outline_font->font_max_bbox.width, 4 ); Write0( ", " );
-  WriteSmallNum( outline_font->font_max_bbox.height, 4 ); NewLine;
+  Write0mallNum( outline_font->font_max_bbox.left_inclusive, 4 ); Write0( ", " );
+  Write0mallNum( outline_font->font_max_bbox.bottom_inclusive, 4 ); Write0( ", " );
+  Write0mallNum( outline_font->font_max_bbox.width, 4 ); Write0( ", " );
+  Write0mallNum( outline_font->font_max_bbox.height, 4 ); NewLine;
 
   uint32_t max_char = IntMetrics0_num( metrics );
-  WriteS( "Number of chars: " ); WriteNum( max_char ); NewLine;
+  Write0( "Number of chars: " ); WriteNum( max_char ); NewLine;
 
-  WriteS( "Number of chunks: " ); WriteSmallNum( outline_font->number_of_chunks, 1 ); NewLine;
+  Write0( "Number of chunks: " ); Write0mallNum( outline_font->number_of_chunks, 1 ); NewLine;
   uint32_t *chunks = OutlineFontFile_chunks_offsets( outline_font );
 
-  WriteS( "File size: " ); WriteSmallNum( chunks[outline_font->number_of_chunks], 1 ); NewLine;
+  Write0( "File size: " ); Write0mallNum( chunks[outline_font->number_of_chunks], 1 ); NewLine;
   for (int i = 0; i < outline_font->number_of_chunks; i++) {
-    WriteS( "Chunk " ); WriteSmallNum( i, 1 ); WriteS( " " ); WriteSmallNum( chunks[i], 1 ); WriteS( " " ); WriteNum( pointer_at_offset_from( outline_font, chunks[i] ) ); NewLine;
+    Write0( "Chunk " ); Write0mallNum( i, 1 ); Write0( " " ); Write0mallNum( chunks[i], 1 ); Write0( " " ); WriteNum( pointer_at_offset_from( outline_font, chunks[i] ) ); NewLine;
     ShowChunk( pointer_at_offset_from( outline_font, chunks[i] ) );
   }
 
-  WriteS( "Number of scaffold indices: " ); WriteSmallNum( outline_font->number_of_scaffold_index_entries, 1 ); 
-  WriteS( ", size " ); WriteSmallNum( outline_font->scaffold_data[0], 1 ); NewLine;
+  Write0( "Number of scaffold indices: " ); Write0mallNum( outline_font->number_of_scaffold_index_entries, 1 ); 
+  Write0( ", size " ); Write0mallNum( outline_font->scaffold_data[0], 1 ); NewLine;
 
   for (int i = 1; i < outline_font->number_of_scaffold_index_entries; i++) {
     if (outline_font->scaffold_data[i] != 0) {
       register c asm( "r0" ) = i;
-      asm( "svc 0" : : "r" (c) );
-      WriteS( " " ); WriteSmallNum( i, 1 ); WriteS( " " ); WriteSmallNum( outline_font->scaffold_data[i], 1 ); NewLine;
+      asm( "svc 0" : : "r" (c) : "lr" );
+      Write0( " " ); Write0mallNum( i, 1 ); Write0( " " ); Write0mallNum( outline_font->scaffold_data[i], 1 ); NewLine;
     }
   }
 
   uint8_t *entry = pointer_at_offset_from( outline_font->scaffold_data, 2 * outline_font->number_of_scaffold_index_entries );
-  if (entry[0] == 0) WriteS( "Always draw scaffolding" );
-  else { WriteS( "Skeleton threshold " ); WriteSmallNum( entry[0], 1 ); }
+  if (entry[0] == 0) Write0( "Always draw scaffolding" );
+  else { Write0( "Skeleton threshold " ); Write0mallNum( entry[0], 1 ); }
 
   Write0( ((char*) &outline_font->scaffold_data[0]) + outline_font->scaffold_data[0] ); NewLine;
 }
 
 static bool Paint( struct workspace *workspace, SWI_regs *regs )
 {
-  WriteS( "Paint \\\"" );
+  Write0( "Paint \\\"" );
   Write0( regs->r[1] );
-  WriteS( "\\\"" );
+  Write0( "\\\"" );
   NewLine;
   char *p = (void*) regs->r[1];
   char ch;
@@ -770,24 +787,24 @@ static bool Paint( struct workspace *workspace, SWI_regs *regs )
 
 static bool SetPalette( struct workspace *workspace, SWI_regs *regs )
 {
-  WriteS( "SetPalette BG: " ); WriteNum( regs->r[1] );
-  WriteS( ", FG: " ); WriteNum( regs->r[2] );
-  WriteS( ", off: " ); WriteNum( regs->r[3] );
-  WriteS( ", BG BGR: " ); WriteNum( regs->r[4] );
-  WriteS( ", FG BGR: " ); WriteNum( regs->r[5] );
+  Write0( "SetPalette BG: " ); WriteNum( regs->r[1] );
+  Write0( ", FG: " ); WriteNum( regs->r[2] );
+  Write0( ", off: " ); WriteNum( regs->r[3] );
+  Write0( ", BG BGR: " ); WriteNum( regs->r[4] );
+  Write0( ", FG BGR: " ); WriteNum( regs->r[5] );
   NewLine;
   return true;
 }
 
 static bool SetColourTable( struct workspace *workspace, SWI_regs *regs )
 {
-  WriteS( "SetColourTable" ); NewLine;
+  Write0( "SetColourTable" ); NewLine;
   return true;
 }
 
 bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI_regs *regs )
 {
-  NewLine; WriteS( "Handling Font SWI " ); WriteNum( regs->number ); NewLine;
+  NewLine; Write0( "Handling Font SWI " ); WriteNum( regs->number ); NewLine;
 
   switch (regs->number) {
   case 0x01: return FindFont( workspace, regs );
@@ -797,11 +814,11 @@ bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI
   case 0x22: return SetColourTable( workspace, regs );
   }
   static const error_block error = { 0x1e6, "Bad FontManager SWI" };
-  regs->r[0] = (uint32_t) local_ptr( &error );
+  regs->r[0] = (uint32_t) &error;
   return false;
 }
 
-char const swi_names[] = { "Font_" 
+char const swi_names[] = { "Font" 
           "\0CacheAddr" 
           "\0FindFont" 
           "\0LoseFont" 

@@ -78,14 +78,6 @@ void *memset(void *s, int c, size_t n)
 #define WriteS( string ) asm ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "lr" )
 #define Write0( string ) { register uint32_t r0 asm( "r0" ) = (uint32_t) (string); asm ( "push { r0-r12, lr }\nsvc 2\n  pop {r0-r12, lr}" : : "r" (r0) ); }
 
-// Return the relocated address of the item in the module: function or constant.
-static void * local_ptr( const void *p )
-{
-  register uint32_t result;
-  asm ( "adrl %[result], local_ptr" : [result] "=r" (result) );
-  return (void*) (result + (char*) p - (char *) local_ptr);
-}
-
 struct workspace {
   uint32_t lock;
   uint32_t *mbox;
@@ -255,7 +247,6 @@ static void add_to_display( char c, struct core_workspace *workspace )
 
 static void add_string( const char *s, struct core_workspace *workspace )
 {
-  s = local_ptr( s );
   while (*s != 0) {
     add_to_display( *s++, workspace );
   }
@@ -317,7 +308,7 @@ void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace 
                                      1, 1, 1, 1,  1, 1, 1, 1,
                                      1, 2, 3, 6,  1, 1, 2, 21,
                                      9, 6, 1, 1,  5, 5, 1, 3 };
-  const uint8_t *parameter_bytes = local_ptr( bytes );
+  const uint8_t *parameter_bytes = bytes;
 
   if (workspace->queued != 0) {
     workspace->queue[workspace->queued] = c;
@@ -352,7 +343,7 @@ show_character_at( workspace->x, workspace->y, 'p', core( workspace ), Blue, wor
         break;
       default:
         {
-          const char *const *s = local_ptr( specials );
+          const char *const *s = specials;
           add_string( s[workspace->queue[0]], workspace );
           asm ( "bkpt 1" ); break;
         }
@@ -445,13 +436,9 @@ void led_blink( struct workspace *workspace, int n )
 
 void show_word( int x, int y, uint32_t number, uint32_t colour, struct workspace *ws )
 {
-  // Note: You cannot use a lookup table without resorting to trickery
-  // static const char hex[] = ... loads the absolute address of the array.
-  // Use local_ptr( hex ), or calculations...
+  static const char hex[] = "0123456789abcdef";
   for (int nibble = 0; nibble < 8; nibble++) {
-    char c = '0' + ((number >> (nibble*4)) & 0xf);
-    if (c > '9') c += ('a' - '0' - 10);
-    show_character( x+64-nibble*8, y, c, colour, ws );
+    show_character( x+64-nibble*8, y, hex[nibble], colour, ws );
   }
 }
 
@@ -622,7 +609,7 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   }
 
   {
-    void *handler = local_ptr( WrchV_handler );
+    void *handler = WrchV_handler;
     register uint32_t vector asm( "r0" ) = 3;
     register void *routine asm( "r1" ) = handler;
     register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
