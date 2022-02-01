@@ -15,6 +15,16 @@
 
 /* WIMP Module, as an experiment. */
 
+/* Based off A Beginner's Guide to Wimp Programming, at least to start with. */
+
+/* Build commands:
+  arm-linux-gnueabi-gcc-8 simple_wimp.c -Wall -o SimpleWimp.elf -fpic -I ../.. 
+    -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4
+    -g -march=armv8-a+nofp -T ../../module.script -I . -DNO_MODULE_SIZE &&
+  arm-linux-gnueabi-objdump -x --disassemble-all SimpleWimp.elf > SimpleWimp.dump &&
+  arm-linux-gnueabi-objcopy -R .ignoring -O binary SimpleWimp.elf SimpleWimp
+*/
+
 /* Common mistakes: */
 /* Not specifying "lr" (and "cc") in inline SWI calls, which puts the
    module into an infinite loop. */
@@ -26,7 +36,7 @@ const unsigned module_flags = 1;
 #define MODULE_CHUNK "0x8ff00"
 #include "module.h"
 
-NO_start;
+//NO_start;
 //NO_init;
 NO_finalise;
 NO_service_call;
@@ -118,8 +128,16 @@ static void * local_ptr( const void *p )
 }
 /************ End */
 
-// This needs a defined struct workspace
-C_SWI_HANDLER( c_swi_handler );
+static void *rma_claim( uint32_t bytes )
+{
+  // XOS_Module 6 Claim
+  register void *memory asm( "r2" );
+  register uint32_t code asm( "r0" ) = 6;
+  register uint32_t size asm( "r3" ) = bytes;
+  asm ( "svc 0x2001e" : "=r" (memory) : "r" (size), "r" (code) : "lr" );
+
+  return memory;
+}
 
 static void CloseFile( uint32_t file )
 {
@@ -137,12 +155,109 @@ static uint32_t OpenFileForWriting( const char *filename )
   return open;
 }
 
+// This needs a defined struct workspace
+C_SWI_HANDLER( c_swi_handler );
+
+struct core_workspace {
+};
+
+struct poll_block {
+  uint8_t bytes[256];
+};
+
+struct workspace {
+  uint32_t lock;
+  uint32_t file_handle;
+  uint32_t stack[1024]; // How much is needed? Must be followed by poll (see start).
+  struct poll_block poll;
+  struct core_workspace cores[];
+};
+
+static uint32_t Wimp_Initialise( char const *name )
+{
+  register uint32_t known_version asm( "r0" ) = 400;
+  register uint32_t task asm( "r1" ) = 0x4b534154;
+  register char const *const Rname asm( "r2" ) = name;
+
+  register uint32_t version asm( "r0" );
+  register uint32_t handle asm( "r1" );
+  asm volatile ( "svc 0x200c0" 
+      : "=r" (version), "=r" (handle) 
+      : "r" (known_version), "r" (task), "r" (Rname) 
+      : "lr", "cc" );
+
+  return handle;
+}
+
+static uint32_t Wimp_Poll( uint32_t mask, struct poll_block *poll, uint32_t *messages )
+{
+  register uint32_t Rmask asm( "r0" ) = mask;
+  register struct poll_block *Rblock asm( "r1" ) = poll;
+  register uint32_t *Rmessages asm( "r3" ) = messages;
+  register uint32_t code asm( "r0" );
+  asm volatile ( "svc 0x200c7" : "=r" (code) : "r" (Rmask), "r" (Rblock), "r" (Rmessages) : "lr", "cc" );
+  return code;
+}
+
+static uint32_t __attribute__(( noinline )) c_start( struct workspace *workspace )
+{
+  static uint32_t const messages[] = { 0 }; // All messages
+
+  uint32_t handle = Wimp_Initialise( "Wimper" );
+  while (true) {
+    Wimp_Poll( 0, &workspace->poll, 0 ); // No messages );
+  }
+
+  return 0;
+}
+
+// Entered with no stack!
+void __attribute__(( naked )) start()
+{
+  struct workspace *workspace;
+
+  asm volatile ( "ldr %[private_word], [r12]" : [private_word] "=r" (workspace) );
+  asm volatile ( "mov sp, %[stacktop]" : : [stacktop] "r" (&workspace->poll) );
+
+  uint32_t result = c_start( workspace );
+
+  register uint32_t error asm( "r0" ) = 0;
+  register uint32_t abex asm( "r1" ) = 0x58454241;
+  register uint32_t retcode asm( "r2" ) = result;
+  // OS_Exit
+  asm ( "svc 0x20011" : : "r" (error), "r" (abex), "r" (retcode) );
+}
+
+
+static struct workspace *new_workspace( uint32_t number_of_cores )
+{
+  uint32_t required = sizeof( struct workspace ) + number_of_cores * sizeof( struct core_workspace );
+
+  struct workspace *memory = rma_claim( required );
+
+  memset( memory, 0, required );
+
+  return memory;
+}
+
 // Pre-Multi-core C Kernel, these parameters are not passed...
 void init( uint32_t this_core, uint32_t number_of_cores )
 {
-  uint32_t file = OpenFileForWriting( "RAM::RamDisc0.$.SimpleWimpOutput" );
-  if (file != 0)
-    CloseFile( file );
+  struct workspace **private;
+  // Preserve r12, in case we make a function call
+  asm volatile ( "mov %[private_word], r12" : [private_word] "=r" (private) );
+
+  bool first_entry = (*private == 0);
+
+  struct workspace *workspace;
+
+  if (first_entry) {
+    *private = new_workspace( (module_flags & 2) ? number_of_cores : 1 );
+  }
+
+  workspace = *private;
+
+  workspace->file_handle = OpenFileForWriting( "RAM::RamDisc0.$.SimpleWimpOutput" );
 }
 
 

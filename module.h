@@ -16,7 +16,7 @@
 /* Together with module.script, this routine generates a RISC OS module
  * header.
  *
- * arm-linux-gnueabi-gcc-8 my_module.c -o my_module.elf -nostartfiles -nostdlib \
+ * arm-linux-gnueabi-gcc-8 my_module.c -o my_module.elf -nostartfiles -nostdlib -fpic \
    -fno-zero-initialized-in-bss -static -g -march=armv8-a+nofp -T module.script &&
  * arm-linux-gnueabi-objcopy  -R .ignoring -O binary my_module.elf my_module.bin
  *
