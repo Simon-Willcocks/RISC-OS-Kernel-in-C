@@ -28,6 +28,8 @@
 /* Common mistakes: */
 /* Not specifying "lr" (and "cc") in inline SWI calls, which puts the
    module into an infinite loop. */
+/* Not specifying registers clobbered by a SWI, either in clobbered list,
+   if they're not also input to the SWI, or as output registers. */
 
 const unsigned module_flags = 1;
 // Bit 0: 32-bit compatible
@@ -57,7 +59,6 @@ static inline void clear_VF()
   asm ( "msr cpsr_f, #0" );
 }
 
-// asm volatile ( "" ); // Stop the optimiser putting in a call to memset
 // Check that this doesn't get optimised to a call to memset!
 void *memset(void *s, int c, size_t n)
 {
@@ -70,12 +71,12 @@ void *memset(void *s, int c, size_t n)
   uint16_t hv = cv; hv = hv | (hv << (8 * sizeof( cv )));
   uint16_t *hp = (void*) cp;
   // Next size is double, use if, not while
-  if ((((size_t) hp) & (1 << 2)) != 0 && n >= sizeof( hv )) { *hp++ = hv; n-=sizeof( hv ); }
+  if ((((size_t) hp) & (1 << 1)) != 0 && n >= sizeof( hv )) { *hp++ = hv; n-=sizeof( hv ); }
 
   uint32_t wv = hv; wv = wv | (wv << (8 * sizeof( hv )));
   uint32_t *wp = (void*) hp;
   // Next size is double, use if, not while
-  if ((((size_t) wp) & (1 << 3)) != 0 && n >= sizeof( wv )) { *wp++ = wv; n-=sizeof( wv ); }
+  if ((((size_t) wp) & (1 << 2)) != 0 && n >= sizeof( wv )) { *wp++ = wv; n-=sizeof( wv ); }
 
   uint64_t dv = wv; dv = dv | (dv << (8 * sizeof( wv )));
   uint64_t *dp = (void*) wp;
@@ -131,19 +132,12 @@ static void * local_ptr( const void *p )
 static void *rma_claim( uint32_t bytes )
 {
   // XOS_Module 6 Claim
-  register void *memory asm( "r2" );
   register uint32_t code asm( "r0" ) = 6;
   register uint32_t size asm( "r3" ) = bytes;
-  asm ( "svc 0x2001e" : "=r" (memory) : "r" (size), "r" (code) : "lr" );
+  register void *memory asm( "r2" );
+  asm ( "svc 0x2001e" : "=r" (memory) : "r" (size), "r" (code) : "lr", "cc" );
 
   return memory;
-}
-
-static void CloseFile( uint32_t file )
-{
-  register uint32_t code asm( "r0" ) = 0;
-  register uint32_t f asm( "r1" ) = file;
-  asm ( "svc 0x2000d" : : "r" (code), "r" (f) : "lr", "cc" );
 }
 
 static uint32_t OpenFileForWriting( const char *filename )
@@ -155,33 +149,112 @@ static uint32_t OpenFileForWriting( const char *filename )
   return open;
 }
 
+static void CloseFile( uint32_t file )
+{
+  register uint32_t code asm( "r0" ) = 0;
+  register uint32_t f asm( "r1" ) = file;
+  register uint32_t error = 0;
+  asm ( "svc 0x2000d\n  movvs %[error], r0" : [error] "=r" (error) : "r" (code), "r" (f) : "lr", "cc" );
+  if (error != 0) {
+    OpenFileForWriting( "Error" );
+  }
+}
+
+static inline error_block *OSCLI( const char *command )
+{
+  register const char *c asm( "r0" ) = command;
+  register error_block *result asm( "r0" );
+  asm volatile ( "svc 0x20005\n  movvc %[error], #0" : [error] "=r" (result) : "r" (c) : "lr", "cc" );
+  return result;
+}
+
+enum {
+  VV_GSTrans_on_write,  // String       r2 ignored (input is scanned to find length)
+  VV_NumberFromMemory,  // Number       r2 must be 4?
+  VV_GSTrans_on_read,   // Macro        r2 probably not ignored
+  VV_Evaluate_on_read,  // Expanded     ditto
+  VV_No_GSTrans,        // Literal      r2 needed
+  VV_Code = 16 };       // Code         r2 probably not ignored
+
+static inline void SetVarVal_number( char const *var, uint32_t num )
+{
+  register const char *v asm( "r0" ) = var;
+  register uint32_t *val asm( "r1" ) = &num;
+  register uint32_t len asm( "r2" ) = 4;
+  register uint32_t context asm( "r3" ) = 0;
+  register uint32_t type asm( "r4" ) = VV_NumberFromMemory;
+
+  asm volatile ( "svc 0x20024" 
+      : "=r" (type), "=r" (context)
+      : "r" (v), "r" (val), "r" (len), "r" (context), "r" (type), "m" (num)
+      : "lr", "cc" );
+}
+
+static inline void SetVarVal_string( char const *var, char const *str, uint32_t length )
+{
+  register const char *v asm( "r0" ) = var;
+  register char const *val asm( "r1" ) = str;
+  register uint32_t len asm( "r2" ) = length;
+  register uint32_t context asm( "r3" ) = 0;
+  register uint32_t type asm( "r4" ) = VV_No_GSTrans;
+
+  register uint32_t *error;
+
+  asm volatile ( "svc 0x20024\n  movvs %[error], r0\n  movvc %[error], #0"
+      : [error] "=r" (error), "=r" (type), "=r" (context)
+      : "r" (v), "r" (val), "r" (len), "r" (context), "r" (type)
+      : "lr", "cc" );
+  if (error != 0) {
+    SetVarVal_number( "Wimper$Error", *error );
+    // SetVarVal_string( "Wimper$Error$", (char*) (error+1), 32 );
+  }
+}
+
 // This needs a defined struct workspace
 C_SWI_HANDLER( c_swi_handler );
 
 struct core_workspace {
 };
 
-struct poll_block {
+typedef union poll_block poll_block;
+
+union poll_block {
   uint8_t bytes[256];
+  struct {
+    uint32_t size;
+    uint32_t sender;
+    uint32_t my_ref;
+    uint32_t your_ref;
+    uint32_t action;
+    uint32_t data;
+  } message;
 };
 
 struct workspace {
   uint32_t lock;
   uint32_t file_handle;
   uint32_t stack[1024]; // How much is needed? Must be followed by poll (see start).
-  struct poll_block poll;
+  poll_block poll;
   struct core_workspace cores[];
 };
 
-static uint32_t Wimp_Initialise( char const *name )
+static uint32_t OS_ReadMonotonicTime()
+{
+  register uint32_t time asm( "r0" );
+  asm volatile ( "svc 0x20042" : "=r" (time) : : "lr", "cc" );
+  return time;
+}
+
+static uint32_t Wimp_Initialise( char const *name, uint32_t const *messages )
 {
   register uint32_t known_version asm( "r0" ) = 400;
   register uint32_t task asm( "r1" ) = 0x4b534154;
   register char const *const Rname asm( "r2" ) = name;
+  register uint32_t *Rmessages asm( "r3" ) = messages;
 
   register uint32_t version asm( "r0" );
   register uint32_t handle asm( "r1" );
-  asm volatile ( "svc 0x200c0" 
+  asm volatile ( "svc 0x600c0" 
       : "=r" (version), "=r" (handle) 
       : "r" (known_version), "r" (task), "r" (Rname) 
       : "lr", "cc" );
@@ -189,24 +262,110 @@ static uint32_t Wimp_Initialise( char const *name )
   return handle;
 }
 
-static uint32_t Wimp_Poll( uint32_t mask, struct poll_block *poll, uint32_t *messages )
+static uint32_t Wimp_PollIdle( uint32_t mask, poll_block *poll, uint32_t *poll_word, uint32_t time )
 {
   register uint32_t Rmask asm( "r0" ) = mask;
-  register struct poll_block *Rblock asm( "r1" ) = poll;
-  register uint32_t *Rmessages asm( "r3" ) = messages;
+  register poll_block *Rblock asm( "r1" ) = poll;
+  register uint32_t *Rtime asm( "r2" ) = time;
+  register uint32_t *Rpoll_word asm( "r3" ) = poll_word;
   register uint32_t code asm( "r0" );
-  asm volatile ( "svc 0x200c7" : "=r" (code) : "r" (Rmask), "r" (Rblock), "r" (Rmessages) : "lr", "cc" );
+  asm volatile ( "svc 0x600c7" : "=r" (code) : "r" (Rmask), "r" (Rblock), "r" (Rtime), "r" (Rpoll_word) : "lr", "cc" );
   return code;
+}
+
+static uint32_t Wimp_Poll( uint32_t mask, poll_block *poll, uint32_t *poll_word )
+{
+  register uint32_t Rmask asm( "r0" ) = mask;
+  register poll_block *Rblock asm( "r1" ) = poll;
+  register uint32_t *Rpoll_word asm( "r3" ) = poll_word;
+  register uint32_t code asm( "r0" );
+  asm volatile ( "svc 0x600c7" : "=r" (code) : "r" (Rmask), "r" (Rblock), "r" (Rpoll_word) : "lr", "cc" );
+  return code;
+}
+
+static void Wimp_CloseDown( uint32_t handle )
+{
+  register uint32_t Rhandle asm( "r0" ) = handle;
+  register uint32_t Rmagic asm( "r1" ) = 0x4b534154;
+  // Li
+  asm volatile ( "svc 0x600dd" 
+      : "=r" (Rhandle) // Listed because clobbered
+      : "r" (Rhandle), "r" (Rmagic) 
+      : "lr", "cc" );
+}
+
+static void Log( char const *string )
+{
+  char buf[80];
+  char *d = buf;
+  char c;
+  char const *echo = "echo ";
+  do {
+    c = *echo++;
+    *d++ = c;
+  } while (c != '\0');
+  d--;
+  do {
+    c = *string++;
+    if (c >= ' ') {
+      *d++ = c;
+    }
+  } while (c >= ' ');
+  char const *redirect = " { >> WimperLog }";
+  do {
+    c = *redirect++;
+    *d++ = c;
+  } while (c != '\0');
+
+  OSCLI( buf );
+/*
+  uint32_t file = OpenFileForWriting( string );
+  if (file != 0)
+    CloseFile( file );
+*/
+}
+
+static void LogNumber( uint32_t num )
+{
+  char buf[10];
+  char *c = &buf[9];
+  *--c = '\0';
+  if (num == 0) *--c = '0';
+  while (num > 0) {
+    *--c = '0' + (num % 10);
+    num = num / 10;
+  }
+  Log( c );
 }
 
 static uint32_t __attribute__(( noinline )) c_start( struct workspace *workspace )
 {
   static uint32_t const messages[] = { 0 }; // All messages
 
-  uint32_t handle = Wimp_Initialise( "Wimper" );
-  while (true) {
-    Wimp_Poll( 0, &workspace->poll, 0 ); // No messages );
+  Log( "Wimp_Initialising" );
+  uint32_t handle = Wimp_Initialise( "Wimper", &messages );
+  Log( "Wimp_Initialised" );
+  bool exit = false;;
+
+  while (!exit) {
+    Log( "Wimp_Polling" );
+    uint32_t code = Wimp_PollIdle( 0, &workspace->poll, OS_ReadMonotonicTime() + 100, 0 );
+    Log( "Wimp_Polled" );
+    LogNumber( code );
+    switch (code) {
+    case 17: // Message
+    case 18: // Message, recorded
+    case 19: // Message acknowledge
+      Log( "Message" );
+      LogNumber( workspace->poll.message.action );
+      exit = 0 == workspace->poll.message.action;
+      break;
+    }
   }
+
+  Log( "Wimp_CloseDown" );
+  Wimp_CloseDown( handle );
+  Log( "OS_Exit" );
 
   return 0;
 }
@@ -219,6 +378,7 @@ void __attribute__(( naked )) start()
   asm volatile ( "ldr %[private_word], [r12]" : [private_word] "=r" (workspace) );
   asm volatile ( "mov sp, %[stacktop]" : : [stacktop] "r" (&workspace->poll) );
 
+  // FIXME: Do I want to return an error block, or should that be an exceptional exit...?
   uint32_t result = c_start( workspace );
 
   register uint32_t error asm( "r0" ) = 0;
@@ -228,12 +388,12 @@ void __attribute__(( naked )) start()
   asm ( "svc 0x20011" : : "r" (error), "r" (abex), "r" (retcode) );
 }
 
-
 static struct workspace *new_workspace( uint32_t number_of_cores )
 {
   uint32_t required = sizeof( struct workspace ) + number_of_cores * sizeof( struct core_workspace );
 
   struct workspace *memory = rma_claim( required );
+  SetVarVal_number( "Wimper$Mem", (uint32_t) memory );
 
   memset( memory, 0, required );
 
@@ -241,6 +401,7 @@ static struct workspace *new_workspace( uint32_t number_of_cores )
 }
 
 // Pre-Multi-core C Kernel, these parameters are not passed...
+// Don't assume they're valid until the OS version has been checked.
 void init( uint32_t this_core, uint32_t number_of_cores )
 {
   struct workspace **private;
@@ -252,12 +413,14 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   struct workspace *workspace;
 
   if (first_entry) {
+OSCLI( "echo Hello { > WimperLog }" );
+Log( "First" );
     *private = new_workspace( (module_flags & 2) ? number_of_cores : 1 );
   }
 
   workspace = *private;
 
-  workspace->file_handle = OpenFileForWriting( "RAM::RamDisc0.$.SimpleWimpOutput" );
+  // workspace->file_handle = OpenFileForWriting( "RAM::RamDisc0.$.SimpleWimpOutput" );
 }
 
 
