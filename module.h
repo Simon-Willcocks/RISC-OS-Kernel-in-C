@@ -123,3 +123,36 @@ void __attribute__(( naked )) swi_handler() \
   } \
   asm volatile ( "pop {r0-r9, r11, r12, pc}\n  mov r0, sp" ); \
 }
+
+// memset not static, this include file should only be included once in a module;
+// The optimiser occasionally uses this routine.
+void *memset(void *s, int c, size_t n)
+{
+  // In this pattern, if there is a larger size, and it is double the current one, use "if", otherwise use "while"
+  char cv = c & 0xff;
+  char *cp = s;
+  // Next size is double, use if, not while
+  if ((((size_t) cp) & (1 << 0)) != 0 && n >= sizeof( cv )) { *cp++ = cv; n-=sizeof( cv ); }
+
+  uint16_t hv = cv; hv = hv | (hv << (8 * sizeof( cv )));
+  uint16_t *hp = (void*) cp;
+  // Next size is double, use if, not while
+  if ((((size_t) hp) & (1 << 1)) != 0 && n >= sizeof( hv )) { *hp++ = hv; n-=sizeof( hv ); }
+
+  uint32_t wv = hv; wv = wv | (wv << (8 * sizeof( hv )));
+  uint32_t *wp = (void*) hp;
+  // Next size is double, use if, not while
+  if ((((size_t) wp) & (1 << 2)) != 0 && n >= sizeof( wv )) { *wp++ = wv; n-=sizeof( wv ); }
+
+  uint64_t dv = wv; dv = dv | (dv << (8 * sizeof( wv )));
+  uint64_t *dp = (void*) wp;
+  // No larger size, use while, not if, and don't check the pointer bit
+  while (n >= sizeof( dv )) { *dp++ = dv; n-=sizeof( dv ); }
+
+  wp = (void *) dp; if (n >= sizeof( wv )) { *wp++ = wv; n-=sizeof( wv ); }
+  hp = (void *) wp; if (n >= sizeof( hv )) { *hp++ = hv; n-=sizeof( hv ); }
+  cp = (void *) hp; if (n >= sizeof( cv )) { *cp++ = cv; n-=sizeof( cv ); }
+
+  return s;
+}
+

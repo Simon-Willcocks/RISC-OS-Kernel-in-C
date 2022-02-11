@@ -1797,6 +1797,9 @@ void __attribute__(( naked )) fast_horizontal_line_draw( uint32_t left, uint32_t
 
   asm ( "push { r0-r12, lr }" );
 
+#ifdef DEBUG__SHOW_HLINES
+  WriteS( "HLine " ); NewLine;
+#endif
   // EcfOraEor *ecf;
   extern uint32_t frame_buffer;
   uint32_t *screen = &frame_buffer;
@@ -1807,7 +1810,7 @@ void __attribute__(( naked )) fast_horizontal_line_draw( uint32_t left, uint32_t
   case 1: // Foreground
     {
     uint32_t *p = l;
-    uint32_t c = screen_colour_from_os_colour( 0x80808000 | *vduvarloc[153 - 128] );
+    uint32_t c = screen_colour_from_os_colour( *vduvarloc[153 - 128] );
     while (p <= r) {
       *p = c;
       p++;
@@ -2484,18 +2487,20 @@ WriteS( "Setting font colours..." ); NewLine;
   ColourTrans_SetFontColours( font, 0xff800000, 0x00000000, 14 );
 WriteS( "Set font colours." ); NewLine;
 
-  Plot( 4, 100, 100 );
+#if 1
+
   // This does not work at all. Although the 100 seems to vary according to the DPI?
   // No, the text moves up and right according to the size of the font/DPI.
   // By default offsets are in millipoints, try 1 inch up, 2 across.
   // Looks the same no matter how many H's.
+  // Still not working, but I'm working on a replacement FontManager in C
   Font_Paint( font, "Hx", 0, 2*72000, 72000, 0 );
 
   for (;;) {}
   __builtin_unreachable();
 }
 
-#if 0
+#else
 static uint32_t path1[] = {
  0x00000002, 0x00000400, 0xffff7400,
  0x00000008, 0x00006900, 0xffff9e00,
@@ -2868,7 +2873,7 @@ NewLine;
 
     for (int i = 0; i < 0x800000; i++) { asm ( "" ); }
 
-    SetColour( 0, 0x000000 );
+    SetColour( 0, 0x00000000 );
 //    Draw_Fill( path1, matrix ); // Not needed for small changes in angle
     Draw_Fill( path2, matrix );
     Draw_Fill( path3, matrix );
