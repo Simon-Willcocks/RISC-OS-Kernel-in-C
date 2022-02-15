@@ -1668,7 +1668,8 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
         break;
       default:
         WriteS( "Unimplemented!" ); NewLine;
-        asm ( "bkpt 1" );
+        register uint32_t swinum asm( "r0" ) = number;
+        asm ( "bkpt 1" : : "r" (swinum) );
         //asm ( "bkpt 1" ); // WindowManager initialisation uses OS_DynamicArea to get free pool, and OS_Memory to allocate from it; let them continue
       }
     }

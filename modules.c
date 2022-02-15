@@ -45,6 +45,11 @@ struct module {
   char postfix[];
 };
 
+static void *pointer_at_offset_from( void *base, uint32_t off )
+{
+  return ((uint8_t*) base) + off;
+}
+
 static inline uint32_t start_code( module_header *header )
 {
   return header->offset_to_start + (uint32_t) header;
@@ -500,6 +505,27 @@ static bool Unknown_OS_Module_call( svc_registers *regs )
   return false;
 }
 
+static module *find_module( char const *name )
+{
+#ifdef DEBUG__SHOW_MODULE_LOOKUPS
+WriteS( "Looking for " ); Write0( name );
+#endif
+  module *m = workspace.kernel.module_list_head;
+  int number = 0;
+  while (m != 0 && 0 != riscoscmp( title_string( m->header ), name, true )) {
+#ifdef DEBUG__SHOW_MODULE_LOOKUPS
+WriteS( ", not " ); Write0( title_string( m->header ) );
+#endif
+    m = m->next;
+    number++;
+  }
+
+#ifdef DEBUG__SHOW_MODULE_LOOKUPS
+if (m) { WriteS( ", FOUND " ); Write0( title_string( m->header ) ); NewLine; }
+#endif
+  return m;
+}
+
 #define OSMERR( f, l ) do { WriteS( f l ); for (;;) {}; } while (0)
 
 static bool do_Module_Run( svc_registers *regs )
@@ -516,8 +542,44 @@ Write0( __func__ ); for (;;) {};
 
 static bool do_Module_Enter( svc_registers *regs )
 {
-Write0( __func__ ); for (;;) {};
-  return Unknown_OS_Module_call( regs );
+  // This routine should follow the procedure described in 1-235 including 
+  // making the upcall OS_FSControl 2 2-85
+
+  // At the moment, we're just starting the WindowManager (Wimp), via
+  // Desktop.
+
+  char const *module_name = regs->r[1];
+  char const *parameters = regs->r[2];
+  module *m = find_module( module_name );
+
+  if (m == 0) {
+    static error_block error = { 0x185, "Module not found (TODO)" };
+    regs->r[0] = (uint32_t)&error;
+    return false;
+  }
+
+  // Found it.
+
+  if (m->header->offset_to_start == 0) {
+    return true;
+  }
+
+  // Remember: eret is unpredictable in System mode
+  // TODO: This does not yet reset the SVC stack.
+  register uint32_t private asm ( "r12" ) = m->private_word;
+  asm ( "isb"
+    "\n\tmsr spsr, %[usermode]"
+    "\n\tmov lr, %[usr]"
+    "\n\tmsr sp_usr, %[stacktop]"
+    "\n\tisb"
+    "\n\teret" 
+    : 
+    : [stacktop] "r" (0xffffffff)       // Dummy, it's up to the module to allocate stack if it needs it
+    , [usr] "r" (pointer_at_offset_from( m->header, m->header->offset_to_start ))
+    , [usermode] "r" (0x10)
+    , "r" (private) );
+
+  return false;
 }
 
 static bool do_Module_ReInit( svc_registers *regs )
@@ -775,6 +837,7 @@ Write0( __func__ ); WriteS( " " ); Write0( regs->r[1] );
   // Initially called by Wimp during init, just to find ROM location
 
   const char *name = (void*) regs->r[1];
+  // Not calling find_module, want the number as well...
   module *m = workspace.kernel.module_list_head;
   int number = 0;
   while (m != 0 && 0 != riscoscmp( title_string( m->header ), name, true )) {
@@ -938,7 +1001,7 @@ bool do_OS_CallAVector( svc_registers *regs )
 
 static bool error_InvalidVector( svc_registers *regs )
 {
-  static error_block error = { 0x999, "Invalid vector number #" };
+  static error_block error = { 0x998, "Invalid vector number #" };
   regs->r[0] = (uint32_t) &error;
   return false;
 }
@@ -1101,7 +1164,7 @@ bool excluded( const char *name )
 {
   // These modules fail on init, at the moment.
   static const char *excludes[] = { "PCI"               // Data abort fc01ff04 prob. pci_handles
-                     //             , "WindowManager"     // Sprite problems
+                                  // , "WindowManager"     // Sprite problems
                                   , "Debugger"
                                   , "BCMSupport"        // Unknown dynamic area
                                   , "Portable"          // Uses OS_MMUControl
@@ -2494,7 +2557,15 @@ WriteS( "Set font colours." ); NewLine;
   // By default offsets are in millipoints, try 1 inch up, 2 across.
   // Looks the same no matter how many H's.
   // Still not working, but I'm working on a replacement FontManager in C
-  Font_Paint( font, "Hx", 0, 2*72000, 72000, 0 );
+  Font_Paint( font, "Ax", 0, 2*72000, 72000, 0 );
+
+  //OSCLI( "Desktop" );
+  // Fake the above...
+  // Remember, we are in USR mode - no access to zero page, etc.
+  register uint32_t code asm( "r0" ) = 2; // RMEnter
+  register char const *module asm( "r1" ) = "WindowManager";
+  register char const *params asm( "r2" ) = 0;
+  asm volatile ( "svc 0x1e" : : "r" (code), "r" (module), "r" (params) );
 
   for (;;) {}
   __builtin_unreachable();

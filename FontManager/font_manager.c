@@ -41,6 +41,40 @@
   (maybe all found fonts, to Lose on exit?)
 */
 
+/*
+  Painting a character (outline format only):
+
+  A character will have a bounding box, or use the bounding box of the font.
+  A character may have an associated base character,
+  it may have an accent (like a base character, but with an offset).
+  All three will contain a path description in design coordinates.
+  All three may contain strokes to be drawn thin if the output is too small.
+
+  Find the character from its Unicode/ASCII code, if neccessary its base
+  and accent characters as well. (This involves checking the Encodings, I
+  think. TODO, when strings come out as characters, but the wrong ones!)
+
+  Build two Draw paths, one for filling, the other for stroking.
+
+  So:
+  error_block *MakeCharPaths( Font const *font,
+                              uint32_t ch,
+                              uint32_t *fill_path,
+                              uint32_t *stroke_path,
+                              Font_BBox *bb );
+
+  Recurse to paint the base and the accent, if present.
+
+  The passed in path arrays will contain the number of free words in the
+  first word.
+
+  A font could be written to infinitely recurse, or simply have very
+  complicated paths, so MakeCharPaths will have to have the ability to return
+  an error (or throw an exception). (The font could be malicious, if we
+  ever get any security that makes it worthwhile.)
+
+
+*/
 const unsigned module_flags = 3;
 // Bit 0: 32-bit compatible
 // Bit 1: Multiprocessing
@@ -135,14 +169,14 @@ static void *rma_claim( uint32_t bytes )
   return memory;
 }
 
-static int32_t int16_at( uint8_t *p )
+static int32_t int16_at( uint8_t const *p )
 {
   int32_t result = p[1];
   result = (result << 8) | p[0];
   return result;
 }
 
-static uint32_t uint16_at( uint8_t *p )
+static uint32_t uint16_at( uint8_t const *p )
 {
   uint32_t result = p[1];
   result = (result << 8) | p[0];
@@ -205,7 +239,7 @@ Components of an IntMetrics0 file:
 Header
 [ character map ]
 [ bbox data ] (bottom left inclusive, top right exclusive)
-[ x offsets ] 
+[ x offsets ]
 [ y offsets ]
 [ [ misc data area ]
   [ kern pair data area ]
@@ -252,17 +286,17 @@ typedef struct __attribute__(( packed )) {
   int16_t sbz[2];
 } IntMetrics0_Misc_Data;
 
-static uint32_t IntMetrics0_num( IntMetric0 *header )
+static uint32_t IntMetrics0_num( IntMetric0 const *header )
 {
   return (header->nhi << 8) | header->nlo;
 }
 
-static void *pointer_at_offset_from( void *base, uint32_t off )
+static void const *pointer_at_offset_from( void const *base, uint32_t off )
 {
   return ((uint8_t*) base) + off;
 }
 
-static uint8_t *IntMetrics0_character_map( IntMetric0 *header )
+static uint8_t const *IntMetrics0_character_map( IntMetric0 const *header )
 {
   if (!header->has_character_map || header->character_map_size == 0) {
     return 0;
@@ -273,7 +307,7 @@ static uint8_t *IntMetrics0_character_map( IntMetric0 *header )
   return pointer_at_offset_from( header, 54 );
 }
 
-static int16_t IntMetrics0_char_index( IntMetric0 *header, uint32_t ch )
+static int16_t IntMetrics0_char_index( IntMetric0 const *header, uint32_t ch )
 {
   uint8_t *map = IntMetrics0_character_map( header );
   if (map != 0) {
@@ -282,7 +316,7 @@ static int16_t IntMetrics0_char_index( IntMetric0 *header, uint32_t ch )
   return ch;
 }
 
-static int16_t *IntMetrics0_bboxes( IntMetric0 *header )
+static int16_t const *IntMetrics0_bboxes( IntMetric0 const *header )
 {
   if (header->no_bbox_data) return 0;
 
@@ -298,7 +332,7 @@ static int16_t *IntMetrics0_bboxes( IntMetric0 *header )
   return pointer_at_offset_from( header, off );
 }
 
-static int16_t *IntMetrics0_x_offsets( IntMetric0 *header )
+static int16_t const *IntMetrics0_x_offsets( IntMetric0 const *header )
 {
   if (header->no_x_offsets) return 0;
 
@@ -320,7 +354,7 @@ static int16_t *IntMetrics0_x_offsets( IntMetric0 *header )
   return pointer_at_offset_from( header, off );
 }
 
-static int16_t *IntMetrics0_y_offsets( IntMetric0 *header )
+static int16_t const *IntMetrics0_y_offsets( IntMetric0 const *header )
 {
   if (header->no_y_offsets) return 0;
 
@@ -346,7 +380,7 @@ static int16_t *IntMetrics0_y_offsets( IntMetric0 *header )
   return pointer_at_offset_from( header, off );
 }
 
-static uint16_t *IntMetrics0_extra_offsets( IntMetric0 *header )
+static uint16_t const *IntMetrics0_extra_offsets( IntMetric0 const *header )
 {
   if (!header->has_extra_data) return 0;
 
@@ -376,7 +410,7 @@ static uint16_t *IntMetrics0_extra_offsets( IntMetric0 *header )
   return pointer_at_offset_from( header, off );
 }
 
-static IntMetrics0_Misc_Data *IntMetrics0_misc_data( IntMetric0 *header )
+static IntMetrics0_Misc_Data const *IntMetrics0_misc_data( IntMetric0 const *header )
 {
   uint16_t *offsets = IntMetrics0_extra_offsets( header );
 
@@ -385,7 +419,7 @@ static IntMetrics0_Misc_Data *IntMetrics0_misc_data( IntMetric0 *header )
   return pointer_at_offset_from( offsets, offsets[0] );
 }
 
-static void *IntMetrics0_kern_pair_data( IntMetric0 *header )
+static void const *IntMetrics0_kern_pair_data( IntMetric0 const *header )
 {
   uint16_t *offsets = IntMetrics0_extra_offsets( header );
 
@@ -394,22 +428,22 @@ static void *IntMetrics0_kern_pair_data( IntMetric0 *header )
   return pointer_at_offset_from( offsets, offsets[1] );
 }
 
-static int16_t IntMetrics0_x_offset( IntMetric0 *header, uint32_t ch )
+static int16_t IntMetrics0_x_offset( IntMetric0 const *header, uint32_t ch )
 {
   int16_t const *offsets = IntMetrics0_x_offsets( header );
 
   if (0 == offsets) return 0;
 
-  return pointer_at_offset_from( header, offsets[IntMetrics0_char_index( header, ch )] );
+  return *(int16_t*) pointer_at_offset_from( header, offsets[IntMetrics0_char_index( header, ch )] );
 }
 
-static int16_t IntMetrics0_y_offset( IntMetric0 *header, uint32_t ch )
+static int16_t IntMetrics0_y_offset( IntMetric0 const *header, uint32_t ch )
 {
   int16_t const *offsets = IntMetrics0_y_offsets( header );
 
   if (0 == offsets) return 0;
 
-  return pointer_at_offset_from( header, offsets[IntMetrics0_char_index( header, ch )] );
+  return *(int16_t*) pointer_at_offset_from( header, offsets[IntMetrics0_char_index( header, ch )] );
 }
 
 /* End of access routines for IntMetrics0 format files (v. 2) */
@@ -419,7 +453,7 @@ static int16_t IntMetrics0_y_offset( IntMetric0 *header, uint32_t ch )
 /*
 Components of an outline font file v. 8:
 
-Header 
+Header
 */
 
 typedef struct __attribute__(( packed )) {
@@ -438,7 +472,7 @@ typedef struct __attribute__(( packed )) {
   uint16_t scaffold_data[]; // scaffold_data[0] is size of table// 0x34
 } OutlineFontFile;
 
-static uint32_t OutlineFontFile_chunks_offsets( OutlineFontFile *file )
+static uint32_t OutlineFontFile_chunks_offsets( OutlineFontFile const *file )
 {
   return pointer_at_offset_from( file, file->offset_to_chunk_offsets );
 }
@@ -526,56 +560,21 @@ static void ShowScaffoldEntry( uint8_t *entry, uint32_t base )
   }
 }
 
-static void PaintChar( Font *font, uint32_t ch )
+// Read the coordinates at v, 8 or 12 bits
+static const uint8_t *read_font_coord_pair( uint8_t const *v, bool wide, int16_t* x, int16_t* y )
 {
-  IntMetric0 const * const metrics = font->IntMetrics0;
-  OutlineFontFile const * const outline_font = font->Outlines0;
-
-  uint32_t max_char = IntMetrics0_num( metrics );
-
-  uint16_t index = IntMetrics0_char_index( metrics, ch );
-  Write0( "Index: " ); WriteNum( index ); NewLine;
-  if (index > max_char) {
-    Write0( "Character out of range" ); NewLine;
-    return;
+  if (wide) {
+    *x = v[0] | ((v[1] & 0xf) <<8);
+    if (0 != (*x & 0x800)) *x |= 0xf000;
+    *y = (v[2] << 4) | ((v[1] & 0xf0) >> 4);
+    if (0 != (*y & 0x800)) *y |= 0xf000;
+    return v + 3;
   }
-
-  uint32_t offset = (char*) outline_font->scaffold_data - (char*) outline_font;
-
-  if (outline_font->scaffold_data[ch] != 0) {
-    uint16_t data = outline_font->scaffold_data[ch];
-    uint16_t off;
-    bool base_8bit;
-    if (outline_font->all_16_bit) {
-      off = data;
-      base_8bit = false;
-    }
-    else {
-      base_8bit = 0 == (0x8000 & data);
-      off = data & 0x7fff;
-    }
-    uint16_t *scaffolding = pointer_at_offset_from( outline_font->scaffold_data, off );
-    register c asm( "r0" ) = ch;
-    asm( "svc 0" : : "r" (c) : "lr" );
-    Write0( " " ); WriteSmallNum( ch, 1 ); Write0( " " ); WriteSmallNum( off + offset, 1 ); Write0( " " ); WriteSmallNum( scaffolding, 1 ); NewLine;
-    if (base_8bit) {
-      uint32_t base = *(uint8_t*) scaffolding;
-      ShowScaffoldEntry( pointer_at_offset_from( scaffolding, 1 ), base );
-    }
-    else {
-      uint32_t base = uint16_at( scaffolding );
-      ShowScaffoldEntry( pointer_at_offset_from( scaffolding, 2 ), base );
-    }
+  else {
+    *x = *(int8_t*) (v);
+    *y = *(int8_t*) (v+1);
+    return v + 2;
   }
-}
-
-static const uint8_t *read_12bit_pair( uint8_t const *v, int16_t* x, int16_t* y )
-{
-  *x = v[0] | ((v[1] & 0xf) <<8);
-  if (0 != (*x & 0x800)) *x |= 0xf000;
-  *y = (v[2] << 4) | ((v[1] & 0xf0) >> 4);
-  if (0 != (*y & 0x800)) *y |= 0xf000;
-  return v + 3;
 }
 
 typedef union {
@@ -594,7 +593,7 @@ static void SetColour( uint32_t flags, uint32_t colour )
 {
   register uint32_t in_flags asm( "r0" ) = flags;
   register uint32_t in_colour asm( "r1" ) = colour;
-  asm ( "swi %[swi]" : 
+  asm ( "swi %[swi]" :
         : "r" (in_colour)
         , "r" (in_flags)
         , [swi] "i" (0x20061) // (OS_SetColour)
@@ -610,14 +609,14 @@ static void SetGraphicsFgColour( uint32_t colour )
   asm ( "svc %[swi]" : : [swi] "i" (0x60743), "r" (pal), "r" (Rflags), "r" (action) : "lr", "cc" );
 }
 
-static void Draw_Fill( uint32_t *path, uint8_t style, int32_t *transformation_matrix )
+static void Font_Draw_Fill( uint32_t *path, int32_t *transformation_matrix )
 {
   register uint32_t *draw_path asm( "r0" ) = path;
-  register uint32_t fill_style asm( "r1" ) = style;
+  register uint32_t fill_style asm( "r1" ) = 0x30; // V8 non-zero filling
   register  int32_t *matrix asm( "r2" ) = transformation_matrix;
-  register uint32_t flatness asm( "r3" ) = 0;
+  register uint32_t flatness asm( "r3" ) = 0;   // Set to 100 results in access to 0x5000...? FIXME
   asm ( "swi 0x60702"
-        : 
+        :
         : "r" (draw_path)
         , "r" (fill_style)
         , "r" (matrix)
@@ -625,21 +624,16 @@ static void Draw_Fill( uint32_t *path, uint8_t style, int32_t *transformation_ma
         : "lr", "cc" );
 }
 
-void Draw_Stroke( uint32_t *path, uint32_t thick, uint32_t *transformation_matrix )
+void Font_Draw_Stroke( uint32_t *path, int32_t *transformation_matrix )
 {
-  // Keep this declaration before the first register variable declaration, or
-  // -Os will cause the compiler to forget the preceding registers.
-  // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=101422
-  uint32_t cap_and_join_style[4] =  { 0, 0xa0000, 0, 0 };
-
   register uint32_t *draw_path asm( "r0" ) = path;
-  register uint32_t fill_style asm( "r1" ) = 0;
-  register uint32_t *matrix asm( "r2" ) = transformation_matrix;
-  register uint32_t flatness asm( "r3" ) = 0;
-  register uint32_t thickness asm( "r4" ) = thick;
-  register uint32_t *cap_and_join asm( "r5" ) = cap_and_join_style;
+  register uint32_t fill_style asm( "r1" ) = 0x18;
+  register int32_t *matrix asm( "r2" ) = transformation_matrix;
+  register uint32_t flatness asm( "r3" ) = 100;
+  register uint32_t thickness asm( "r4" ) = 0;
+  register uint32_t *cap_and_join asm( "r5" ) = 0;
   register uint32_t dashes asm( "r6" ) = 0;
-  asm ( "swi 0x60704" : 
+  asm ( "swi 0x60704" :
         : "r" (draw_path)
         , "r" (fill_style)
         , "r" (matrix)
@@ -647,81 +641,170 @@ void Draw_Stroke( uint32_t *path, uint32_t thick, uint32_t *transformation_matri
         , "r" (thickness)
         , "r" (cap_and_join)
         , "r" (dashes)
-        , "m" (cap_and_join_style) // Without this, the array is not initialised
-        : "lr" );
+        : "lr", "cc" );
 }
 
-static uint8_t const *make_path( uint8_t const *next_byte, uint32_t *path )
+// On entry, the path array must be initialised with the number of
+// remaining usable elements in the array at index 0.
+// If the array is too small, the draw path will be prematurely terminated
+// and null returned, since the path wasn't completed.
+// The returned value is the address of the font terminator byte, or null.
+static uint8_t const *FontToDrawPath( uint8_t const *next_byte, bool wide, uint32_t *path )
 {
-  bool terminated = false;
-  do {
+  uint32_t remaining_space = path[0];
+  static uint32_t const termination_space = 1;
+  bool terminated = remaining_space <= termination_space;
+  while (!terminated) {
     uint8_t code = *next_byte++;
     switch (3 & code) {
     case 0:
       {
-        Write0( "Term " ); WriteSmallNum( code, 2 ); NewLine;
+        // Term
+        next_byte--;
         terminated = true;
-        *path = 0;
       }
       break;
     case 1:
-      {
-        Write0( "Move " );
-        int16_t x;
-        int16_t y;
-        next_byte = read_12bit_pair( next_byte, &x, &y );
-        WriteSmallNum( x, 4 ); Write0( ", " ); WriteSmallNum( y, 4 ); NewLine;
-        *path++ = 2; *path++ = ((int32_t) x) << 8; *path++ = ((int32_t) y) << 8;
-      }
-      break;
     case 2:
       {
-        Write0( "Line " );
+        // Move
         int16_t x;
         int16_t y;
-        next_byte = read_12bit_pair( next_byte, &x, &y );
-        WriteSmallNum( x, 4 ); Write0( ", " ); WriteSmallNum( y, 4 ); NewLine;
-        *path++ = 8; *path++ = ((int32_t) x) << 8; *path++ = ((int32_t) y) << 8;
+        next_byte = read_font_coord_pair( next_byte, wide, &x, &y );
+        if (remaining_space >= 3 + termination_space) {
+          remaining_space -= 3; // code, x, y
+
+          if (1 == (3 & code))
+            *path++ = 2; // Move
+          else
+            *path++ = 8; // Line
+          *path++ = ((int32_t) x) << 8; *path++ = ((int32_t) y) << 8;
+        }
+        else {
+          next_byte = 0;
+          terminated = true;
+        }
       }
       break;
     case 3:
       {
-        Write0( "Curve " );
+        // Curve
         int16_t x;
         int16_t y;
-        *path++ = 6;
-        next_byte = read_12bit_pair( next_byte, &x, &y );
-        WriteSmallNum( x, 4 ); Write0( ", " ); WriteSmallNum( y, 4 ); Write0( "; " );
-        *path++ = ((int32_t) x) << 8; *path++ = ((int32_t) y) << 8;
-        next_byte = read_12bit_pair( next_byte, &x, &y );
-        WriteSmallNum( x, 4 ); Write0( ", " ); WriteSmallNum( y, 4 ); Write0( "; " );
-        *path++ = ((int32_t) x) << 8; *path++ = ((int32_t) y) << 8;
-        next_byte = read_12bit_pair( next_byte, &x, &y );
-        WriteSmallNum( x, 4 ); Write0( ", " ); WriteSmallNum( y, 4 ); NewLine;
-        *path++ = ((int32_t) x) << 8; *path++ = ((int32_t) y) << 8;
+        if (remaining_space >= 7 + termination_space) {
+          remaining_space -= 7; // code, control 1, control 2, endpoint x, y
+
+          *path++ = 6;
+          next_byte = read_font_coord_pair( next_byte, wide, &x, &y );
+          *path++ = ((int32_t) x) << 8; *path++ = ((int32_t) y) << 8;
+          next_byte = read_font_coord_pair( next_byte, wide, &x, &y );
+          *path++ = ((int32_t) x) << 8; *path++ = ((int32_t) y) << 8;
+          next_byte = read_font_coord_pair( next_byte, wide, &x, &y );
+          *path++ = ((int32_t) x) << 8; *path++ = ((int32_t) y) << 8;
+        }
+        else {
+          next_byte = 0;
+          terminated = true;
+        }
       }
     }
-  } while (!terminated);
+  }
+
+  if (remaining_space <= termination_space) {
+    next_byte = 0; // in case given a too small array
+  }
+  else {
+    *path++ = 0; // End path
+  }
 
   return next_byte;
 }
 
-static void ShowCharacter( uint8_t const *ch, uint32_t *matrix )
+typedef struct {        // 32-bit word
+  uint32_t horizontal_subpixel_placement:1;
+  uint32_t vertical_subpixel_placement:1;
+  uint32_t sbz1:5;
+  uint32_t dependency_bytes:1;
+  uint32_t sbz2:23;
+  uint32_t sbo:1;
+} FontChunkFlags;
+
+typedef struct {        // Single byte
+  uint8_t coords_12bit:1;
+  uint8_t data_1bpp:1;
+  uint8_t initial_pixel_black:1;
+  uint8_t outline:1;
+  uint8_t composite:1;
+  uint8_t has_accent:1;
+  uint8_t codes_16bit:1;
+  uint8_t sbz:1;
+} FontCharacterFlags;
+
+FontCharacterFlags read_font_character_flags( uint8_t byte )
 {
-  // Note: the flags word are for versions 8+
   union {
-    struct {
-      uint8_t coords_12bit:1;
-      uint8_t data_1bpp:1;
-      uint8_t initial_pixel_black:1;
-      uint8_t outline:1;
-      uint8_t composite:1;
-      uint8_t has_accent:1;
-      uint8_t codes_16bit:1;
-      uint8_t sbz:1;
-    };
+    FontCharacterFlags flags;
     uint8_t raw;
-  } character = { .raw = *ch };
+  } flags_byte = { .raw = byte };
+  return flags_byte.flags;
+}
+
+// aka BuildCharPath/BuildPath/MakePath?
+static error_block *MakeCharPaths( Font const *font,
+                               uint32_t ch,
+                               uint32_t *fill_path,
+                               uint32_t *stroke_path,
+                               Font_BBox *bbox )
+{
+  IntMetric0 const * const metrics = font->IntMetrics0;
+  OutlineFontFile const * const outline_font = font->Outlines0;
+
+  // On entry, the path arrays must be initialised with the number of
+  // remaining usable elements in the array at index 0. (See Paint.)
+
+  uint32_t max_char = IntMetrics0_num( metrics );
+
+  uint16_t index = IntMetrics0_char_index( metrics, ch );
+
+Write0( "Character: " ); WriteSmallNum( ch, 1 ); Write0( ", index " ); WriteSmallNum( index, 1 ); NewLine;
+
+  uint32_t *chunks = OutlineFontFile_chunks_offsets( outline_font );
+
+Write0( "Chunk offset: " ); WriteSmallNum( chunks[ch / 32], 1 ); NewLine;
+
+  if (outline_font->number_of_chunks < ch / 32) {
+    // No such char FIXME
+    fill_path[0] = 0;
+    stroke_path[0] = 0;
+    return 0;
+  }
+
+  if (0 == chunks[ch / 32]) {
+    // No such char FIXME
+    fill_path[0] = 0;
+    stroke_path[0] = 0;
+    return 0;
+  }
+
+  uint32_t *chunk = pointer_at_offset_from( outline_font, chunks[ch / 32] );
+
+  // File format requires chunks are word aligned.
+  assert( 0 == (3 & (uint32_t) chunk) );
+
+  uint32_t *char_offsets = chunk + 1;
+
+  uint8_t *char_data = pointer_at_offset_from( char_offsets, char_offsets[ch % 32] );
+Write0( "Char offset: " ); WriteNum( char_offsets[ch % 32] ); NewLine;
+
+  if (0 == char_offsets[ch % 32]) {
+    // No such char FIXME
+    fill_path[0] = 0;
+    stroke_path[0] = 0;
+    return 0;
+  }
+
+  // Note: the flags byte is only in versions 8+
+  FontCharacterFlags character = read_font_character_flags( char_data[0] );
 
   if (character.coords_12bit) { Write0( "12 bit coordinates" ); NewLine; }
   if (character.data_1bpp) { Write0( "1 bit per pixel (or outline)" ); NewLine; }
@@ -731,8 +814,12 @@ static void ShowCharacter( uint8_t const *ch, uint32_t *matrix )
   if (character.has_accent) { Write0( "Has accent" ); NewLine; }
   if (character.codes_16bit) { Write0( "16-bit character codes" ); NewLine; }
 
-  uint8_t const *next_byte = ch+1;
+  uint8_t const *next_byte = char_data+1;
   uint16_t base_character = 0; // Only important if character.composite
+
+  uint16_t accent_character = 0; // Only important if character.has_accent
+  int16_t accentx;
+  int16_t accenty;
 
   if (character.outline) {
     if (character.composite) {
@@ -746,159 +833,140 @@ static void ShowCharacter( uint8_t const *ch, uint32_t *matrix )
     }
 
     if (character.has_accent) {
-      return;
-      asm ( "bkpt 1" ); // TODO FIXME
+      if (character.codes_16bit) {
+        accent_character = uint16_at( next_byte );
+        next_byte += 2;
+      }
+      else {
+        accent_character = *next_byte++;
+      }
+      
+      next_byte = read_font_coord_pair( next_byte, character.coords_12bit, &accentx, &accenty );
     }
   }
 
-  Font_BBox bbox = { 0 };
   if (character.outline == 0 || character.composite == 0) {
-    if (character.coords_12bit) {
-      Write0( "12-bits BBox: " );
-      WriteSmallNum( next_byte[0], 2 ); 
-      WriteSmallNum( next_byte[1], 2 ); 
-      WriteSmallNum( next_byte[2], 2 ); 
-      WriteSmallNum( next_byte[3], 2 ); 
-      WriteSmallNum( next_byte[4], 2 ); 
-      WriteSmallNum( next_byte[5], 2 ); 
-      NewLine;
-
-      next_byte = read_12bit_pair( next_byte, &bbox.left_inclusive, &bbox.bottom_inclusive );
-      next_byte = read_12bit_pair( next_byte, &bbox.width, &bbox.height );
-    }
-    else {
-      bbox.left_inclusive = *(int8_t*)next_byte++;
-      bbox.bottom_inclusive = *(int8_t*)next_byte++;
-      bbox.width = *(int8_t*)next_byte++;
-      bbox.height = *(int8_t*)next_byte++;
-    }
+    next_byte = read_font_coord_pair( next_byte, character.coords_12bit,
+                                      &bbox->left_inclusive, &bbox->bottom_inclusive );
+    next_byte = read_font_coord_pair( next_byte, character.coords_12bit,
+                                      &bbox->width, &bbox->height );
 
     Write0( "BBox: " );
-    WriteSmallNum( bbox.left_inclusive, 4 ); Write0( ", " );
-    WriteSmallNum( bbox.bottom_inclusive, 4 ); Write0( ", " );
-    WriteSmallNum( bbox.width, 4 ); Write0( ", " );
-    WriteSmallNum( bbox.height, 4 ); NewLine;
+    WriteSmallNum( bbox->left_inclusive, 4 ); Write0( ", " );
+    WriteSmallNum( bbox->bottom_inclusive, 4 ); Write0( ", " );
+    WriteSmallNum( bbox->width, 4 ); Write0( ", " );
+    WriteSmallNum( bbox->height, 4 ); NewLine;
+  }
+  else {
+    *bbox = outline_font->font_max_bbox;
   }
 
-    SetColour( 0, 0x00e50000 );
-
-  uint32_t path[64];
-
-  next_byte = make_path( next_byte, path );
-  Draw_Fill( path, 0x32, matrix );
-  if (0 != (next_byte[-1] & 8)) {
-    SetColour( 0, 0xe5000000 );
-  matrix[4] += 64*256;
-    next_byte = make_path( next_byte, path );
-    Draw_Stroke( path, 0x18, matrix );
-    SetColour( 0, 0x00e50000 );
+  next_byte = FontToDrawPath( next_byte, character.coords_12bit, fill_path );
+  if (next_byte != 0) {
+    next_byte = FontToDrawPath( next_byte, character.coords_12bit, stroke_path );
   }
-  matrix[4] += 64*256;
+
+  if (next_byte == 0) {
+    Write0( "Path creation failed" ); NewLine;
+    // FIXME Report error?
+  }
 
   assert( character.sbz == 0 );
+
+  return 0;
 }
 
-static void ShowChunk( Font *font, uint32_t *chunk, int index )
+#define DEBUG__SHOW_FONT_PATHS
+#ifdef DEBUG__SHOW_FONT_PATHS
+static void DebugPrintPath( uint32_t *p )
 {
-  // File format requires chunks are work aligned.
-  assert( 0 == (3 & (uint32_t) chunk) );
-
-  union {
-    struct {
-      uint32_t horizontal_subpixel_placement:1;
-      uint32_t vertical_subpixel_placement:1;
-      uint32_t sbz1:5;
-      uint32_t dependency_bytes:1;
-      uint32_t sbz2:23;
-      uint32_t sbo:1;
-    };
-    uint32_t raw;
-  } flags = { .raw = *chunk };
-
-uint32_t matrix[6] = { 0x2000, 0, 0, 0x2000, 0x1000, 0x4000 * index };
-  OutlineFontFile const * const outline_font = font->Outlines0;
-
-  Write0( "Chunk" ); NewLine;
-  uint32_t *next_word = chunk + 1;
-  for (int i = 0; i < 32; i++) { // 32 characters
-    Write0( "Character: " ); WriteSmallNum( i, 1 ); Write0( " " );
-    WriteSmallNum( (uint32_t) pointer_at_offset_from( next_word, next_word[i] ) - (uint32_t) outline_font, 4 ); NewLine;
-    if (next_word[i] != 0) {
-      ShowCharacter( pointer_at_offset_from( next_word, next_word[i] ), matrix );
+  uint32_t code;
+  do {
+    code = *p++;
+    switch (code) {
+      case 0:
+        Write0( "End." );
+        break;
+      case 1:
+        Write0( "Pointer... " ); WriteNum( *p++ );
+        break;
+      case 2:
+        Write0( "Move to " ); WriteNum( *p++ ); Write0( ", " ); WriteNum( *p++ );
+        break;
+      case 3:
+        Write0( "Move to (no winding)" ); WriteNum( *p++ ); Write0( ", " ); WriteNum( *p++ );
+        break;
+      case 4:
+        Write0( "Close with gap" );
+        break;
+      case 5:
+        Write0( "Close with line" );
+        break;
+      case 6:
+        Write0( "Curve via (" );
+        WriteNum( *p++ ); Write0( ", " ); WriteNum( *p++ ); Write0( "), (" );
+        WriteNum( *p++ ); Write0( ", " ); WriteNum( *p++ ); Write0( "), to (" );
+        WriteNum( *p++ ); Write0( ", " ); WriteNum( *p++ ); Write0( ")" );
+        break;
+      case 7:
+        Write0( "Gap to " ); WriteNum( *p++ ); Write0( ", " ); WriteNum( *p++ );
+        break;
+      case 8:
+        Write0( "Line to " ); WriteNum( *p++ ); Write0( ", " ); WriteNum( *p++ );
+        break;
     }
-  }
 
-  uint8_t const *bytes = (void*) (next_word + 8);
-
-  if (flags.dependency_bytes) {
-    Write0( "Dependency bytes" ); NewLine;
-    //asm ( "bkpt 1" ); // TODO
-  }
-
-  for (int i = 0; i < 100; i++) {
-    int16_t x;
-    int16_t y;
-    read_12bit_pair( bytes+i, &x, &y );
-    WriteSmallNum( x, 1 ); Write0( ", " ); WriteSmallNum( y, 1 ); NewLine;
-  }
+    NewLine;
+  } while (code != 0);
+  NewLine;
 }
-
-static void ShowFont( Font *font )
-{
-  IntMetric0 const * const metrics = font->IntMetrics0;
-  OutlineFontFile const * const outline_font = font->Outlines0;
-
-  Write0( "Font: " ); Write13( metrics->font_name ); NewLine;
-
-  Write0( "BBox: " );
-
-  WriteSmallNum( outline_font->font_max_bbox.left_inclusive, 4 ); Write0( ", " );
-  WriteSmallNum( outline_font->font_max_bbox.bottom_inclusive, 4 ); Write0( ", " );
-  WriteSmallNum( outline_font->font_max_bbox.width, 4 ); Write0( ", " );
-  WriteSmallNum( outline_font->font_max_bbox.height, 4 ); NewLine;
-
-  uint32_t max_char = IntMetrics0_num( metrics );
-  Write0( "Number of chars: " ); WriteNum( max_char ); NewLine;
-
-  Write0( "Number of chunks: " ); WriteSmallNum( outline_font->number_of_chunks, 1 ); NewLine;
-  uint32_t *chunks = OutlineFontFile_chunks_offsets( outline_font );
-
-  Write0( "File size: " ); WriteSmallNum( chunks[outline_font->number_of_chunks], 1 ); NewLine;
-  for (int i = 0; i < outline_font->number_of_chunks; i++) {
-    Write0( "Chunk " ); WriteSmallNum( i, 1 ); Write0( " " ); WriteSmallNum( chunks[i], 1 ); Write0( " " ); WriteNum( pointer_at_offset_from( outline_font, chunks[i] ) ); NewLine;
-    ShowChunk( font, pointer_at_offset_from( outline_font, chunks[i] ), i );
-  }
-
-  Write0( "Number of scaffold indices: " ); WriteSmallNum( outline_font->number_of_scaffold_index_entries, 1 ); 
-  Write0( ", size " ); WriteSmallNum( outline_font->scaffold_data[0], 1 ); NewLine;
-
-  for (int i = 1; i < outline_font->number_of_scaffold_index_entries; i++) {
-    if (outline_font->scaffold_data[i] != 0) {
-      register c asm( "r0" ) = i;
-      asm( "svc 0" : : "r" (c) : "lr" );
-      Write0( " " ); WriteSmallNum( i, 1 ); Write0( " " ); WriteSmallNum( outline_font->scaffold_data[i], 1 ); NewLine;
-    }
-  }
-
-  uint8_t *entry = pointer_at_offset_from( outline_font->scaffold_data, 2 * outline_font->number_of_scaffold_index_entries );
-  if (entry[0] == 0) Write0( "Always draw scaffolding" );
-  else { Write0( "Skeleton threshold " ); WriteSmallNum( entry[0], 1 ); }
-
-  Write0( ((char*) &outline_font->scaffold_data[0]) + outline_font->scaffold_data[0] ); NewLine;
-}
+#endif
 
 static bool Paint( struct workspace *workspace, SWI_regs *regs )
 {
-  Write0( "Paint \\\"" );
-  Write0( regs->r[1] );
-  Write0( "\\\"" );
-  NewLine;
+  // One true font
+  Font *font = workspace->fonts;
+
+  Write0( "Paint \"" ); Write0( regs->r[1] ); Write0( "\"" ); NewLine;
+
   char *p = (void*) regs->r[1];
   char ch;
-  // One true font
-  ShowFont( workspace->fonts );
+  //int32_t matrix[6] = { 0x2000, 0, 0, 0x2000, 0x1000, 0x4000 };
+
+  // TODO: Put into a FoundFont structure
+  uint32_t point_size = 12 * 16; // 1/16ths of a point
+  uint32_t dpi = 180; // OS Units per inch
+  uint32_t const points_per_inch = 72;
+
+  OutlineFontFile const * const outline_font = font->Outlines0;
+  uint32_t design_size = outline_font->design_size;
+  uint32_t fp_zoom = ((point_size * dpi * 0x1000)/points_per_inch) / design_size;
+
+Write0( "FP Zoom: " ); WriteNum( fp_zoom ); NewLine;
+
+  int32_t matrix[6] = { fp_zoom, 0, 0, fp_zoom, 0x1000, 0x4000 };
   while ((ch = *p++) >= ' ') {
-    PaintChar( workspace->fonts, ch );
+    uint32_t fill_path[128];
+    uint32_t stroke_path[64];
+    fill_path[0] = sizeof( fill_path )/sizeof( fill_path[0] ) - 1;
+    stroke_path[0] = sizeof( stroke_path )/sizeof( stroke_path[0] ) - 1;
+    Font_BBox bbox;
+
+    MakeCharPaths( font, ch, fill_path, stroke_path, &bbox );
+
+#ifdef DEBUG__SHOW_FONT_PATHS
+Write0( "Fill path" ); NewLine; DebugPrintPath( fill_path );
+Write0( "Stroke path" ); NewLine; DebugPrintPath( stroke_path );
+#endif
+
+    Font_Draw_Fill( fill_path, matrix );
+    Font_Draw_Stroke( stroke_path, matrix );
+    matrix[4] += 25600;
+    Font_Draw_Stroke( stroke_path, matrix );
+    matrix[4] -= 25600;
+
+    matrix[4] += 256 * (matrix[0] * bbox.width) / 0x10000; // x multiplier
+    // FIXME: non-horizontal drawing
   }
   return true;
 }
@@ -931,21 +999,21 @@ bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI
   case 0x13: return SetPalette( workspace, regs );
   case 0x22: return SetColourTable( workspace, regs );
   }
-  static const error_block error = { 0x1e6, "Bad FontManager SWI" };
+  static const error_block error = { 0x1e6, "FontManager SWI unsupported by C implementation (sorry)" };
   regs->r[0] = (uint32_t) &error;
   return false;
 }
 
-char const swi_names[] = { "Font" 
-          "\0CacheAddr" 
-          "\0FindFont" 
-          "\0LoseFont" 
-          "\0ReadDefn" 
-          "\0ReadInfo" 
-          "\0StringWidth" 
-          "\0Paint" 
-          "\0Caret" 
-          "\0ConverttoOS" 
+char const swi_names[] = { "Font"
+          "\0CacheAddr"
+          "\0FindFont"
+          "\0LoseFont"
+          "\0ReadDefn"
+          "\0ReadInfo"
+          "\0StringWidth"
+          "\0Paint"
+          "\0Caret"
+          "\0ConverttoOS"
           "\0Converttopoints"
           "\0SetFont"
           "\0CurrentFont"
