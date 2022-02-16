@@ -77,6 +77,11 @@ struct Kernel_workspace {
   module *module_list_tail;
   uint32_t DomainId;
   vector *vectors[0x25];
+
+  // 0 -> disabled
+  // There is no associated code, it will be listening for EventV.
+  uint32_t event_enabled[29];
+
   variable *variables; // Should be shared?
   transient_callback *transient_callbacks;
   // I cannot tell a lie, this is because there's no HeapFree

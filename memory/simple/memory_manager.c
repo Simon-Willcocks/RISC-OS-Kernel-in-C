@@ -254,6 +254,24 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs )
 #ifdef DEBUG__WATCH_DYNAMIC_AREAS
   WriteS( "Resizing DA " ); WriteNum( regs->r[0] ); WriteS( " caller " ); WriteNum( regs->lr ); NewLine;
 #endif
+
+  if (regs->r[0] == 6) {
+    // "Free pool" no longer a real DA
+    // OK, it appears, from the description in PRM5a-38, that the free pool
+    // is the mechanism used to increase and decrease the size of the task
+    // slot (application space).
+    // For now, just log it and pretend to work
+    // Is claiming UpCall 257 the difference between red and green sliders
+    // in the task manager?
+#ifdef DEBUG__FREE_POOL
+    int32_t resize_by = (int32_t) regs->r[1];
+    WriteS( "Free pool: " ); if (resize_by < 0) { WriteS( "-" ); WriteNum( -resize_by ); } else { WriteNum( resize_by ); } NewLine;
+#endif
+    regs->r[1] = 0; // "Moved"
+    return true;
+  }
+
+
   DynamicArea *da = find_DA( regs->r[0] );
   int32_t resize_by = (int32_t) regs->r[1];
   int32_t resize_by_pages = resize_by >> 12;
@@ -442,20 +460,20 @@ bool do_OS_ReadDynamicArea( svc_registers *regs )
   }
   // FIXME Bit 7
 
-  switch (regs->r[0]) {
-  case 6:
-    {
-      regs->r[0] = 0x80000000;
-      regs->r[1] = 0;
-      return true;
-    }
-  default:
-    {
-    static error_block error = { 261, "Unknown dynamic area" };
-    regs->r[0] = (uint32_t) &error;
-    return false;
-    }
+  if (regs->r[0] == 6) {
+    // "Free pool"
+#ifdef DEBUG__FREE_POOL
+    WriteS( "Reading Free Pool" ); NewLine;
+#endif
+    regs->r[0] = 0xbadbad00;
+    regs->r[1] = 0xbaadbaad;
+    return true;
   }
+
+  static error_block error = { 261, "Unknown dynamic area" };
+  regs->r[0] = (uint32_t) &error;
+  return false;
+
   return true;
 }
 

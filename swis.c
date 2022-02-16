@@ -756,8 +756,30 @@ static bool do_OS_AddCallBack( svc_registers *regs )
   return true;
 }
 
+extern vector default_SpriteV;
+extern vector default_ByteV;
+extern vector default_ChEnvV;
+extern vector default_CliV;
+extern vector do_nothing;
 
-static bool do_OS_ReadDefaultHandler( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadDefaultHandler( svc_registers *regs )
+{
+  vector *v = &do_nothing;
+  switch (regs->r[0]) {
+  case 0x05: v = &default_CliV; break;
+  case 0x06: v = &default_ByteV; break;
+  case 0x1e: v = &default_ChEnvV; break;
+  case 0x1f: v = &default_SpriteV; break;
+  default:
+    v = &do_nothing; break;
+  }
+
+  regs->r[1] = v->code;
+  regs->r[2] = v->private_word;
+  regs->r[3] = 0; // Only relevant for Error, CallBack, BreakPoint. These will probably have to be associated with Task Slots...?
+  return true;
+}
+
 static bool do_OS_SetECFOrigin( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 
@@ -1665,6 +1687,7 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
       case 0x61500 ... 0x6153f: // MessageTrans
       case 0x63040 ... 0x6307f: // Territory
       case 0x606c0 ... 0x606ff: // Hourglass
+      case 0x62fc0 ... 0x62fcf: // Portable
         break;
       default:
         WriteS( "Unimplemented!" ); NewLine;

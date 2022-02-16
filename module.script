@@ -22,7 +22,7 @@ SECTIONS
  .text : {
   *(.text.init) ;
   *(.text) ;
-  *(.got.plt) ;
+  *(.got*) ;           /* Global offset tables for -fpic */
   *(.rodata*) ;
   *(.data.rel.ro.local) ;
   . = ALIGN( 4 ) ;

@@ -1540,10 +1540,53 @@ void Font_Paint( uint32_t font, const char *string, uint32_t type, uint32_t star
 static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
 {
 #ifdef DEBUG__SHOW_OS_BYTE
-  WriteS( "OS_Byte " );
+  WriteS( "OS_Byte " ); WriteNum( regs[0] ); NewLine;
 #endif
 
   switch (regs[0]) {
+  case 0x04: // Write cursor key status
+    {
+#ifdef DEBUG__SHOW_OS_BYTE
+      WriteS( "Write Cursor Key State " ); WriteNum( regs[1] );
+#endif
+      regs[1] = 0;
+    }
+    break;
+  case 0x09: // Duration of first colour
+    {
+    }
+    break;
+  case 0x0a: // Duration of second colour
+    {
+    }
+    break;
+  case 0x0d: // Disable Event
+    {
+      uint32_t event = regs[1];
+      if (event < number_of( workspace.kernel.event_enabled )) {
+        if (workspace.kernel.event_enabled[event] != 0)
+          regs[1] = workspace.kernel.event_enabled[event] --;
+        else
+          regs[1] = 0;
+      }
+      else {
+        regs[1] = 255; // Observed behaviour
+        asm ( "bkpt 1" );
+      }
+    }
+    break;
+  case 0x0e: // Enable Event
+    {
+      uint32_t event = regs[1];
+      if (event < number_of( workspace.kernel.event_enabled )) {
+        regs[1] = workspace.kernel.event_enabled[event] ++;
+      }
+      else {
+        regs[1] = 255; // Observed behaviour
+        asm ( "bkpt 1" );
+      }
+    }
+    break;
   case 0x47: // Read/Write alphabet or keyboard
     {
     switch (regs[1]) {
@@ -1554,6 +1597,10 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     default:
       WriteS( "Setting alphabet/keyboard not supported" );
     }
+    }
+    break;
+  case 0x7c: // Clear escape condition
+    {
     }
     break;
   case 0xa1:
@@ -1678,9 +1725,16 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
 #ifdef DEBUG__SHOW_OS_BYTE
     case 0xc6: WriteS( " Exec handle" ); break;
     case 0xc7: WriteS( " Spool handle" ); break;
+
+    // Called by Wimp02 *fx 221,2 - fx 228,2, etc.
+    case 0xdb: WriteS( " Tab key code" ); break;
+    case 0xdc: WriteS( " Escape character" ); break;
+    case 0xdd ... 0xe4: WriteS( " input values interpretation" ); break;
+    case 0xe5: WriteS( " Escape key status" ); break;
 #else
     case 0xc6: break;
     case 0xc7: break;
+    case 0xdb ... 0xe5: break;
 #endif
     default: asm( "bkpt 81" ); // Catch used variables I haven't identified yet
     }
@@ -1803,7 +1857,12 @@ WriteFunc;
 bool do_OS_GenerateEvent( svc_registers *regs )
 {
 WriteFunc;
-  return run_vector( 16, regs );
+  uint32_t event = regs->r[0];
+  if (event < number_of( workspace.kernel.event_enabled )) {
+    if (workspace.kernel.event_enabled[event] != 0)
+      return run_vector( 16, regs );
+  }
+  return true;
 }
 
 bool do_OS_Mouse( svc_registers *regs )
@@ -2184,22 +2243,21 @@ static void __attribute__(( naked )) finish_vector()
   asm volatile ( "pop {pc}" );
 }
 
+// SwiSpriteOp does BranchNotJustUs, which accesses internal kernel structures. Avoid this, by going directly
+// to SpriteVecHandler. FIXME: This might no longer be necessary; I've bypassed this in another way, somewhere...
+extern void SpriteVecHandler();
+
+vector default_SpriteV = { .next = 0, .code = (uint32_t) SpriteVecHandler, .private_word = 0 };
+vector default_ByteV = { .next = 0, .code = (uint32_t) default_os_byte, .private_word = 0 };
+vector default_ChEnvV = { .next = 0, .code = (uint32_t) default_os_changeenvironment, .private_word = 0 };
+vector default_CliV = { .next = 0, .code = (uint32_t) default_os_cli, .private_word = 0 };
+vector do_nothing = { .next = 0, .code = (uint32_t) finish_vector, .private_word = 0 };
 
 void Boot()
 {
-  static vector default_ByteV = { .next = 0, .code = (uint32_t) default_os_byte, .private_word = 0 };
-  static vector default_ChEnvV = { .next = 0, .code = (uint32_t) default_os_changeenvironment, .private_word = 0 };
-  static vector default_CliV = { .next = 0, .code = (uint32_t) default_os_cli, .private_word = 0 };
-  static vector do_nothing = { .next = 0, .code = (uint32_t) finish_vector, .private_word = 0 };
-
   // DrawMod uses ScratchSpace at 0x4000
   uint32_t for_drawmod = Kernel_allocate_pages( 4096, 4096 );
   MMU_map_at( (void*) 0x4000, for_drawmod, 4096 );
-
-  // SwiSpriteOp does BranchNotJustUs, which accesses internal kernel structures. Avoid this, by going directly
-  // to SpriteVecHandler.
-  extern void SpriteVecHandler();
-  static vector default_SpriteV = { .next = 0, .code = (uint32_t) SpriteVecHandler, .private_word = 0 };
 
   for (int i = 0; i < number_of( workspace.kernel.vectors ); i++) {
     workspace.kernel.vectors[i] = &do_nothing;

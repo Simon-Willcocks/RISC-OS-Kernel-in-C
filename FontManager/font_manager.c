@@ -309,7 +309,7 @@ static uint8_t const *IntMetrics0_character_map( IntMetric0 const *header )
 
 static int16_t IntMetrics0_char_index( IntMetric0 const *header, uint32_t ch )
 {
-  uint8_t *map = IntMetrics0_character_map( header );
+  uint8_t const *map = IntMetrics0_character_map( header );
   if (map != 0) {
     ch = map[ch];
   }
@@ -412,7 +412,7 @@ static uint16_t const *IntMetrics0_extra_offsets( IntMetric0 const *header )
 
 static IntMetrics0_Misc_Data const *IntMetrics0_misc_data( IntMetric0 const *header )
 {
-  uint16_t *offsets = IntMetrics0_extra_offsets( header );
+  uint16_t const *offsets = IntMetrics0_extra_offsets( header );
 
   if (0 == offsets) return 0;
 
@@ -421,7 +421,7 @@ static IntMetrics0_Misc_Data const *IntMetrics0_misc_data( IntMetric0 const *hea
 
 static void const *IntMetrics0_kern_pair_data( IntMetric0 const *header )
 {
-  uint16_t *offsets = IntMetrics0_extra_offsets( header );
+  uint16_t const *offsets = IntMetrics0_extra_offsets( header );
 
   if (0 == offsets) return 0;
 
@@ -988,6 +988,12 @@ static bool SetColourTable( struct workspace *workspace, SWI_regs *regs )
   return true;
 }
 
+static bool FontScanString( struct workspace *workspace, SWI_regs *regs )
+{
+  Write0( "FontScanString FIXME" ); NewLine;
+  return true;
+}
+
 bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI_regs *regs )
 {
   NewLine; Write0( "Handling Font SWI " ); WriteNum( regs->number ); NewLine;
@@ -997,6 +1003,7 @@ bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI
   case 0x02: return LoseFont( workspace, regs );
   case 0x06: return Paint( workspace, regs );
   case 0x13: return SetPalette( workspace, regs );
+  case 0x21: return FontScanString( workspace, regs );
   case 0x22: return SetColourTable( workspace, regs );
   }
   static const error_block error = { 0x1e6, "FontManager SWI unsupported by C implementation (sorry)" };
