@@ -296,6 +296,14 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs )
   WriteS( "Resizing DA " ); WriteNum( regs->r[0] ); WriteS( " from " ); WriteNum( da->pages<<12 ); WriteS( " by " ); WriteNum( resize_by_pages << 12 ); WriteS( " (actual = " ); WriteNum( da->actual_pages << 12 ); WriteS( ")" ); NewLine;
 #endif
 
+  if (resize_by_pages < 0 && (-resize_by_pages > da->pages)) {
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+    WriteS( "Shrinking DA as much as possible" ); NewLine;
+#endif
+    resize_by_pages = -da->pages;      // Attempting to reduce the size as much as possible
+    resize_by = resize_by_pages << 12;
+  }
+
   if (da->actual_pages != 0 && (da->pages << 12) + resize_by > (da->actual_pages << 12)) {
     static error_block error = { 999, "DA maximum size exceeded" };
     regs->r[0] = (uint32_t) &error;

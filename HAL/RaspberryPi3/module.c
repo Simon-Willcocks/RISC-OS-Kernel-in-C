@@ -210,7 +210,17 @@ static void add_to_display( char c, struct core_workspace *workspace )
     workspace->x = 0;
   }
 
-  if (c != '\n' && c != '\r') workspace->display[workspace->y][workspace->x++] = c;
+  if (c != '\n' && c != '\r') {
+    workspace->display[workspace->y][workspace->x++] = c;
+
+    // Temp:
+    if (0 != workspace->shared->frame_buffer) {
+      if (c < ' ')
+        show_character_at( workspace->x, workspace->y, c + '@', core( workspace ), Red, workspace->shared );
+      else
+        show_character_at( workspace->x, workspace->y, c, core( workspace ), White, workspace->shared );
+    }
+  }
 }
 
 static void add_string( const char *s, struct core_workspace *workspace )
@@ -236,45 +246,19 @@ int32_t int16_at( uint8_t *p )
   return result;
 }
 
-const char *const specials[] = {
-"##ignored\n\r",
-"##Next char to printer only (ignore both)\n\r",
-"##Enable printer (ignored)\n\r",
-"##Disable printer (ignored)\n\r",
-"##Split cursors\n\r",
-"##Join cursors (print text at graphics cursor)\n\r",
-"##Enable VDU drivers (see also VDU 21 and OS_Byte 117)\n\r",
-"##Bell\n\r",
-"##Backspace (does not delete last character)\n\r",
-"##Horizontal tab\n\r",
-"##Line feed\n\r",
-"##Vertical tab (back one line)\n\r",
-"##Form feed/clear screen\n\r",
-"##Carriage return\n\r",
-"##Paged mode on\n\r",
-"##Paged mode off\n\r",
-"##Clear graphics window\n\r",
-"##Set text colour (6 bit RGB, obsolete?)\n\r",
-"##GCOL action, colour\n\r",
-"##Set palette, logical, mode, r, g, b (obsolete?)\n\r",
-"##Restore default colours\n\r",
-"##Disable screen display (see VDU 6)\n\r",
-"##Change display mode\n\r",
-"##Miscellaneous commands\n\r",
-"##Define graphics window, x1; y1; x2; y2\n\r",
-"##Plot, type, x; y;\n\r",
-"##Restore default windows\n\r",
-"##No operation\n\r",
-"##Define text window, x1, y1, x2, y2 obsolete with 4K monitors, no?\n\r",
-"##Set graphics origin, x; y;\n\r",
-"##Home text (or graphics) cursor for text\n\r",
-"##Position text cursor, x, y\n\r" };
+static void update_display( struct core_workspace *workspace )
+{
+  // The whole "screen" will be displayed, with a cache flush, and the top line will be (workspace->y + 1) % 40
+  if (0 != workspace->shared->frame_buffer) {
+    asm ( "svc 0xff" : : : "lr", "cc" );
+  }
+}
 
 void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace *workspace )
 {
   static const uint8_t bytes[32] = { 1, 2, 1, 1,  1, 1, 1, 1,
                                      1, 1, 1, 1,  1, 1, 1, 1,
-                                     1, 2, 3, 6,  1, 1, 2, 21,
+                                     1, 2, 3, 6,  1, 1, 2, 10,
                                      9, 6, 1, 1,  5, 5, 1, 3 };
   const uint8_t *parameter_bytes = bytes;
 
@@ -294,8 +278,17 @@ void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace 
       workspace->queued = 0;
 
       switch (workspace->queue[0]) {
+      case 5: add_string( "Joining cursors", workspace ); break;
       case 10: add_to_display( c, workspace ); break;       // Line feed
       case 13: add_to_display( c, workspace ); break;       // Carriage return
+      case 16: add_string( "CLG\n", workspace ); break;
+      case 23: add_string( "VDU 23\n", workspace ); break;
+      case 19: add_string( "Set palette\n", workspace ); break;
+      case 22:
+        {
+          WriteS( "TOTALLY Changing mode right now. " ); add_num( workspace->queue[1], workspace );
+        }
+        break;
       case 25: // Plot
         {
           uint8_t type = workspace->queue[1];
@@ -311,9 +304,10 @@ show_character_at( workspace->x, workspace->y, 'p', core( workspace ), Blue, wor
         break;
       default:
         {
-          const char *const *s = specials;
-          add_string( s[workspace->queue[0]], workspace );
-          asm ( "bkpt 1" ); break;
+          add_string( "Unimplemented VDU code ", workspace );
+          add_num( workspace->queue[0], workspace );
+          update_display( workspace );
+          //asm ( "bkpt 1" ); break;
         }
       }
     }
@@ -322,15 +316,7 @@ show_character_at( workspace->x, workspace->y, 'p', core( workspace ), Blue, wor
     add_to_display( c, workspace );
 
     // This part is temporary, until the display update can be triggered by an interrupt FIXME
-    // The whole "screen" will be displayed, with a cache flush, and the top line will be (workspace->y + 1) % 40
-    if (0 != workspace->shared->frame_buffer) {
-      if (c < ' ')
-        show_character_at( workspace->x, workspace->y, c + '@', core( workspace ), Red, workspace->shared );
-      else
-        show_character_at( workspace->x, workspace->y, c, core( workspace ), White, workspace->shared );
-
-      asm ( "svc 0xff" : : : "lr", "cc" );
-    }
+    update_display( workspace );
     // End of temporary implementation
   }
 

@@ -1587,6 +1587,11 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
       }
     }
     break;
+  case 0x15: // Clear selected buffer
+    {
+      WriteS( "Flush buffer " ); WriteNum( regs[1] );
+    }
+    break;
   case 0x47: // Read/Write alphabet or keyboard
     {
     switch (regs[1]) {
@@ -1597,6 +1602,10 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     default:
       WriteS( "Setting alphabet/keyboard not supported" );
     }
+    }
+    break;
+  case 0x6a: // Select pointer/activate mouse
+    {
     }
     break;
   case 0x7c: // Clear escape condition
@@ -1726,7 +1735,8 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     case 0xc6: WriteS( " Exec handle" ); break;
     case 0xc7: WriteS( " Spool handle" ); break;
 
-    // Called by Wimp02 *fx 221,2 - fx 228,2, etc.
+    // Called by Wimp02 fn: resetkeycodes *fx 221,2 - fx 228,2, etc.
+    // TODO make this the default and provide a compatibility layer for old code
     case 0xdb: WriteS( " Tab key code" ); break;
     case 0xdc: WriteS( " Escape character" ); break;
     case 0xdd ... 0xe4: WriteS( " input values interpretation" ); break;
