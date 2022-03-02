@@ -41,6 +41,8 @@ struct TaskSlot {
   bool allocated;
   physical_memory_block blocks[10];
   handler handlers[17];
+  char const *command;
+  uint64_t start_time;
   Task task;
 };
 
@@ -219,7 +221,7 @@ static void allocate_taskslot_memory()
 }
 
 // Which comes first, the slot or the task? Privileged (module?) tasks don't need a slot.
-TaskSlot *TaskSlot_new()
+TaskSlot *TaskSlot_new( char const *command_line )
 {
   TaskSlot *result = 0;
 
@@ -266,6 +268,12 @@ WriteS( "Allocated TaskSlot " ); WriteNum( i ); NewLine;
     result->handlers[i] = default_handlers[i];
   }
 
+  svc_registers regs;
+  char *copy = rma_allocate( strlen( command_line ), &regs );
+  strcpy( copy, command_line );
+  result->command = copy;
+  result->start_time = 0; // cs since Jan 1st 1900 TODO
+
   return result;
 }
 
@@ -311,4 +319,35 @@ uint32_t TaskSlot_asid( TaskSlot *slot )
   return (slot - task_slots) + 1;
 }
 
+uint32_t TaskSlot_Himem( TaskSlot *slot )
+{
+  uint32_t result;
+  // This will do until slots can include non-contiguous memory, be resized, etc.
 
+  // FIXME lock per slot?
+  claim_lock( &shared.mmu.lock );
+  result = slot->blocks[0].size + slot->blocks[0].virtual_base;
+  release_lock( &shared.mmu.lock );
+  return result;
+}
+
+void *TaskSlot_Time( TaskSlot *slot )
+{
+  return &slot->start_time;
+}
+
+char const *TaskSlot_Command( TaskSlot *slot )
+{
+  return slot->command;
+}
+
+void __attribute__(( noinline )) do_FSControl( uint32_t *regs )
+{
+  Write0( __func__ );
+  switch (regs[0]) {
+  case 2:
+    // Fall through
+  default:
+    WriteNum( regs[0] ); NewLine; asm ( "bkpt 1" );
+  }
+}

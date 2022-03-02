@@ -93,6 +93,11 @@ static inline void clear_VF()
   asm ( "msr cpsr_f, #0" );
 }
 
+static inline void set_VF()
+{
+  asm ( "msr cpsr_f, #(1 << 28)" );
+}
+
 static inline uint32_t fault_address()
 {
   uint32_t result;

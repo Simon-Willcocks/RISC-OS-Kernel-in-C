@@ -113,8 +113,31 @@ arm-linux-gnueabi-gcc-8 -Wall -I . \
   -T $ROMSRC/rom.script -Os \
   -o rom.elf \
   $* &&
-
 arm-linux-gnueabi-objcopy -R .ignoring -O binary rom.elf rom.bin &&
 arm-linux-gnueabi-objdump -x --disassemble-all rom.elf | sed -n '1,/fc010000 <_binary_ro_rom_img_start>:/p' > rom.dump &&
-ls -l rom.bin
+
+cp rool.script hal.script &&
+sed -n 's/JTABLE \(.*\)\.\..*$/JTABLE = 0x\1 ;/p;s/SysModules_Info \(.*\)\.\..*$/_binary_AllMods_start = 0x\1 ;/p;s/SpriteVecHandler \(.*\)\.\..*$/SpriteVecHandler = 0x\1 ;/p;s/\<HardFont\> \(.*\)\.\..*$/system_font = 0x\1 ;/p;s/ByteVarInitTable \(.*\)\.\..*$/ByteVarInitTable = 0x\1 ;/p' /mnt/RiscOS/Sources/Kernel/bin/Kernel_gpa >> hal.script &&
+echo 'rom_size = 5 << 20 ;' >> hal.script
+
+
+arm-linux-gnueabi-gcc-8 -Wall -I . \
+  kernel.c swis.c modules.c swis/*.c \
+  $PROC/*.c -I $PROC \
+  $BOOT/*.c -I $BOOT \
+  $TASK_SLOT/*.c -I $TASK_SLOT \
+  $MMU/*.c -I $MMU \
+  $MM/*.c -I $MM \
+  Modules/HAL.o \
+  Modules/FontManager.o \
+  -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static \
+  -g \
+  -march=armv8-a+nofp \
+  -T hal.script -Os \
+  -o hal.elf \
+  $* &&
+
+arm-linux-gnueabi-objcopy -R .ignoring -O binary hal.elf hal.bin &&
+arm-linux-gnueabi-objdump -x --disassemble-all hal.elf > hal.dump &&
+ls -l rom.bin hal.bin
 

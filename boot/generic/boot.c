@@ -15,6 +15,8 @@
 
 #include "kernel.h"
 
+char const build_time[] = "C kernel built: " __DATE__ " " __TIME__ ;
+
 startup boot_data = { 0 };
 
 // Simple synchronisation routines to be used before the MMU is

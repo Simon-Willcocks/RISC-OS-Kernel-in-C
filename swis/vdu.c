@@ -112,15 +112,19 @@ bool do_OS_ReadVduVariables( svc_registers *regs )
   uint32_t *var = (void*) regs->r[0];
   uint32_t *val = (void*) regs->r[1];
 
+#ifdef DEBUG__SHOW_VDU_VARS
+WriteS( "Read Vdu Var " ); WriteNum( *var ); WriteS( " = " );
+#endif
   while (*var != -1) {
     switch (*var) {
     case 0 ... 12: *val = *modevarloc[*var]; break;
     case 128 ... 172: *val = *vduvarloc[*var - 128]; break;
+    case 192: *val = workspace.vectors.zp.VduDriverWorkSpace.ws.CurrentGraphicsVDriver; break;
     case 256 ... 257: asm ( "bkpt 99" ); *val = *textwindowloc[*var - 256]; break; // Can't find this in zero page...
     default: for (;;) { asm( "bkpt 68" ); }
     }
 #ifdef DEBUG__SHOW_VDU_VARS
-WriteS( "Read Vdu Var " ); WriteNum( *var ); WriteS( " = " ); WriteNum( *val ); NewLine;
+WriteNum( *val ); NewLine;
 #endif
     var++;
     val++;

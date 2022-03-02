@@ -476,6 +476,9 @@ bool do_OS_ServiceCall( svc_registers *regs )
 
 #ifdef DEBUG__SHOW_SERVICE_CALLS
 describe_service_call( regs );
+if (m == 0) {
+  Write0( "No modules initialised\n" );
+}
 #endif
 
   uint32_t r12 = regs->r[12];
@@ -574,7 +577,7 @@ static bool do_Module_Enter( svc_registers *regs )
     "\n\tisb"
     "\n\teret" 
     : 
-    : [stacktop] "r" (0xffffffff)       // Dummy, it's up to the module to allocate stack if it needs it
+    : [stacktop] "r" (0xffffffff)       // Dummy. It's up to the module to allocate stack if it needs it
     , [usr] "r" (pointer_at_offset_from( m->header, m->header->offset_to_start ))
     , [usermode] "r" (0x10)
     , "r" (private) );
@@ -996,6 +999,9 @@ bool do_OS_Module( svc_registers *regs )
 
 bool do_OS_CallAVector( svc_registers *regs )
 {
+  if (regs->r[9] > number_of( workspace.kernel.vectors )) {
+    asm ( "bkpt 1" );
+  }
   return run_vector( regs->r[9], regs );
 }
 
@@ -1014,7 +1020,6 @@ static callback *get_a_callback()
   }
   else {
     svc_registers regs;
-    regs.spsr = 0; // OS_Heap fails if entered with V flag set
     result = rma_allocate( sizeof( callback ), &regs );
   }
   return result;
@@ -1104,9 +1109,11 @@ bool do_OS_RelinkApplication( svc_registers *regs )
 
 bool do_OS_GetEnv( svc_registers *regs )
 {
-  regs->r[0] = (uint32_t) workspace.kernel.env;
-  regs->r[1] = 0;
-  regs->r[2] = (uint32_t) &workspace.kernel.start_time;
+  Task *task = workspace.task_slot.running;
+
+  regs->r[0] = (uint32_t) TaskSlot_Command( task->slot );
+  regs->r[1] = TaskSlot_Himem( task->slot );
+  regs->r[2] = (uint32_t) TaskSlot_Time( task->slot );
   return true;
 }
 
@@ -1251,7 +1258,6 @@ bool excluded( const char *name )
 
                                   , "MbufManager"       // 0xe200004d
 
-  //                                , "DisplayManager"    // Accesses memory at 0x210184bb - Outside RMA?
                                   , "DragASprite"       // Doesn't return, afaics
                                   , "RamFS"             // Tries to use OS_MMUControl
                                   , "Filer"             // Doesn't return, afaics
@@ -1266,6 +1272,7 @@ bool excluded( const char *name )
                                   , "ScreenBlanker"        // Doesn't return, afaics
                                   , "ScrSaver"        // Doesn't return, afaics
                                   , "Serial"        // "esources$Path{,_Message} not found
+                                  , "SerialDeviceSupport"        // "esources$Path{,_Message} not found
                                   , "ShellCLI"        // "esources$Path{,_Message} not found
                                   , "SoundControl"          // No return
                                   , "BootFX"                    // No return
@@ -1329,6 +1336,9 @@ void init_modules()
       NewLine;
     }
     rom_module += (*rom_module)/4; // Includes size of length field
+#ifdef DEBUG__SHOW_MODULE_INIT
+    WriteNum( rom_module );
+#endif
   }
 }
 
@@ -1544,6 +1554,18 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
 #endif
 
   switch (regs[0]) {
+  case 0x00: // Display OS version or return machine type
+    {
+      static error_block version = { 0, "C Kernel version 0.01" };
+      if (regs[1] == 0) {
+        regs[0] = (uint32_t) &version;
+        set_VF();
+      }
+      else {
+        regs[1] = 6;
+      }
+    }
+    break;
   case 0x04: // Write cursor key status
     {
 #ifdef DEBUG__SHOW_OS_BYTE
@@ -1605,6 +1627,10 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     }
     break;
   case 0x6a: // Select pointer/activate mouse
+    {
+    }
+    break;
+  case 0x72: // Set shadow state 0 = shadow, 1 = non-shadow
     {
     }
     break;
@@ -1803,6 +1829,10 @@ WriteFunc;
 bool do_OS_CLI( svc_registers *regs )
 {
 WriteFunc;
+  // Check stack space TODO
+  // Check command length TODO (still 256?)
+  // /SetECF
+
   return run_vector( 5, regs );
 }
 
@@ -2103,6 +2133,13 @@ static const char *discard_leading_characters( const char *command )
   return c;
 }
 
+static const char *discard_leading_whitespace( const char *command )
+{
+  const char *c = command;
+  while (*c == ' ' || *c == '\t') c++;
+  return c;
+}
+
 static bool terminator( char c )
 {
   return c == '\0' || c == '\r' || c == '\n';
@@ -2248,6 +2285,18 @@ void __attribute__(( naked )) default_os_cli()
   asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
+void __attribute__(( naked )) default_os_fscontrol()
+{
+  register uint32_t *regs;
+  // Return address is already on stack, ignore lr
+  // Some FSControl commands take up to r8; store them all
+  asm ( "push { r0-r8, r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+
+  do_FSControl( regs );
+
+  asm ( "pop { r0-r8, r12, pc }" );
+}
+
 static void __attribute__(( naked )) finish_vector()
 {
   asm volatile ( "pop {pc}" );
@@ -2261,6 +2310,7 @@ vector default_SpriteV = { .next = 0, .code = (uint32_t) SpriteVecHandler, .priv
 vector default_ByteV = { .next = 0, .code = (uint32_t) default_os_byte, .private_word = 0 };
 vector default_ChEnvV = { .next = 0, .code = (uint32_t) default_os_changeenvironment, .private_word = 0 };
 vector default_CliV = { .next = 0, .code = (uint32_t) default_os_cli, .private_word = 0 };
+vector default_FSControlV = { .next = 0, .code = (uint32_t) default_os_fscontrol, .private_word = 0 };
 vector do_nothing = { .next = 0, .code = (uint32_t) finish_vector, .private_word = 0 };
 
 void Boot()
@@ -2275,6 +2325,7 @@ void Boot()
 
   workspace.kernel.vectors[0x05] = &default_CliV;
   workspace.kernel.vectors[0x06] = &default_ByteV;
+  workspace.kernel.vectors[0x0f] = &default_FSControlV;
   workspace.kernel.vectors[0x1e] = &default_ChEnvV;
   workspace.kernel.vectors[0x1f] = &default_SpriteV;
 
@@ -2374,19 +2425,20 @@ WriteS( "Page size 0x1000" );
   // I know, we need to not have the frame buffer at a fixed address, 
   // and probably allow for more than one at a time...
 
-  workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenSize = 1920 * 1080 * 4;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.XWindLimit = 1920 - 1;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.YWindLimit = 1080 - 1;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.LineLength = 1920 * 4;
+  // In ReadModeVariable number order:
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ModeFlags = 64;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ScrRCol = 239;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ScrBRow = 134;
   workspace.vectors.zp.VduDriverWorkSpace.ws.NColour = 0xffffffff; // Total number of colours - 1
-  workspace.vectors.zp.VduDriverWorkSpace.ws.YShftFactor = 0;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.ModeFlags = 0;
   workspace.vectors.zp.VduDriverWorkSpace.ws.XEigFactor = 1;
   workspace.vectors.zp.VduDriverWorkSpace.ws.YEigFactor = 1;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPC = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.LineLength = 1920 * 4;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenSize = 1920 * 1080 * 4;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.YShftFactor = 0;
   workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPP = 5;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.ScrRCol = 0;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.ScrBRow = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPC = 5;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.XWindLimit = 1919;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.YWindLimit = 1079;
 
   // These three read together in vduplot
   workspace.vectors.zp.VduDriverWorkSpace.ws.XShftFactor = 0;
@@ -2438,7 +2490,7 @@ WriteS( "Page size 0x1000" );
   }
 
   // The default task slot for this core, and its task (which will do nothing, quietly)
-  TaskSlot *slot = TaskSlot_new();
+  TaskSlot *slot = TaskSlot_new( "System" );
   WriteS( "Slot: " ); WriteNum( (uint32_t) slot ); NewLine;
   Task *task = Task_new( slot );
   WriteS( "Task: " ); WriteNum( (uint32_t) task ); WriteS( ", slot: " ); WriteNum( (uint32_t) slot ); NewLine;
@@ -2453,7 +2505,7 @@ static EcfOraEor my_ecf = { { { 0xff00ffff, 0xcc33cc33 },
                             { 0xffffff00, 0 },
                             { 0x0f0f0f0f, 0 }, 
                             { 0xfffff00f, 0 }, 
-                            { 0xaaaaaaaa, 0 }, 
+                            { 0xaaaaaaaa, 0 },
                             { 0x55550055, 0 }, 
                             { 0xffffffff, 0 } } };
 
@@ -2476,9 +2528,11 @@ for (int y = 100; y < 1000; y++ ) { // Get ExportedHLine working...
   //  * there's anything in the VDU queue
   //  * the VduDisabled bit is set in CursorFlags (0x4000000, bit 26?)
   //  * the ModeFlag_NonGraphic bit is set in ModeFlags (1, bit 0)
+  // Edited the OS to never do that.
 
-  // Will cause an exception if it's actually followed, but BranchNotJustUs just checks if it's "in ROM":
-  workspace.vectors.zp.VecPtrTab[3] = 0xffffffe0;
+  for (int i = 0; i < number_of( workspace.vectors.zp.VecPtrTab ); i++) {
+    workspace.vectors.zp.VecPtrTab[i] = 0xffffffff;
+  }
 
 WriteS( "Setting up legacy values for SWIPlot " ); WriteNum( workspace.vectors.zp.OsbyteVars.VDUqueueItems );
 WriteS( ", " ); WriteNum( workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags );
@@ -2525,7 +2579,8 @@ NewLine;
 #endif
 
   // This will be replaced with code to load an application at 0x8000 and run it...
-  physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( 4096, 4096 ), .size = 4096 };
+  uint32_t const initial_slot_size = 64 << 10;  // 64k
+  physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( initial_slot_size, 4096 ), .size = initial_slot_size };
   TaskSlot_add( slot, block );
   MMU_switch_to( slot );
 
@@ -2620,20 +2675,9 @@ WriteS( "Set font colours." ); NewLine;
 
 #if 1
 
-  // This does not work at all. Although the 100 seems to vary according to the DPI?
-  // No, the text moves up and right according to the size of the font/DPI.
-  // By default offsets are in millipoints, try 1 inch up, 2 across.
-  // Looks the same no matter how many H's.
-  // Still not working, but I'm working on a replacement FontManager in C
   Font_Paint( font, "Ax", 0, 2*72000, 72000, 0 );
 
-  //OSCLI( "Desktop" );
-  // Fake the above...
-  // Remember, we are in USR mode - no access to zero page, etc.
-  register uint32_t code asm( "r0" ) = 2; // RMEnter
-  register char const *module asm( "r1" ) = "WindowManager";
-  register char const *params asm( "r2" ) = 0;
-  asm volatile ( "svc 0x1e" : : "r" (code), "r" (module), "r" (params) );
+  OSCLI( "Desktop" ); // Needs more SVC stack? Recursion!
 
   for (;;) {}
   __builtin_unreachable();

@@ -78,6 +78,7 @@ enum {
 /* ec */ OS_ConvertFileSize,
 
 // New SWIs for C kernel, if they duplicate another solution, one or other approach may be discarded.
+/* fb */ OS_VduCommand = 0xfb, // update the current graphics state for this task
 /* fc */ OS_LockForDMA = 0xfc, OS_ReleaseDMALock, OS_MapDevicePages, OS_FlushCache, // For screen updates, etc.
 /* 100-1ff */ OS_WriteI = 0x100 };
  

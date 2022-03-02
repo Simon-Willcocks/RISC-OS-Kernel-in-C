@@ -206,8 +206,8 @@ void init( uint32_t this_core, uint32_t number_of_cores )
     the_font->next = 0;
     // The one true font: Trinity.Medium, located in ROM
     // In other words this is going to break he first time a ROM is re-built
-    the_font->IntMetrics0 = (void*) 0xfc2f3470;
-    the_font->Outlines0 = (void*) 0xfc2f38a0;
+    the_font->IntMetrics0 = (void*) 0xfc2e1d98 + 36; // 0xfc2f3470; strings latest.bin -t x | grep Trinity.Medium.Int
+    the_font->Outlines0 = (void*) 0xfc2e21c8 + 36; // 0xfc2f38a0;   strings latest.bin -t x | grep Trinity.Medium.Out
 
     // WIMPSymbol
     //the_font->IntMetrics0 = (void*) 0xfc169388;
@@ -219,16 +219,6 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   Write0( "FontManager initialised" ); NewLine;
 
   if (first_entry) { Write0( "FontManager initialised" ); NewLine; }
-}
-
-static bool FindFont( struct workspace *workspace, SWI_regs *regs )
-{
-  return true;
-}
-
-static bool LoseFont( struct workspace *workspace, SWI_regs *regs )
-{
-  return true;
 }
 
 /* Access routines for IntMetrics0 format files (v. 2) */
@@ -922,6 +912,27 @@ static void DebugPrintPath( uint32_t *p )
 }
 #endif
 
+static bool FindFont( struct workspace *workspace, SWI_regs *regs )
+{
+  return true;
+}
+
+static bool LoseFont( struct workspace *workspace, SWI_regs *regs )
+{
+  return true;
+}
+
+static bool ReadInfo( struct workspace *workspace, SWI_regs *regs )
+{
+  Font *font = workspace->fonts;
+  OutlineFontFile const * const outline_font = font->Outlines0;
+  regs->r[1] = -3;  // FIXME completely made up
+  regs->r[2] = -3;
+  regs->r[3] = 13;
+  regs->r[4] = 13;
+  return true;
+}
+
 static bool Paint( struct workspace *workspace, SWI_regs *regs )
 {
   // One true font
@@ -971,6 +982,23 @@ Write0( "Stroke path" ); NewLine; DebugPrintPath( stroke_path );
   return true;
 }
 
+static bool ConverttoOS( struct workspace *workspace, SWI_regs *regs )
+{
+  regs->r[1] = regs->r[1]/400;
+  regs->r[2] = regs->r[2]/400;
+  return true;
+}
+
+static bool CurrentFont( struct workspace *workspace, SWI_regs *regs )
+{
+  WriteS( "CurrentFont" );
+  regs->r[0] = 0x77;
+  regs->r[1] = 0xff000000;
+  regs->r[2] = 0x00ff0000;
+  regs->r[3] = 14;
+  return true;
+}
+
 static bool SetPalette( struct workspace *workspace, SWI_regs *regs )
 {
   Write0( "SetPalette BG: " ); WriteNum( regs->r[1] );
@@ -982,9 +1010,25 @@ static bool SetPalette( struct workspace *workspace, SWI_regs *regs )
   return true;
 }
 
+static bool SetFontColours( struct workspace *workspace, SWI_regs *regs )
+{
+  Write0( "SetFontColours " ); WriteNum( regs->r[0] );
+  Write0( ", BG: " ); WriteNum( regs->r[1] );
+  Write0( ", FG: " ); WriteNum( regs->r[2] );
+  Write0( ", off: " ); WriteNum( regs->r[3] );
+  NewLine;
+  return true;
+}
+
 static bool SetColourTable( struct workspace *workspace, SWI_regs *regs )
 {
   Write0( "SetColourTable" ); NewLine;
+  return true;
+}
+
+static bool SwitchOutputToBuffer( struct workspace *workspace, SWI_regs *regs )
+{
+  Write0( "SwitchOutputToBuffer FIXME" ); NewLine;
   return true;
 }
 
@@ -1001,10 +1045,16 @@ bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI
   switch (regs->number) {
   case 0x01: return FindFont( workspace, regs );
   case 0x02: return LoseFont( workspace, regs );
+  case 0x04: return ReadInfo( workspace, regs );
   case 0x06: return Paint( workspace, regs );
+  case 0x08: return ConverttoOS( workspace, regs );
+  case 0x0b: return CurrentFont( workspace, regs );
+  case 0x12: return SetFontColours( workspace, regs );
   case 0x13: return SetPalette( workspace, regs );
+  case 0x1e: return SwitchOutputToBuffer( workspace, regs );
   case 0x21: return FontScanString( workspace, regs );
   case 0x22: return SetColourTable( workspace, regs );
+  default: WriteNum( regs->number );
   }
   static const error_block error = { 0x1e6, "FontManager SWI unsupported by C implementation (sorry)" };
   regs->r[0] = (uint32_t) &error;

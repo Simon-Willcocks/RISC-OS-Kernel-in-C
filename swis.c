@@ -177,7 +177,12 @@ static bool do_OS_WriteN( svc_registers *regs )
 
 static bool do_OS_Control( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_Exit( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_Exit( svc_registers *regs )
+{
+  WriteS( "OS_Exit" ); NewLine;
+  return Kernel_Error_UnimplementedSWI( regs );
+}
+
 static bool do_OS_SetEnv( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_IntOn( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
@@ -780,7 +785,7 @@ static bool do_OS_ReadDefaultHandler( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_SetECFOrigin( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SetECFOrigin( svc_registers *regs ) { return true; } // FIXME
 
 
 // OS_ReadSysInfo 6 values
@@ -944,7 +949,7 @@ static bool do_OS_ReadSysInfo( svc_registers *regs )
   switch (regs->r[0]) {
   case 1:
     {
-      static const mode_selector_block only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 32, .frame_rate = 60, { { -1, 0 } } };
+      static const mode_selector_block only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 5, .frame_rate = 60, { { -1, 0 } } };
 
       regs->r[0] = (uint32_t) &only_one_mode;
       regs->r[1] = 7;
@@ -1036,7 +1041,7 @@ WriteS( "Setting colour to " ); WriteNum( regs->r[1] ); NewLine;
 }
 
 static bool do_OS_Pointer( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ScreenMode( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_ScreenMode( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ClaimProcessorVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_Reset( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
@@ -1256,6 +1261,124 @@ static bool do_OS_ConvertSpacedInteger4( svc_registers *regs ) { return Kernel_E
 static bool do_OS_ConvertFixedNetStation( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ConvertNetStation( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool CLG( svc_registers *regs )
+{
+  Write0( __func__ );
+  return true;
+}
+
+static bool SetTextColour( svc_registers *regs )
+{
+  Write0( __func__ );
+  return true;
+}
+
+static bool SetPalette( svc_registers *regs )
+{
+  Write0( __func__ );
+  return true;
+}
+
+static bool SetMode( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+  uint8_t *p = (void*) regs->r[1];
+  WriteNum( *p ); NewLine;
+  return true;
+}
+
+static bool VDU23( svc_registers *regs )
+{
+  Write0( __func__ );
+  uint8_t *params = (void*) regs->r[1];
+  for (int i = 0; i < 9; i++) {
+    WriteS( " " ); WriteNum( params[i] );
+  }
+  NewLine;
+
+  return true;
+}
+
+static int32_t int16_at( uint8_t *p )
+{
+  int32_t result = p[1];
+  result = (result << 8) | p[0];
+  return result;
+}
+
+static bool DefineGraphicsWindow( svc_registers *regs )
+{
+  uint8_t *params = (void*) regs->r[1];
+
+  uint8_t type = params[0];
+  int32_t l = int16_at( &params[2] );
+  int32_t b = int16_at( &params[4] );
+  int32_t r = int16_at( &params[6] );
+  int32_t t = int16_at( &params[8] );
+
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = l;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = b;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol = r;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow = t;
+
+  Write0( __func__ ); WriteS( " " ); WriteNum( l ); WriteS( ", " ); WriteNum( b ); WriteS( ", " ); WriteNum( r ); WriteS( ", " ); WriteNum( t ); NewLine;
+
+  return true;
+}
+
+static bool Plot( svc_registers *regs )
+{
+  uint8_t *params = (void*) regs->r[1];
+
+  uint8_t type = params[0];
+  int32_t x = int16_at( &params[1] );
+  int32_t y = int16_at( &params[3] );
+
+  register uint32_t rt asm( "r0" ) = type;
+  register uint32_t rx asm( "r1" ) = x;
+  register uint32_t ry asm( "r2" ) = y;
+  asm ( "svc %[swi]" : : [swi] "i" (0x20045), "r" (rt), "r" (rx), "r" (ry) : "lr", "cc" );
+
+  // FIXME Handle errors!
+  return true;
+}
+
+static bool RestoreDefaultWindows( svc_registers *regs )
+{
+  Write0( __func__ );
+  return true;
+}
+
+/* This is a half-way house to having a per-thread graphics context
+   approach. */
+static bool do_OS_VduCommand( svc_registers *regs )
+{
+  // Always called with the right number of parameter bytes, honest!
+
+  switch (regs->r[0]) {
+  case 0: asm ( "bkpt 1" ); break; // do nothing, surely shouldn't be called
+  case 4: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= ~(1 << 5); return true;
+  case 5: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= (1 << 5); return true;
+  case 16: return CLG( regs );
+  case 17: return SetTextColour( regs );
+  case 19: return SetPalette( regs );
+  case 22: return SetMode( regs );
+  case 23: return VDU23( regs );
+  case 24: return DefineGraphicsWindow( regs );
+  case 25: return Plot( regs );
+  case 26: return RestoreDefaultWindows( regs );
+  default:
+    {
+      static error_block error = { 0x111, "Unimplemented VDU code" };
+      Write0( error.desc ); WriteNum( regs->r[0] ); NewLine;
+      regs->r[0] = (uint32_t) &error;
+      return false;
+    }
+  }
+
+  __builtin_unreachable();
+}
 
 static bool duplicate_page( uint32_t pa, uint32_t i )
 {
@@ -1530,7 +1653,7 @@ static swifn os_swis[256] = {
   [OS_FindMemMapEntries] =  do_OS_FindMemMapEntries,
   [OS_SetColour] =  do_OS_SetColour,
   [OS_Pointer] =  do_OS_Pointer,
-  [OS_ScreenMode] =  do_OS_ScreenMode,
+  // [OS_ScreenMode] =  do_OS_ScreenMode,
 
   [OS_DynamicArea] =  do_OS_DynamicArea,
   [OS_Memory] =  do_OS_Memory,
@@ -1595,6 +1718,7 @@ static swifn os_swis[256] = {
   [OS_ConvertNetStation] =  do_OS_ConvertNetStation,
   [OS_ConvertFixedFileSize] =  do_OS_ConvertFixedFileSize,
 
+  [OS_VduCommand] = do_OS_VduCommand,
   [OS_LockForDMA] = do_OS_LockForDMA,
   [OS_ReleaseDMALock] = do_OS_ReleaseDMALock,
   [OS_MapDevicePages] = do_OS_MapDevicePages,
@@ -1629,6 +1753,26 @@ static bool __attribute__(( noinline )) Kernel_go_svc( svc_registers *regs, uint
   return do_module_swi( regs, svc );
 }
 
+// This routine will be moved to a more sensible place (TaskSlot?) asap
+/* Default behaviour: 
+ * Swap out the calling task until this task completes?
+ * If the task calls Wimp_Initialise, resume the caller.
+ */
+static void StartTask( svc_registers *regs )
+{
+  Write0( "Start task: " ); Write0( regs->r[0] ); 
+  if (regs->r[1] != 0) {
+    WriteS( " " );
+    Write0( regs->r[1] );
+  }
+
+  NewLine;
+
+  OSCLI( (char const *) regs->r[0] );
+
+  asm( "bkpt 170" );
+}
+
 static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t number )
 {
   regs->spsr &= ~VF;
@@ -1638,8 +1782,10 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
   return;
 }
 
-      switch (number) {
-      case 0x606c0 ... 0x606ff: return; // Hourglass
+      switch (number & ~Xbit) {
+      case 0x406c0 ... 0x406ff: return; // Hourglass
+      case 0x400de: StartTask( regs ); return;
+      case 0x80146: regs->r[0] = 0; return; // PDriver_CurrentJob (called from Desktop?!)
       }
       bool read_var_val_for_length = (number == 0x23 && regs->r[2] == -1);
 

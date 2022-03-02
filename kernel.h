@@ -76,7 +76,7 @@ struct Kernel_workspace {
   module *module_list_head;
   module *module_list_tail;
   uint32_t DomainId;
-  vector *vectors[0x25];
+  vector *vectors[64];   // https://www.riscosopen.org/wiki/documentation/show/Software%20Vector%20Numbers
 
   // 0 -> disabled
   // There is no associated code, it will be listening for EventV.
@@ -141,7 +141,7 @@ extern struct core_workspace {
       uint32_t prefetch;
       uint32_t data;
       uint32_t irq;
-      uint32_t fiq[512];
+      uint32_t fiq[2]; // Shrunk, because legacy zero page starts lower than I thought.
 
       // The vectors can be moved, but they must stay in the same order
       void (*reset_vec)();

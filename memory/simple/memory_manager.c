@@ -91,6 +91,9 @@ do {
 MMU_map_at( (void*) 0xfa600000, memory, natural_alignment );
 memset( (void*) 0xfa600000, '\0', natural_alignment );
 
+// How much workspace does the kernel need? Lots could be far more easily
+// and efficiently be placed on the stack. e.g. SysVarWorkSpace
+
 // Workspace for OS_EvaluateExpression, at least
 memory = Kernel_allocate_pages( 4096, 4096 );
 MMU_map_at( (void*) 0x7000, memory, 4096 );
@@ -442,7 +445,7 @@ bool do_OS_ReadDynamicArea( svc_registers *regs )
     // Special case, PRM 5a-43
     TaskSlot *slot = workspace.task_slot.running->slot;
     regs->r[0] = 0x8000;
-    regs->r[1] = 0;
+    regs->r[1] = TaskSlot_Himem( slot ) - 0x8000;
     regs->r[2] = 0x1fff8000;
 
     return true;

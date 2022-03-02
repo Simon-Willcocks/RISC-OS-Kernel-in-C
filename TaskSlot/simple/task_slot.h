@@ -13,14 +13,27 @@
  * limitations under the License.
  */
 
+// FIXME physical_memory_block probably shouldn't have a virtual address
+
 typedef struct Task Task;
 
-TaskSlot *TaskSlot_new();
+TaskSlot *TaskSlot_new( char const *command_line );
 Task *Task_new( TaskSlot *slot );
+
+uint32_t TaskSlot_Himem( TaskSlot *slot );
+char const *TaskSlot_Command( TaskSlot *slot );
+char const *TaskSlot_Tail( TaskSlot *slot );
+void *TaskSlot_Time( TaskSlot *slot );
 
 void TaskSlot_add( TaskSlot *slot, physical_memory_block memory );
 uint32_t TaskSlot_asid( TaskSlot *slot );
 physical_memory_block Kernel_physical_address( uint32_t va );
+
+// This seems to be most at home in TaskSlot; each task will have its own
+// current directory, etc.
+// I think that a child process changing its working directory should affect
+// the parent when it exits, but icbw.
+void __attribute__(( noinline )) do_FSControl( uint32_t *regs );
 
 struct Task {
   integer_registers regs;

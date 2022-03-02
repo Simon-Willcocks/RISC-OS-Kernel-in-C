@@ -375,8 +375,12 @@ static void map_block( physical_memory_block block )
   about_to_remap_memory();
 
   if (block.virtual_base < (1 << 20)) {
-    // FIXME: more than one page!
-    bottom_MiB_tt[(block.virtual_base >> 12) & 0xff] = (block.physical_base | entry.raw);
+    WriteS( "Mapping" );
+    uint32_t base = block.virtual_base >> 12;
+    for (uint32_t b = 0; b < block.size >> 12; b++) {
+      WriteS( "Page " ); WriteNum( (b+base) << 12 ); WriteS( " > " ); WriteNum( block.physical_base + (b << 12) ); NewLine;
+      bottom_MiB_tt[base + b] = (block.physical_base | (b << 12)) | entry.raw;
+    }
   }
 
   memory_remapped();
