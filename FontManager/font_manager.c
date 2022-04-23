@@ -206,8 +206,8 @@ void init( uint32_t this_core, uint32_t number_of_cores )
     the_font->next = 0;
     // The one true font: Trinity.Medium, located in ROM
     // In other words this is going to break he first time a ROM is re-built
-    the_font->IntMetrics0 = (void*) 0xfc2e1d98 + 36; // 0xfc2f3470; strings latest.bin -t x | grep Trinity.Medium.Int
-    the_font->Outlines0 = (void*) 0xfc2e21c8 + 36; // 0xfc2f38a0;   strings latest.bin -t x | grep Trinity.Medium.Out
+    the_font->IntMetrics0 = (void*) FONT_METRICS + 36; // 0xfc2f3470; strings latest.bin -t x | grep Trinity.Medium.Int
+    the_font->Outlines0 = (void*) FONT_OUTLINE + 36; // 0xfc2f38a0;   strings latest.bin -t x | grep Trinity.Medium.Out
 
     // WIMPSymbol
     //the_font->IntMetrics0 = (void*) 0xfc169388;
@@ -1048,7 +1048,9 @@ bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI
   case 0x04: return ReadInfo( workspace, regs );
   case 0x06: return Paint( workspace, regs );
   case 0x08: return ConverttoOS( workspace, regs );
+  case 0x09: regs->r[1] *= 400; regs->r[2] *= 400; return true;
   case 0x0b: return CurrentFont( workspace, regs );
+  case 0x0f: regs->r[1] = 400; regs->r[2] = 400; return true;
   case 0x12: return SetFontColours( workspace, regs );
   case 0x13: return SetPalette( workspace, regs );
   case 0x1e: return SwitchOutputToBuffer( workspace, regs );

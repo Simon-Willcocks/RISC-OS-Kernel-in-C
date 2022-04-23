@@ -22,13 +22,45 @@ bool do_OS_ReadVarVal( svc_registers *regs )
 {
 #ifdef DEBUG__SHOW_SYSTEM_VARIABLE
 #if DEBUG__SHOW_SYSTEM_VARIABLE & 1
-  WriteS( "Reading " ); WriteNum( regs->r[0] ); WriteS( " " ); Write0( regs->r[0] ); NewLine;
+  if (0 > (int) regs->r[2]) {
+    WriteS( "Reading length of " ); WriteNum( regs->r[0] ); WriteS( " " ); Write0( regs->r[0] ); Write0( " @" ); WriteNum( regs->lr ); NewLine;
+  }
+  else {
+    WriteS( "Reading " ); WriteNum( regs->r[0] ); WriteS( " " ); Write0( regs->r[0] ); Write0( ", buffer size " ); WriteNum( regs->r[2] ); NewLine;
+  }
 #endif
 #endif
   bool result = run_risos_code_implementing_swi( regs, OS_ReadVarVal );
 #ifdef DEBUG__SHOW_SYSTEM_VARIABLE
 #if DEBUG__SHOW_SYSTEM_VARIABLE & 4
-  // if (result) WriteS( "Read " ); Write0( regs->r[1] ); NewLine;
+  if (result) {
+    if (regs->r[2] == 0) {
+      Write0( regs->r[0] ); Write0( " does not exist" ); NewLine;
+    }
+    else {
+      Write0( regs->r[0] ); Write0( " = " );
+      switch (regs->r[4]) {
+      case 0: 
+      case 2: Write0( regs->r[1] ); break;
+      case 1: Write0( "(number) " ); WriteNum( regs->r[1] ); break;
+      }
+      NewLine;
+    }
+  }
+  else {
+    error_block *error = (void*) regs->r[0];
+    if (error->code == 0x1e4) { // Buffer overflow
+      if (0 > (int) regs->r[2]) {
+        WriteS( "Length = " ); WriteNum( ~regs->r[2] ); NewLine;
+      }
+    }
+    else if (error->code == 0x124) {
+      Write0( "Variable not found" ); NewLine;
+    }
+    else {
+      Write0( "Unexpected error" ); NewLine;
+    }
+  }
 #endif
 #endif
   return result;
@@ -38,23 +70,29 @@ bool do_OS_SetVarVal( svc_registers *regs )
 {
 #ifdef DEBUG__SHOW_SYSTEM_VARIABLE
 #if DEBUG__SHOW_SYSTEM_VARIABLE & 2
-  WriteS( "Setting " ); Write0( regs->r[0] );
-  switch (regs->r[4]) {
-  case 1:
-    WriteS( " to (number) " );
-    WriteNum( regs->r[1] );
-    WriteS( ")\\n\\r" );
-    break;
-  case 16:
-    WriteS( "Code variable: " );
-    WriteNum( regs->r[1] );
-    WriteS( "\\n\\r" );
-    break;
-  default:
-    WriteS( " to \\\"" ); 
-    Write0( regs->r[1] );
-    WriteS( "\\\"\\n\\r" );
+  if (0 > (int) regs->r[2]) {
+    WriteS( "UnSetting " ); Write0( regs->r[0] );
   }
+  else {
+    WriteS( "Setting " ); Write0( regs->r[0] );
+    switch (regs->r[4]) {
+    case 1:
+      WriteS( " to (number) " );
+      WriteNum( regs->r[1] );
+      WriteS( ")\\n\\r" );
+      break;
+    case 16:
+      WriteS( "Code variable: " );
+      WriteNum( regs->r[1] );
+      WriteS( "\\n\\r" );
+      break;
+    default:
+      WriteS( " to \\\"" ); 
+      Write0( regs->r[1] );
+      WriteS( "\\\"\\n\\r" );
+    }
+  }
+  NewLine;
 #endif
 #endif
   bool result = run_risos_code_implementing_swi( regs, OS_SetVarVal );

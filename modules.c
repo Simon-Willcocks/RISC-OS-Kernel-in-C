@@ -300,10 +300,10 @@ static inline int riscoscmp( const char *left, const char *right, bool space_ter
 
     result = l - r;
     if (result == 'a'-'A') {
-      result = (l >= 'a' && l <= 'z');
+      if (l >= 'a' && l <= 'z') result = 0;
     }
     else if (result == 'A'-'a') {
-      result = (r >= 'a' && r <= 'z');
+      if (r >= 'a' && r <= 'z') result = 0;
     }
   }
   return result;
@@ -616,10 +616,17 @@ static bool do_Module_Claim( svc_registers *regs )
   regs->r[0] = 2;
   regs->r[1] = (uint32_t) &rma_heap;
 
+  regs->r[3] += 64;     // FIXME This stops a problem starting the Desktop where freeing memory returns Not a heap block - it needs looking into. (64 is my first guess, less might do).
+
   bool result = do_OS_Heap( regs );
   if (result) {
     regs->r[0] = 6;
     regs->r[1] = r1;
+    memset( (void*) regs->r[2], 42, regs->r[3] ); // FIXME remove!
+    memset( (void*) regs->r[2], 0, regs->r[3] ); // Seems expected by Wimp...
+    // Still doesn't help...
+    Write0( "Allocated RMA memory at " ); WriteNum( regs->r[2] ); Write0( " (+64, zeroed)" ); Write0( " @" ); WriteNum( regs->lr ); NewLine;
+    regs->r[3] -= 64;
   }
   else {
     result = error_nomem( regs );
@@ -633,6 +640,8 @@ static bool do_Module_Free( svc_registers *regs )
   uint32_t r1 = regs->r[1];
   regs->r[0] = 3; // Free
   regs->r[1] = (uint32_t) &rma_heap;
+
+  Write0( "Free RMA memory at " ); WriteNum( regs->r[2] ); Write0( " @" ); WriteNum( regs->lr ); NewLine;
 
   bool result = do_OS_Heap( regs );
   if (result) {
@@ -967,7 +976,10 @@ bool do_OS_Module( svc_registers *regs )
          ExtendBlock, CreateNewInstantiation, RenameInstantiation,
          MakePreferredInstantiation, AddExpansionCardModule,
          LookupModuleName, EnumerateROMModules, EnumerateROMModulesWithVersion,
-         FindEndOfROM_ModuleChain };
+         FindEndOfROM_ModuleChain, 
+         Enumerate_modules_with_private_word_pointer,
+         Unplug_or_insert_modules,
+         Claim_aligned_block };
 
   switch (regs->r[0]) {
   case Run: return do_Module_Run( regs );
@@ -992,7 +1004,23 @@ bool do_OS_Module( svc_registers *regs )
   case EnumerateROMModules: return do_Module_EnumerateROMModules( regs );
   case EnumerateROMModulesWithVersion: return do_Module_EnumerateROMModulesWithVersion( regs );
   case FindEndOfROM_ModuleChain: return do_Module_FindEndOfROM_ModuleChain( regs );
+  case Enumerate_modules_with_private_word_pointer:
+    return Unknown_OS_Module_call( regs );
+  case Unplug_or_insert_modules:
+    return Unknown_OS_Module_call( regs );
+  case Claim_aligned_block:
+    {
+      // Why on Earth does this exist?
+
+      // RISC_OSLib uses it to check if aligned allocations are possible.
+      // For now, play dumb, and pretend we don't know the code.
+      // The two possible errors are: Bad alignment or Unknown subreason (0x105)
+      static error_block not_yet = { 0x105, "Unknown OS_Module call" };
+      regs->r[0] = (uint32_t) &not_yet;
+      return false;
+    }
   default:
+    NewLine; WriteNum( regs->r[0] );
     return Unknown_OS_Module_call( regs );
   }
 }
@@ -1167,6 +1195,17 @@ void init_module( const char *name )
   }
 }
 
+#define REPLACEMENT( modname ) \
+  if (0 == strcmp( name, #modname )) { \
+    extern uint32_t _binary_Modules_##modname##_start; \
+    register uint32_t code asm( "r0" ) = 10; \
+    register uint32_t *module asm( "r1" ) = &_binary_Modules_##modname##_start; \
+ \
+    asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" ); \
+    Write0( "Replacement " ); Write0( #modname ); NewLine; \
+    return true; \
+  }
+
 bool excluded( const char *name )
 {
   // These modules fail on init, at the moment.
@@ -1189,7 +1228,7 @@ bool excluded( const char *name )
                                   , "SoundChannels"     // ???
                                   , "SoundScheduler"    // Sound_Tuning
                                   , "TaskManager"       // Initialisation returns an error
-                                  , "ScreenModes"       // Doesn't return, afaics
+                                  // , "ScreenModes"       // Doesn't return, afaics
                                   , "BCMVideo"          // Tries to use OS_MMUControl
                                   , "FilterManager"     // Uses Wimp_ReadSysInfo 
                                   , "WaveSynth"         // throws exception
@@ -1261,7 +1300,7 @@ bool excluded( const char *name )
                                   , "DragASprite"       // Doesn't return, afaics
                                   , "RamFS"             // Tries to use OS_MMUControl
                                   , "Filer"             // Doesn't return, afaics
-                                  , "VFPSupport"        // Init returned with V set
+                                  , "VFPSupport"        // Tries to claim processor vector
                                   , "Hourglass"        // OS_ReadPalette
                                   , "InternationalKeyboard" // Probably because there isn't one?
                                   , "NetFS"             // Doesn't return
@@ -1281,15 +1320,9 @@ bool excluded( const char *name )
 /**/
   };
 
-  if (0 == strcmp( name, "FontManager" )) {
-    extern uint32_t _binary_Modules_FontManager_start;
-    register uint32_t code asm( "r0" ) = 10;
-    register uint32_t *module asm( "r1" ) = &_binary_Modules_FontManager_start;
-
-    asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
-    WriteS( "Replacement FontManager" ); NewLine;
-    return true;
-  }
+  // C Modules that replace ROM modules (experimental)
+  REPLACEMENT( FontManager );
+  REPLACEMENT( VFPSupport );
 
   for (int i = 0; i < number_of( excludes ); i++) {
     if (0 == strcmp( name, excludes[i] ))
@@ -1331,8 +1364,9 @@ void init_modules()
       run_transient_callbacks();
     }
     else {
-      Write0( workspace.kernel.env );
+#ifdef DEBUG__SHOW_MODULE_INIT
       WriteS( " - excluded" );
+#endif
       NewLine;
     }
     rom_module += (*rom_module)/4; // Includes size of length field
@@ -1634,6 +1668,11 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     {
     }
     break;
+  case 0x75: // Read VDU status
+    {
+      regs[1] = 0;
+    }
+    break;
   case 0x7c: // Clear escape condition
     {
     }
@@ -1641,7 +1680,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
   case 0xa1:
     {
 #ifdef DEBUG__SHOW_OS_BYTE
-    WriteS( "Read CMOS " ); WriteNum( regs[1] ); WriteS( " " ); WriteNum( regs[2] );
+    WriteS( "Read CMOS " ); WriteNum( regs[1] );
 #endif
     switch (regs[1]) {
 
@@ -1670,6 +1709,9 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     // FileSwitch options
     case 0x1c: regs[2] = 0b00000010; break; // FIXME made up!
 
+    case 0x84: regs[2] = 0xa4; break;   // FIXME from real hardware
+    case 0x85: regs[2] = 0x40; break;   // FIXME from real hardware
+
     // Font Cache pages: 512k
     case 0x86: regs[2] = 16; break;
     // case 0x86: regs[2] = 0; break; // Bug in font caching, does this turn it off?
@@ -1678,7 +1720,8 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     case 0x8b: regs[2] = 0; break;
 
     // Desktop features
-    case 0x8c: regs[2] = 0x1; break; // FIXME made up, not pretty
+    //case 0x8c: regs[2] = 0x11; break; // From real hardware
+    case 0x8c: regs[2] = 0x91; break; // RO2-style, avoiding problem of not finding tile_6* sprite
 
     // Screen size (pages)
     case 0x8f: regs[2] = (1920 * 1080 + 4095) >> 12; break;
@@ -1778,11 +1821,28 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     break;
   case 0x81: // Scan keyboard/read OS version (two things that are made for each other!)
     {
-    if (regs[1] == 0 && regs[2] == 0xff) {
-      regs[1] = 171;
-    }
-    else
-      asm ( "bkpt 90" );
+      if (regs[2] == 0xff) {
+        if (regs[1] == 0) {
+          Write0( "OS Version number" ); NewLine;
+          regs[1] = 171;
+        }
+        else if (regs[1] <= 0x7f) {
+          Write0( "Scan for range of keys " ); WriteNum( regs[1] ); NewLine;
+          regs[1] = 0xff;       // No key (no keyboard!)
+        }
+        else {
+          Write0( "Scan for particular key " ); WriteNum( regs[1] ); NewLine;
+          regs[1] = 0xff;       // No key (no keyboard!)
+        }
+      }
+      else if (regs[2] <= 0x7f) {
+        Write0( "Scan keyboard with timeout." ); NewLine;
+        regs[2] = 0xff;       // Timeout (no keyboard!)
+      }
+      else {
+        Write0( "Unknown OS_Byte option!" ); NewLine;
+        asm ( "bkpt 90" );
+      }
     }
     break;
   default: asm ( "bkpt 91" );
@@ -1879,6 +1939,12 @@ WriteFunc;
 bool do_OS_Find( svc_registers *regs )
 {
 WriteFunc;
+switch (regs->r[0]) {
+case 0: Write0( "Close file " ); WriteNum( regs->r[1] ); NewLine; break;
+case 0x40 ... 0x7f: Write0( "Open existing file for reading " ); WriteNum( regs->r[0] ); Write0( " " ); Write0( regs->r[1] ); NewLine; break;
+case 0x80 ... 0xbf: Write0( "Create new file " ); WriteNum( regs->r[0] ); Write0( " " ); Write0( regs->r[1] ); NewLine; break;
+case 0xc0 ... 0xff: Write0( "Open existing file for writing " ); WriteNum( regs->r[0] ); Write0( " " ); Write0( regs->r[1] ); NewLine; break;
+}
   return run_vector( 13, regs );
 }
 
@@ -1926,6 +1992,7 @@ WriteFunc;
 bool do_OS_SpriteOp( svc_registers *regs )
 {
 WriteFunc;
+if (regs->r[0] == 0x118) { Write0( "Select sprite " ); Write0( regs->r[2] ); NewLine; WriteNum( regs->lr ); NewLine; }
   return run_vector( 31, regs );
 }
 
@@ -2214,6 +2281,7 @@ static error_block *run_module_command( const char *command )
 static void __attribute__(( noinline )) do_CLI( const char *command )
 {
   WriteS( "CLI: " ); Write0( command ); NewLine;
+  // Max length is 1024 bytes in RO 5.28
   // PRM 1-958
   command = discard_leading_characters( command );
   if (*command == '|') return; // Comment, nothing to do
@@ -2222,11 +2290,11 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
     command++;
   }
   else {
-    run = run ||
-     ((command[0] == 'R' || command[0] == 'r') &&
-      (command[1] == 'U' || command[1] == 'u') &&
-      (command[2] == 'N' || command[2] == 'n') &&
-      (command[3] == ' ' || command[3] == '\0' || command[3] == '\n'));
+    run = ((command[0] == 'R' || command[0] == 'r') &&
+           (command[1] == 'U' || command[1] == 'u') &&
+           (command[2] == 'N' || command[2] == 'n') &&
+           (command[3] == ' '  || command[3] == '\0' ||
+            command[3] == '\t' || command[3] == '\n'));
     if (run) {
       command += 3;
       command = discard_leading_characters( command );
@@ -2269,7 +2337,7 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
 
   if (error != 0 && error->code == 214) {
     // Not found in any module
-    WriteS( "Command not found" );
+    WriteS( "Command not found, try filesystem, then files..." );
     // asm( "bkpt 51" );
   }
 }
@@ -2676,6 +2744,14 @@ WriteS( "Set font colours." ); NewLine;
 #if 1
 
   Font_Paint( font, "Ax", 0, 2*72000, 72000, 0 );
+
+  // OSCLI( "modules" );
+
+  OSCLI( "type Resources:$.Apps.!Alarm.!Help" );
+  OSCLI( "set Some$Path Resources:$.Apps.!Alarm" );
+  OSCLI( "set FileSwitch$Resources$CSD $" ); // This should obviously be initialised somewhere else!
+  OSCLI( "show" );
+  OSCLI( "type Some:!Help" );
 
   OSCLI( "Desktop" ); // Needs more SVC stack? Recursion!
 

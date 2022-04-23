@@ -133,6 +133,7 @@ memset( (void*) 0x7000, '\0', 4096 );
       da->pages = initial_rma_size >> 12;
       da->actual_pages = natural_alignment >> 12;
       da->next = shared.memory.dynamic_areas;
+      da->handler_routine = 0;
       shared.memory.dynamic_areas = da;
     }
 
@@ -167,6 +168,7 @@ memset( (void*) 0x7000, '\0', 4096 );
     da->pages = 0;
     da->actual_pages = da->pages;
     da->start_page = 0xbadbad;
+    da->handler_routine = 0;
 
     da->next = workspace.memory.dynamic_areas;
     workspace.memory.dynamic_areas = da;
@@ -185,6 +187,7 @@ memset( (void*) 0x7000, '\0', 4096 );
     da->pages = 256;
     da->actual_pages = da->pages;
     da->start_page = Kernel_allocate_pages( da->actual_pages << 12, 1 << 12 ) >> 12;
+    da->handler_routine = 0;
 
     da->next = workspace.memory.dynamic_areas;
     workspace.memory.dynamic_areas = da;
@@ -206,6 +209,7 @@ memset( (void*) 0x7000, '\0', 4096 );
     da->pages = 256;
     da->actual_pages = da->pages;
     da->start_page = Kernel_allocate_pages( da->actual_pages << 12, 1 << 12 ) >> 12;
+    da->handler_routine = 0;
 
     da->next = workspace.memory.dynamic_areas;
     workspace.memory.dynamic_areas = da;
@@ -605,6 +609,7 @@ bool do_OS_DynamicArea( svc_registers *regs )
         da->pages = regs->r[2] >> 12;
         da->actual_pages = da->pages;
         da->next = shared.memory.dynamic_areas;
+        da->handler_routine = 0;
         shared.memory.dynamic_areas = da;
       }
 

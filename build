@@ -60,17 +60,9 @@ if [ "$HAL" = "" ]; then
   fi
 fi
 
-if [ "$ROMSRC" = "" ]; then
-  ROMSRC=$( echo RISCOS/* )
-  if [ ! -d "$ROMSRC" ]; then
-    echo "Please define \$ROMSRC, probably as one of "$ROMSRC
-    exit 1
-  fi
-fi
-
-if [ ! -f $ROMSRC/ro_rom.o ] ; then
-  $ROMSRC/fetch
-fi
+RiscOS=$1
+ROM=$RiscOS/Images/$( ls -rt $RiscOS/Images | tail -n 1 )
+shift
 
 function paddedstring { echo -n $1 | dd bs=4 conv=sync ; }
 function byte { echo -en $( printf '\\'x%02x $1 ) ; }
@@ -89,36 +81,28 @@ arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/HAL &
 arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/HAL --rename-section .data=.text Modules/HAL.o &&
 rm /tmp/module$$.elf &&
 
+METRICS="0xfc$( strings $ROM -t x | grep Trinity.Medium.Int | cut -f 2 -d ' ' )" &&
+OUTLINE="0xfc$( strings $ROM -t x | grep Trinity.Medium.Out | cut -f 2 -d ' ' )" &&
+echo Found Trinity.Medium at $METRICS $OUTLINE &&
 arm-linux-gnueabi-gcc-8 FontManager/*.c -Wall -o /tmp/module$$.elf -fpic \
         -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
-        -g -march=armv8-a+nofp -T module.script -I . -DNO_MODULE_SIZE &&
+        -g -march=armv8-a+nofp -T module.script -I . -DNO_MODULE_SIZE -DFONT_METRICS=$METRICS -DFONT_OUTLINE=$OUTLINE &&
 arm-linux-gnueabi-objdump -x --disassemble-all /tmp/module$$.elf > FontManager.dump &&
 arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/FontManager &&
 arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/FontManager --rename-section .data=.text Modules/FontManager.o &&
 rm /tmp/module$$.elf &&
 
-arm-linux-gnueabi-gcc-8 -Wall -I . \
-  kernel.c swis.c modules.c swis/*.c \
-  $PROC/*.c -I $PROC \
-  $BOOT/*.c -I $BOOT \
-  $TASK_SLOT/*.c -I $TASK_SLOT \
-  $MMU/*.c -I $MMU \
-  $MM/*.c -I $MM \
-  Modules/HAL.o \
-  Modules/FontManager.o \
-  $ROMSRC/ro_rom.o \
-  -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static \
-  -g \
-  -march=armv8-a+nofp \
-  -T $ROMSRC/rom.script -Os \
-  -o rom.elf \
-  $* &&
-arm-linux-gnueabi-objcopy -R .ignoring -O binary rom.elf rom.bin &&
-arm-linux-gnueabi-objdump -x --disassemble-all rom.elf | sed -n '1,/fc010000 <_binary_ro_rom_img_start>:/p' > rom.dump &&
+arm-linux-gnueabi-gcc-8 VFPSupport/*.c -Wall -o /tmp/module$$.elf -fpic \
+        -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
+        -g -march=armv8-a+nofp -T module.script -I . -DNO_MODULE_SIZE -DFONT_METRICS=$METRICS -DFONT_OUTLINE=$OUTLINE &&
+arm-linux-gnueabi-objdump -x --disassemble-all /tmp/module$$.elf > VFPSupport.dump &&
+arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/VFPSupport &&
+arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/VFPSupport --rename-section .data=.text Modules/VFPSupport.o &&
+rm /tmp/module$$.elf &&
 
 cp rool.script hal.script &&
-sed -n 's/JTABLE \(.*\)\.\..*$/JTABLE = 0x\1 ;/p;s/SysModules_Info \(.*\)\.\..*$/_binary_AllMods_start = 0x\1 ;/p;s/SpriteVecHandler \(.*\)\.\..*$/SpriteVecHandler = 0x\1 ;/p;s/\<HardFont\> \(.*\)\.\..*$/system_font = 0x\1 ;/p;s/ByteVarInitTable \(.*\)\.\..*$/ByteVarInitTable = 0x\1 ;/p' /mnt/RiscOS/Sources/Kernel/bin/Kernel_gpa >> hal.script &&
-echo 'rom_size = 5 << 20 ;' >> hal.script
+sed -n 's/JTABLE \(.*\)\.\..*$/JTABLE = 0x\1 ;/p;s/SysModules_Info \(.*\)\.\..*$/_binary_AllMods_start = 0x\1 ;/p;s/SpriteVecHandler \(.*\)\.\..*$/SpriteVecHandler = 0x\1 ;/p;s/\<HardFont\> \(.*\)\.\..*$/system_font = 0x\1 ;/p;s/ByteVarInitTable \(.*\)\.\..*$/ByteVarInitTable = 0x\1 ;/p' $RiscOS/Sources/Kernel/bin/Kernel_gpa >> hal.script &&
+echo 'rom_size = ' $( stat -c %s $ROM )  ' ;' >> hal.script
 
 
 arm-linux-gnueabi-gcc-8 -Wall -I . \
@@ -128,8 +112,7 @@ arm-linux-gnueabi-gcc-8 -Wall -I . \
   $TASK_SLOT/*.c -I $TASK_SLOT \
   $MMU/*.c -I $MMU \
   $MM/*.c -I $MM \
-  Modules/HAL.o \
-  Modules/FontManager.o \
+  Modules/*.o \
   -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static \
   -g \
   -march=armv8-a+nofp \
@@ -139,5 +122,10 @@ arm-linux-gnueabi-gcc-8 -Wall -I . \
 
 arm-linux-gnueabi-objcopy -R .ignoring -O binary hal.elf hal.bin &&
 arm-linux-gnueabi-objdump -x --disassemble-all hal.elf > hal.dump &&
-ls -l rom.bin hal.bin
+ls -l *.bin &&
 
+cp hal.bin latest.bin &&
+dd if=$ROM bs=65536 skip=1 >> latest.bin &&
+arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 latest.bin --rename-section .data=.text latest.elf &&
+arm-linux-gnueabi-objdump -x --disassemble-all latest.elf > latest.dump &&
+ls -l latest.*

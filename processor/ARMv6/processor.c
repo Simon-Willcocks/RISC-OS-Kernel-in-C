@@ -259,7 +259,7 @@ uint32_t pre_mmu_identify_processor()
   default: for (;;) { asm( "wfi" ); }
   }
 
-  return Cortex_A7_number_of_cores();
+  return fixed->number_of_cores;
 }
 
 void *memset(void *s, int c, uint32_t n)

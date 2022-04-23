@@ -62,33 +62,39 @@ static uint32_t relocate_as_necessary( uint32_t start, volatile startup *startup
 uint32_t pre_mmu_allocate_physical_memory( uint32_t size, uint32_t alignment, volatile startup *startup );
 void __attribute__(( noreturn, noinline )) pre_mmu_with_stacks( core_workspace *ws, uint32_t max_cores, volatile startup *startup );
 
-void __attribute__(( naked )) locate_rom_and_enter_kernel( uint32_t start );
+void __attribute__(( noreturn )) locate_rom_and_enter_kernel( uint32_t start, uint32_t core_number, uint32_t volatile *states );
 
 // The whole point of this routine is to be linked at the start of the execuable, and
 // to pass the actual location of the first byte of the loaded "ROM" to the next
 // routine.
-void __attribute__(( naked, section( ".text.init" ), noinline )) _start()
+void __attribute__(( naked, section( ".text.init" ), noinline, noreturn )) _start()
 {
   register uint32_t start asm( "r0" );
 
   asm ( "adr %[loc], _start" : [loc] "=r" (start) ); // Guaranteed PC relative
 
-  locate_rom_and_enter_kernel( start );
-  asm ( ".align 12" ); // GPU writes over the loaded code...
+  uint32_t core_number = get_core_number();
+
+  // Assumes top_of_ram > 2 * size_of_rom and that the ROM
+  // is loaded near the top or bottom of RAM.
+  uint32_t volatile *states = (uint32_t*) (top_of_ram / 2);
+  uint32_t const tiny_stack_size = 256;
+
+  // Allocate a tiny stack per core in RAM that is currently unused.
+  asm volatile( "mov sp, %[stack]" : : [stack] "r" (states - core_number * tiny_stack_size) );
+
+  locate_rom_and_enter_kernel( start, core_number, states );
+
+  __builtin_unreachable();
 }
 
-void __attribute__(( naked )) locate_rom_and_enter_kernel( uint32_t start )
+void __attribute__(( noreturn )) locate_rom_and_enter_kernel( uint32_t start, uint32_t core_number, uint32_t volatile *states )
 {
   volatile startup *startup = (void*) (((uint8_t*) &boot_data) - ((uint8_t*) _start) + start);
 
-  uint32_t core_number = get_core_number();
-
-  uint32_t volatile *states = (uint32_t*) (top_of_ram / 2); // Assumes top_of_ram > 2 * size_of_rom
   uint32_t max_cores = 0;
 
   if (core_number == 0) {
-    asm volatile( "mov sp, %[stack]" : : [stack] "r" (states) );
-
     // Identify the kind of processor we're working with.
     // The overall system (onna chip) will be established later.
     max_cores = pre_mmu_identify_processor();
@@ -159,18 +165,14 @@ relocated:
     at_checkpoint( states, core_number, CORES_RUNNING_AT_NEW_LOCATION );
   }
 
-  {
-    // Clear out workspaces (in parallel)
-    core_workspace *ws = (void*) (startup->core_workspaces + core_number * core_workspace_space);
-    uint32_t *p = (uint32_t *) ws;
-    for (int i = 0; i < core_workspace_space/sizeof( uint32_t ); i++) {
-      p[i] = 0;
-    }
-    ws->core_number = core_number;
+  core_workspace *ws = (void*) (startup->core_workspaces + core_number * core_workspace_space);
 
-    asm ( "  mov sp, %[stack]" : : [stack] "r" (sizeof( ws->kernel.svc_stack ) + (uint32_t) &ws->kernel.svc_stack) );
-    pre_mmu_with_stacks( ws, max_cores, startup );
-  }
+  memset( ws, 0, sizeof( core_workspace ) );
+  ws->core_number = core_number;
+
+  asm ( "  mov sp, %[stack]" : : [stack] "r" (sizeof( ws->kernel.svc_stack ) + (uint32_t) &ws->kernel.svc_stack) );
+
+  pre_mmu_with_stacks( ws, max_cores, startup );
 
   __builtin_unreachable();
 }

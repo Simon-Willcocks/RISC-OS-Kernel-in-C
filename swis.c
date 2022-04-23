@@ -27,6 +27,7 @@ bool Kernel_Error_UnimplementedSWI( svc_registers *regs )
   static error_block error = { 0x999, "Unimplemented SWI" };
   regs->r[0] = (uint32_t) &error;
 
+  Write0( "Unimplemented SWI" ); NewLine;
   asm ( "bkpt 77" );
   return false;
 }
@@ -184,11 +185,28 @@ static bool do_OS_Exit( svc_registers *regs )
 }
 
 static bool do_OS_SetEnv( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_IntOn( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_IntOn( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+  regs->spsr = (regs->spsr & ~0x80);
+  return true;
+}
 
-static bool do_OS_IntOff( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_IntOff( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+  regs->spsr = (regs->spsr & ~0x80) | 0x80;
+  return true;
+}
+
 static bool do_OS_CallBack( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_EnterOS( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_EnterOS( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+  regs->spsr = (regs->spsr & ~15) | 3;
+  return true;
+}
+
 static bool do_OS_BreakPt( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_BreakCtrl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
@@ -620,8 +638,13 @@ static bool do_OS_ClaimScreenMemory( svc_registers *regs ) { return Kernel_Error
 
 static bool do_OS_ReadMonotonicTime( svc_registers *regs )
 {
-  regs->r[0] = workspace.kernel.monotonic_time;
-  workspace.kernel.monotonic_time++; // FIXME! ASAP!
+  uint32_t lo;
+  uint32_t hi;
+  uint64_t time;
+  asm ( "mrrc p15, 0, %[lo], %[hi], c14" : [lo] "=r" (lo), [hi] "=r" (hi) );
+  time = (((uint64_t) hi) << 32) | lo;
+  regs->r[0] = time >> 16; // FIXME completely made up, just to make sure qemu supports it!
+  // Optimiser wants a function for uint64_t / uint32_t : __aeabi_uldivmod
   return true;
 }
 
@@ -785,7 +808,11 @@ static bool do_OS_ReadDefaultHandler( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_SetECFOrigin( svc_registers *regs ) { return true; } // FIXME
+static bool do_OS_SetECFOrigin( svc_registers *regs )
+{ 
+  Write0( "SetECFOrigin - not implemented" ); NewLine;
+  return true; // FIXME
+}
 
 
 // OS_ReadSysInfo 6 values
@@ -942,11 +969,14 @@ bool read_kernel_value( svc_registers *regs )
 
 static bool do_OS_ReadSysInfo( svc_registers *regs )
 {
-  static error_block error = { 0x333, "ReadSysInfo unknown code" };
-
-  // Probably just ChkKernelVersion (code 1)
+  static error_block error = { 0x1ec, "Unknown OS_ReadSysInfo call" };
 
   switch (regs->r[0]) {
+  case 0:
+    {
+      regs->r[0] = 8 << 20; // FIXME
+      return true;
+    }
   case 1:
     {
       static const mode_selector_block only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 5, .frame_rate = 60, { { -1, 0 } } };
@@ -966,7 +996,7 @@ static bool do_OS_ReadSysInfo( svc_registers *regs )
     }
     break;
 
-  default: { WriteS( "OS_ReadSysInfo: " ); WriteNum( regs->r[0] ); NewLine; return Kernel_Error_UnknownSWI( regs ); }
+  default: { Write0( "OS_ReadSysInfo: " ); WriteNum( regs->r[0] ); NewLine; }
   }
 
   regs->r[0] = (uint32_t) &error;
@@ -1015,8 +1045,9 @@ static bool do_OS_SetColour( svc_registers *regs )
   OS_SetColour_Flags flags = { .raw = regs->r[0] };
 
   if (flags.action != 0 || flags.ECF_pattern) {
-    asm ( "bkpt 1" );
-    return Kernel_Error_UnimplementedSWI( regs );
+WriteS( "Set Colour unimplemented code " ); WriteNum( regs->r[0] ); NewLine;
+    // asm ( "bkpt 1" );
+    return true; // (totally did that, honest!) Kernel_Error_UnimplementedSWI( regs );
   }
 WriteS( "Setting colour to " ); WriteNum( regs->r[1] ); NewLine;
   extern uint32_t *vduvarloc[];
@@ -1130,7 +1161,7 @@ static bool hex_convert( svc_registers *regs, int digits )
 
   regs->r[0] = regs->r[1];
 
-  for (int i = digits; i > 0; i--) {
+  for (int i = digits-1; i >= 0; i--) {
     if (!write_converted_character( regs, hex[(n >> (4*i))&0xf] )) return false;
   }
 
@@ -1346,7 +1377,7 @@ static bool Plot( svc_registers *regs )
 
 static bool RestoreDefaultWindows( svc_registers *regs )
 {
-  Write0( __func__ );
+  Write0( __func__ ); NewLine;
   return true;
 }
 
@@ -1508,12 +1539,15 @@ static bool do_OS_ConvertFileSize( svc_registers *regs ) { return Kernel_Error_U
 
 bool do_OS_Heap( svc_registers *regs )
 {
-  // Note: This could possibly be improved by having a lock per heap, one bit in the header, say.
-  // I would hope this is never called from an interrupt handler, but if so, we should probably return an error,
-  // if shared.memory.os_heap_lock is non-zero. Masking interrupts is no longer a guarantee of atomicity.
+  // Note: This could possibly be improved by having a lock per heap,
+  // one bit in the header, say.
+  // I would hope this is never called from an interrupt handler, but 
+  // if so, we should probably return an error, if shared.memory.os_heap_lock 
+  // is non-zero. Masking interrupts is no longer a guarantee of atomicity.
   // OS_Heap appears to call itself, even without interrupts...
   bool reclaimed = claim_lock( &shared.memory.os_heap_lock );
   bool result = run_risos_code_implementing_swi( regs, 0x1d );
+  //Write0( "OS_Heap returns " ); WriteNum( regs->r[3] ); NewLine;
   if (!reclaimed) release_lock( &shared.memory.os_heap_lock );
   return result;
 }
@@ -1635,7 +1669,7 @@ static swifn os_swis[256] = {
 
   [OS_AddCallBack] =  do_OS_AddCallBack,
   [OS_ReadDefaultHandler] =  do_OS_ReadDefaultHandler,
-  [OS_SetECFOrigin] =  do_OS_SetECFOrigin,
+  // [OS_SetECFOrigin] =  do_OS_SetECFOrigin,
   [OS_SerialOp] =  do_OS_SerialOp,
 
 
