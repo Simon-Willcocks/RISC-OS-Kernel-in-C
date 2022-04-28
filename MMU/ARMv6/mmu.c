@@ -32,8 +32,8 @@ static uint32_t *const top_MiB_tt = (&translation_tables) + 4096;
 static uint32_t *const bottom_MiB_tt = (&translation_tables) + 4096 + 256; // Offsets in words, not bytes!
 // In anticipation...
 // I intend a slot's memory to be bottom pages, multiple full MiB blocks, then 1 or 2 MiB of flexible pages
-static uint32_t *const slot_top_MiB_tt = (&translation_tables) + 4096 + 512;
-static uint32_t *const slot_mid_MiB_tt = (&translation_tables) + 4096 + 768;
+//static uint32_t *const slot_top_MiB_tt = (&translation_tables) + 4096 + 512;
+//static uint32_t *const slot_mid_MiB_tt = (&translation_tables) + 4096 + 768;
 
 typedef union {
   struct {
@@ -375,11 +375,11 @@ static void map_block( physical_memory_block block )
   about_to_remap_memory();
 
   if (block.virtual_base < (1 << 20)) {
-    WriteS( "Mapping" );
+    WriteS( "Mapping" ); NewLine;
     uint32_t base = block.virtual_base >> 12;
     for (uint32_t b = 0; b < block.size >> 12; b++) {
       WriteS( "Page " ); WriteNum( (b+base) << 12 ); WriteS( " > " ); WriteNum( block.physical_base + (b << 12) ); NewLine;
-      bottom_MiB_tt[base + b] = (block.physical_base | (b << 12)) | entry.raw;
+      bottom_MiB_tt[base + b] = (block.physical_base + (b << 12)) | entry.raw;
     }
   }
 
