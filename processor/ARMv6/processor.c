@@ -157,7 +157,7 @@ static void do_nothing()
 {
 }
 
-static void clear_all()
+static inline void clear_all()
 {
   // asm ( "mcr p15, 0, %[zero], c7, c7, 0" : : [zero] "r" (0) ); // invalidate
   asm ( "mcr p15, 0, %[zero], c7, c14, 0" : : [zero] "r" (0) ); // 

@@ -216,9 +216,9 @@ void init( uint32_t this_core, uint32_t number_of_cores )
     workspace->fonts = the_font;
   }
 
-  Write0( "FontManager initialised" ); NewLine;
+  if (first_entry) { Write0( "FontManager initially initialised" ); NewLine; }
+  else { Write0( "FontManager initialised" ); NewLine; }
 
-  if (first_entry) { Write0( "FontManager initialised" ); NewLine; }
 }
 
 /* Access routines for IntMetrics0 format files (v. 2) */
@@ -494,11 +494,12 @@ static struct Scaffold ReadScaffold( uint8_t *entry )
                              .linear = scaffold.bits.linear,
                              .width = entry[2] };
 
+#ifdef DEBUG__VERBOSE
   WriteSmallNum( result.coord, 1 ); Write0( " " );
   WriteSmallNum( result.link_index, 1 ); Write0( " " );
   WriteSmallNum( result.linear, 1 ); Write0( " " );
   Write0( " width " ); WriteSmallNum( result.width, 1 ); NewLine;
-
+#endif
   return result;
 }
 
@@ -592,11 +593,28 @@ static void SetColour( uint32_t flags, uint32_t colour )
 
 static void SetGraphicsFgColour( uint32_t colour )
 {
+#ifdef DEBUG__VERBOSE
   Write0( "Setting graphics foreground colour with ColourTrans... " );
+#endif
   register uint32_t pal asm( "r0" ) = colour;
   register uint32_t Rflags asm( "r3" ) = 0; // FG, no ECFs
   register uint32_t action asm( "r4" ) = 0; // set
   asm ( "svc %[swi]" : : [swi] "i" (0x60743), "r" (pal), "r" (Rflags), "r" (action) : "lr", "cc" );
+}
+
+static void Font_Draw_TransformPath( uint32_t *path, int32_t *transformation_matrix )
+{
+  register uint32_t *draw_path asm( "r0" ) = path;
+  register uint32_t output asm( "r1" ) = 0; // Overwrite
+  register  int32_t *matrix asm( "r2" ) = transformation_matrix;
+  register uint32_t zero asm( "r3" ) = 0;
+  asm ( "swi 0x6070a"
+        :
+        : "r" (draw_path)
+        , "r" (output)
+        , "r" (matrix)
+        , "r" (zero)
+        : "lr", "cc" );
 }
 
 static void Font_Draw_Fill( uint32_t *path, int32_t *transformation_matrix )
@@ -756,11 +774,15 @@ static error_block *MakeCharPaths( Font const *font,
 
   uint16_t index = IntMetrics0_char_index( metrics, ch );
 
+#ifdef DEBUG__VERBOSE
 Write0( "Character: " ); WriteSmallNum( ch, 1 ); Write0( ", index " ); WriteSmallNum( index, 1 ); NewLine;
+#endif
 
   uint32_t *chunks = OutlineFontFile_chunks_offsets( outline_font );
 
+#ifdef DEBUG__VERBOSE
 Write0( "Chunk offset: " ); WriteSmallNum( chunks[ch / 32], 1 ); NewLine;
+#endif
 
   if (outline_font->number_of_chunks < ch / 32) {
     // No such char FIXME
@@ -784,7 +806,9 @@ Write0( "Chunk offset: " ); WriteSmallNum( chunks[ch / 32], 1 ); NewLine;
   uint32_t *char_offsets = chunk + 1;
 
   uint8_t *char_data = pointer_at_offset_from( char_offsets, char_offsets[ch % 32] );
+#ifdef DEBUG__VERBOSE
 Write0( "Char offset: " ); WriteNum( char_offsets[ch % 32] ); NewLine;
+#endif
 
   if (0 == char_offsets[ch % 32]) {
     // No such char FIXME
@@ -796,6 +820,7 @@ Write0( "Char offset: " ); WriteNum( char_offsets[ch % 32] ); NewLine;
   // Note: the flags byte is only in versions 8+
   FontCharacterFlags character = read_font_character_flags( char_data[0] );
 
+#ifdef DEBUG__VERBOSE
   if (character.coords_12bit) { Write0( "12 bit coordinates" ); NewLine; }
   if (character.data_1bpp) { Write0( "1 bit per pixel (or outline)" ); NewLine; }
   if (character.initial_pixel_black) { Write0( "Initial pixel black" ); NewLine; }
@@ -803,6 +828,7 @@ Write0( "Char offset: " ); WriteNum( char_offsets[ch % 32] ); NewLine;
   if (character.composite) { Write0( "composite" ); NewLine; }
   if (character.has_accent) { Write0( "Has accent" ); NewLine; }
   if (character.codes_16bit) { Write0( "16-bit character codes" ); NewLine; }
+#endif
 
   uint8_t const *next_byte = char_data+1;
   uint16_t base_character = 0; // Only important if character.composite
@@ -841,11 +867,13 @@ Write0( "Char offset: " ); WriteNum( char_offsets[ch % 32] ); NewLine;
     next_byte = read_font_coord_pair( next_byte, character.coords_12bit,
                                       &bbox->width, &bbox->height );
 
+#ifdef DEBUG__VERBOSE
     Write0( "BBox: " );
     WriteSmallNum( bbox->left_inclusive, 4 ); Write0( ", " );
     WriteSmallNum( bbox->bottom_inclusive, 4 ); Write0( ", " );
     WriteSmallNum( bbox->width, 4 ); Write0( ", " );
     WriteSmallNum( bbox->height, 4 ); NewLine;
+#endif
   }
   else {
     *bbox = outline_font->font_max_bbox;
@@ -953,9 +981,20 @@ static bool Paint( struct workspace *workspace, SWI_regs *regs )
   uint32_t design_size = outline_font->design_size;
   uint32_t fp_zoom = ((point_size * dpi * 0x1000)/points_per_inch) / design_size;
 
+#ifdef DEBUG__VERBOSE
 Write0( "FP Zoom: " ); WriteNum( fp_zoom ); NewLine;
+#endif
 
-  int32_t matrix[6] = { fp_zoom, 0, 0, fp_zoom, 0x1000, 0x4000 };
+  int32_t x = regs->r[3];
+  int32_t y = regs->r[4];
+
+  if (0 == (regs->r[2] & (1 << 4))) {
+    // Coordinates are in millipoints, not OS units
+    x = (x / 400);
+    y = (y / 400);
+  }
+
+  int32_t matrix[6] = { fp_zoom, 0, 0, fp_zoom, x * 256 / 2, y * 256 / 2 }; // Internal draw units FIXME
   while ((ch = *p++) >= ' ') {
     uint32_t fill_path[128];
     uint32_t stroke_path[64];
@@ -969,6 +1008,8 @@ Write0( "FP Zoom: " ); WriteNum( fp_zoom ); NewLine;
 Write0( "Fill path" ); NewLine; DebugPrintPath( fill_path );
 Write0( "Stroke path" ); NewLine; DebugPrintPath( stroke_path );
 #endif
+//Font_Draw_TransformPath( fill_path, matrix );
+//Font_Draw_TransformPath( stroke_path, matrix );
 
     Font_Draw_Fill( fill_path, matrix );
     Font_Draw_Stroke( stroke_path, matrix );
@@ -1040,7 +1081,7 @@ static bool FontScanString( struct workspace *workspace, SWI_regs *regs )
 
 bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI_regs *regs )
 {
-  NewLine; Write0( "Handling Font SWI " ); WriteNum( regs->number ); NewLine;
+  NewLine; Write0( "Handling Font SWI " ); WriteNum( MODULE_CHUNK + regs->number ); NewLine;
 
   switch (regs->number) {
   case 0x01: return FindFont( workspace, regs );

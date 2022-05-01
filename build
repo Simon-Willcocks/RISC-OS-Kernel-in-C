@@ -60,9 +60,30 @@ if [ "$HAL" = "" ]; then
   fi
 fi
 
-RiscOS=$1
-ROM=$RiscOS/Images/$( ls -rt $RiscOS/Images | tail -n 1 )
-shift
+if [ ! -d RiscOS ]; then
+  echo "Please locate a RiscOS build tree (or a symbolic link to one) as RiscOS" >&2
+  exit 1
+fi
+
+# Take the most recent image
+ROM=RiscOS/Images/$( ls -rt RiscOS/Images | tail -n 1 )
+
+function build_shared_module {
+  MOD=$1 ; shift ; # All other parameters are passed to gcc
+  echo Building shared module $MOD
+  M=$( basename $MOD ) &&
+
+  arm-linux-gnueabi-gcc-8 $MOD/*.c -Wall -o /tmp/module$$.elf -fpic \
+        -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
+        -g -march=armv8-a+nofp -T module.script -I . -DNO_MODULE_SIZE \
+        $* &&
+  arm-linux-gnueabi-objdump -x --disassemble-all /tmp/module$$.elf > Modules/$M.dump &&
+  arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/$M &&
+  arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/$M --rename-section .data=.text Modules/$M.o &&
+  rm /tmp/module$$.elf || exit 1
+}
+
+
 
 function paddedstring { echo -n $1 | dd bs=4 conv=sync ; }
 function byte { echo -en $( printf '\\'x%02x $1 ) ; }
@@ -73,37 +94,22 @@ function resourcefile { number 0 ; number 0; number $( stat -c %s $i ) ; number 
 function resourcefiles { if [ $# == 1 ]; then number $( stat -c %s $1 ) ; cat $1 ; else number 0 ; cat $1 ; shift ; resourcefiles $*  ; fi ; }
 
 # Linking in a HAL module. I don't know if that's what I want to see in future, or a block of modules in a list like in the ROM
-arm-linux-gnueabi-gcc-8 $HAL/*.c -Wall -o /tmp/module$$.elf -fpic \
-        -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
-        -g -march=armv8-a+nofp -T module.script -I . -DNO_MODULE_SIZE &&
-arm-linux-gnueabi-objdump -x --disassemble-all /tmp/module$$.elf > HAL.dump &&
-arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/HAL &&
-arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/HAL --rename-section .data=.text Modules/HAL.o &&
-rm /tmp/module$$.elf &&
+build_shared_module $HAL &&
 
 METRICS="0xfc$( strings $ROM -t x | grep Trinity.Medium.Int | cut -f 2 -d ' ' )" &&
 OUTLINE="0xfc$( strings $ROM -t x | grep Trinity.Medium.Out | cut -f 2 -d ' ' )" &&
 echo Found Trinity.Medium at $METRICS $OUTLINE &&
-arm-linux-gnueabi-gcc-8 FontManager/*.c -Wall -o /tmp/module$$.elf -fpic \
-        -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
-        -g -march=armv8-a+nofp -T module.script -I . -DNO_MODULE_SIZE -DFONT_METRICS=$METRICS -DFONT_OUTLINE=$OUTLINE &&
-arm-linux-gnueabi-objdump -x --disassemble-all /tmp/module$$.elf > FontManager.dump &&
-arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/FontManager &&
-arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/FontManager --rename-section .data=.text Modules/FontManager.o &&
-rm /tmp/module$$.elf &&
-
-arm-linux-gnueabi-gcc-8 VFPSupport/*.c -Wall -o /tmp/module$$.elf -fpic \
-        -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
-        -g -march=armv8-a+nofp -T module.script -I . -DNO_MODULE_SIZE -DFONT_METRICS=$METRICS -DFONT_OUTLINE=$OUTLINE &&
-arm-linux-gnueabi-objdump -x --disassemble-all /tmp/module$$.elf > VFPSupport.dump &&
-arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/VFPSupport &&
-arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/VFPSupport --rename-section .data=.text Modules/VFPSupport.o &&
-rm /tmp/module$$.elf &&
+build_shared_module FontManager -DFONT_METRICS=$METRICS -DFONT_OUTLINE=$OUTLINE &&
+build_shared_module VFPSupport &&
+build_shared_module Portable &&
 
 cp rool.script hal.script &&
-sed -n 's/JTABLE \(.*\)\.\..*$/JTABLE = 0x\1 ;/p;s/SysModules_Info \(.*\)\.\..*$/_binary_AllMods_start = 0x\1 ;/p;s/SpriteVecHandler \(.*\)\.\..*$/SpriteVecHandler = 0x\1 ;/p;s/\<HardFont\> \(.*\)\.\..*$/system_font = 0x\1 ;/p;s/ByteVarInitTable \(.*\)\.\..*$/ByteVarInitTable = 0x\1 ;/p' $RiscOS/Sources/Kernel/bin/Kernel_gpa >> hal.script &&
+sed -n 's/VduInit \(.*\)\.\..*$/VduInit = 0x\1 ;/p;s/MOSPaletteV \(.*\)\.\..*$/MOSPaletteV = 0x\1 ;/p;s/MOSGraphicsV \(.*\)\.\..*$/MOSGraphicsV = 0x\1 ;/p;s/JTABLE \(.*\)\.\..*$/JTABLE = 0x\1 ;/p;s/SysModules_Info \(.*\)\.\..*$/_binary_AllMods_start = 0x\1 ;/p;s/SpriteVecHandler \(.*\)\.\..*$/SpriteVecHandler = 0x\1 ;/p;s/\<HardFont\> \(.*\)\.\..*$/system_font = 0x\1 ;/p;s/ByteVarInitTable \(.*\)\.\..*$/ByteVarInitTable = 0x\1 ;/p' RiscOS/Sources/Kernel/bin/Kernel_gpa >> hal.script &&
 echo 'rom_size = ' $( stat -c %s $ROM )  ' ;' >> hal.script
 
+function rom_kernel_start {
+  sed -n 's/KernelBase \(.*\)\.\..*$/\1/p' RiscOS/Sources/Kernel/bin/Kernel_gpa
+}
 
 arm-linux-gnueabi-gcc-8 -Wall -I . \
   kernel.c swis.c modules.c swis/*.c \
@@ -125,7 +131,7 @@ arm-linux-gnueabi-objdump -x --disassemble-all hal.elf > hal.dump &&
 ls -l *.bin &&
 
 cp hal.bin latest.bin &&
-dd if=$ROM bs=65536 skip=1 >> latest.bin &&
+dd if=$ROM bs=65536 skip=$(( (0x$( rom_kernel_start ) - 0xfc000000) >> 16 )) >> latest.bin &&
 arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 latest.bin --rename-section .data=.text latest.elf &&
 arm-linux-gnueabi-objdump -x --disassemble-all latest.elf > latest.dump &&
 ls -l latest.*

@@ -15,6 +15,11 @@
 
 #include "inkernel.h"
 
+
+// This is the only mode supported at the moment. Search for it to find
+// places to modify to cope with more
+static mode_selector_block const only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 5, .frame_rate = 60, { { -1, 0 } } };
+
 bool Kernel_Error_UnknownSWI( svc_registers *regs )
 {
   static error_block error = { 0x1e6, "Unknown SWI" }; // Could be "SWI name not known", or "SWI &3333 not known"
@@ -430,7 +435,7 @@ FC000000 64M        ROM
 
 #endif
 
-static bool do_OS_BinaryToDecimal( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_BinaryToDecimal( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ReadEscapeState( svc_registers *regs )
 {
@@ -439,8 +444,8 @@ static bool do_OS_ReadEscapeState( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_EvaluateExpression( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ReadPalette( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_EvaluateExpression( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_ReadPalette( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_SWINumberToString( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SWINumberFromString( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
@@ -629,7 +634,14 @@ static bool do_OS_InstallKeyHandler( svc_registers *regs ) { return Kernel_Error
 
 static bool do_OS_CheckModeValid( svc_registers *regs )
 {
-  regs->spsr &= ~CF; // All are valid, mostly because I only support one, yet!
+  if (regs->r[0] != (uint32_t) &only_one_mode) {
+    regs->spsr |= CF;
+    regs->r[0] = -1;
+    regs->r[1] = (uint32_t) &only_one_mode;
+  }
+  else {
+    regs->spsr &= ~CF;
+  }
   return true;
 }
 
@@ -698,61 +710,6 @@ static bool do_OS_ClaimDeviceVector( svc_registers *regs ) { return Kernel_Error
 
 static bool do_OS_ReleaseDeviceVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
-/* Untested
-static bool comparison_routine_says_less( uint32_t v1, uint32_t v2, uint32_t workspace, uint32_t routine )
-{
-  register uint32_t r0 asm( "r0" ) = v1;
-  register uint32_t r1 asm( "r1" ) = v2;
-  register uint32_t r12 asm( "r12" ) = workspace;
-  asm goto ( "blx %[routine]"
-         "\n  blt %l[less]"
-         : : "r" (r0), "r" (r1), "r" (r12), [routine] "r" (routine)
-         : "r2", "r3"
-         : less );
-
-  return false;
-less:
-  return true;
-}
-*/
-
-static bool do_OS_HeapSort( svc_registers *regs )
-{
-  // Not the proper implementation FIXME
-  int elements = regs->r[0];
-  //uint32_t *array = (void*) (regs->r[1] & ~0xe0000000);
-  uint32_t flags = regs->r[1] >> 29;
-  switch (regs->r[2]) {
-  case 3: // Pointers to integers (DrawMod)
-    {
-    if (flags != 0)
-      return Kernel_Error_UnimplementedSWI( regs );
-    int **array = (void*) (regs->r[1] & ~0xe0000000);
-    for (int i = 0; i < elements-1; i++) {
-      int lowest = *array[i];
-      int **p = 0;
-      for (int j = i+1; j < elements; j++) {
-        if (*array[j] < lowest) {
-          lowest = *array[j];
-          p = &array[j];
-        }
-      }
-
-      if (p != 0) {
-        // Swap pointers
-        int32_t *l = *p;
-        *p = array[i];
-        array[i] = l;
-      }
-    }
-    }
-    break;
-  default: return Kernel_Error_UnimplementedSWI( regs );
-  }
-
-  return true;
-}
-
 static bool do_OS_ExitAndDie( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadMemMapInfo( svc_registers *regs )
 {
@@ -807,13 +764,6 @@ static bool do_OS_ReadDefaultHandler( svc_registers *regs )
   regs->r[3] = 0; // Only relevant for Error, CallBack, BreakPoint. These will probably have to be associated with Task Slots...?
   return true;
 }
-
-static bool do_OS_SetECFOrigin( svc_registers *regs )
-{ 
-  Write0( "SetECFOrigin - not implemented" ); NewLine;
-  return true; // FIXME
-}
-
 
 // OS_ReadSysInfo 6 values
 // Not all of these will be needed or supported.
@@ -979,8 +929,6 @@ static bool do_OS_ReadSysInfo( svc_registers *regs )
     }
   case 1:
     {
-      static const mode_selector_block only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 5, .frame_rate = 60, { { -1, 0 } } };
-
       regs->r[0] = (uint32_t) &only_one_mode;
       regs->r[1] = 7;
       regs->r[2] = 0;
@@ -1044,35 +992,96 @@ static bool do_OS_SetColour( svc_registers *regs )
 {
   OS_SetColour_Flags flags = { .raw = regs->r[0] };
 
-  if (flags.action != 0 || flags.ECF_pattern) {
+  if (flags.read_colour || flags.text_colour) {
 WriteS( "Set Colour unimplemented code " ); WriteNum( regs->r[0] ); NewLine;
     // asm ( "bkpt 1" );
     return true; // (totally did that, honest!) Kernel_Error_UnimplementedSWI( regs );
   }
-WriteS( "Setting colour to " ); WriteNum( regs->r[1] ); NewLine;
+
   extern uint32_t *vduvarloc[];
 
   EcfOraEor *ecf;
+  uint32_t *pattern;
+
   if (flags.background) {
-    *vduvarloc[154 - 128] = regs->r[1];
+    workspace.vectors.zp.VduDriverWorkSpace.ws.GPLBMD = flags.action | 0x60;
+    pattern = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgPattern;
     ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgEcfOraEor;
+    *vduvarloc[154 - 128] = regs->r[1];
   }
   else {
-    *vduvarloc[153 - 128] = regs->r[1];
+    workspace.vectors.zp.VduDriverWorkSpace.ws.GPLFMD = flags.action | 0x60;
+    pattern = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgPattern;
     ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor;
+    *vduvarloc[153 - 128] = regs->r[1];
   }
-  for (int i = 0; i < number_of( ecf->line ); i++) {
-    // orr + eor allows you to set bits from the original pixel, or clear ones that you've set by the orr.
-    // orr => ignore these bits in the original pixel
-    // eor => invert these bits, afterwards.
-    ecf->line[i].orr = 0xffffffff;
-    ecf->line[i].eor = ~regs->r[1];
+
+  if (flags.ECF_pattern) {
+    uint32_t *new_pattern = (void*) regs->r[1];
+    for (int i = 0; i < 8; i++) {
+      pattern[i] = new_pattern[i];
+    }
   }
+  else {
+    uint32_t colour = regs->r[1];
+    uint32_t log2bpp = workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPP;
+    uint32_t bits = 1 << log2bpp;
+    uint32_t mask = (1 << bits) - 1;
+    colour = colour & mask;
+    while (bits != 32) {
+      colour = colour | (colour << bits);
+      mask = mask | (mask << bits);
+      bits = bits * 2;
+    }
+    for (int i = 0; i < 8; i++) {
+      pattern[i] = colour;
+    }
+  }
+
+/* This is not done yet, but it's not what's stopping the Wimp_Initialise call from returning
+  SetColour();
+    for (int i = 0; i < number_of( ecf->line ); i++) {
+      // orr + eor allows you to set bits from the original pixel, or clear ones that you've set by the orr.
+      // orr => ignore these bits in the original pixel
+      // eor => invert these bits, afterwards.
+      ecf->line[i].orr = 0xffffffff;
+      ecf->line[i].eor = ~regs->r[1];
+    }
+  }
+*/
   return true;
 }
 
 static bool do_OS_Pointer( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-//static bool do_OS_ScreenMode( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ScreenMode( svc_registers *regs )
+{
+  Write0( __func__ ); WriteNum( regs->r[0] ); NewLine;
+
+  enum { SelectMode, CurrentModeSpecifier, EnumerateModes, SetMonitorType, ConfigureAcceleration, FlushScreenCache, ForceFlushCache }; // ...
+
+  switch (regs->r[0]) {
+  case SelectMode: 
+    if (regs->r[1] == (uint32_t) &only_one_mode) {
+      return true;
+    }
+    else {
+      return Kernel_Error_UnimplementedSWI( regs );
+    }
+  case CurrentModeSpecifier: 
+    regs->r[1] = (uint32_t) &only_one_mode;
+    return true;
+  case EnumerateModes: 
+    if (regs->r[6] == 0) {
+      regs->r[7] = -(4 + sizeof( only_one_mode ));
+      return true;
+    }
+    else {
+      return Kernel_Error_UnimplementedSWI( regs );
+    }
+  case FlushScreenCache: return true;
+  default: return Kernel_Error_UnimplementedSWI( regs );
+  }
+}
 
 static bool do_OS_ClaimProcessorVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_Reset( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
@@ -1111,7 +1120,7 @@ static bool do_OS_IICOp( svc_registers *regs ) { return Kernel_Error_Unimplement
 static bool do_OS_LeaveOS( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadLine32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SubstituteArgs32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_HeapSort32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+// static bool do_OS_HeapSort32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_SynchroniseCodeAreas( svc_registers *regs )
 {
@@ -1295,7 +1304,18 @@ static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { return Kernel_Er
 
 static bool CLG( svc_registers *regs )
 {
-  Write0( __func__ );
+  // Move bottom left
+  register uint32_t code asm( "r0" ) = 4;
+  register uint32_t x asm( "r1" ) = 0;
+  register uint32_t y asm( "r2" ) = 0;
+  asm ( "svc 0x45" : : "r" (code), "r" (x), "r" (y) : "lr" );
+
+  // Fill rectangle top right. FIXME don't just try to draw over a random-sized screen!
+  code = 96 + 7;
+  x = 1920 * 4;
+  y = 1080 * 4; 
+  asm ( "svc 0x45" : : "r" (code), "r" (x), "r" (y) : "lr" );
+
   return true;
 }
 
@@ -1342,11 +1362,10 @@ static bool DefineGraphicsWindow( svc_registers *regs )
 {
   uint8_t *params = (void*) regs->r[1];
 
-  uint8_t type = params[0];
-  int32_t l = int16_at( &params[2] );
-  int32_t b = int16_at( &params[4] );
-  int32_t r = int16_at( &params[6] );
-  int32_t t = int16_at( &params[8] );
+  int32_t l = int16_at( &params[0] );
+  int32_t b = int16_at( &params[2] );
+  int32_t r = int16_at( &params[4] );
+  int32_t t = int16_at( &params[6] );
 
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = l;
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = b;
@@ -1378,6 +1397,10 @@ static bool Plot( svc_registers *regs )
 static bool RestoreDefaultWindows( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol = 1920;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow = 1080;
   return true;
 }
 
@@ -1389,8 +1412,10 @@ static bool do_OS_VduCommand( svc_registers *regs )
 
   switch (regs->r[0]) {
   case 0: asm ( "bkpt 1" ); break; // do nothing, surely shouldn't be called
-  case 4: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= ~(1 << 5); return true;
-  case 5: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= (1 << 5); return true;
+  case 2: asm ( "bkpt 1" ); break; // "enable printer"
+  case 3: break; // do nothing, "disable printer"
+  case 4: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= ~(1 << 30); return true;
+  case 5: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= (1 << 30); return true;
   case 16: return CLG( regs );
   case 17: return SetTextColour( regs );
   case 19: return SetPalette( regs );
@@ -1687,7 +1712,7 @@ static swifn os_swis[256] = {
   [OS_FindMemMapEntries] =  do_OS_FindMemMapEntries,
   [OS_SetColour] =  do_OS_SetColour,
   [OS_Pointer] =  do_OS_Pointer,
-  // [OS_ScreenMode] =  do_OS_ScreenMode,
+  [OS_ScreenMode] =  do_OS_ScreenMode,
 
   [OS_DynamicArea] =  do_OS_DynamicArea,
   [OS_Memory] =  do_OS_Memory,
@@ -2060,6 +2085,18 @@ goto retry;
     default:
       do_svc( regs, number );
       break;
+  }
+
+  if ((number & ~Xbit) == 0x400c8 // Wimp_RedrawWindow
+   || (number & ~Xbit) == 0x400ca) { // Wimp_GetRectangle
+    if (regs->r[0] == 0) { Write0( "GetRectangle Done" ); NewLine; }
+    else {
+      uint32_t *block = (void*) regs->r[1];
+      Write0( "GetRectangle not done." ); NewLine;
+      for (int i = 0; i <= 10; i++) {
+        WriteNum( block[i] ); NewLine;
+      }
+    }
   }
 
   if (0 == (regs->spsr & 0x1f)) {

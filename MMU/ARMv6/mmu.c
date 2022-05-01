@@ -390,8 +390,15 @@ static void map_block( physical_memory_block block )
 // There is no need for this routine to examine the fault generating instruction or the registers.
 static bool __attribute__(( noinline )) handle_data_abort()
 {
-  uint32_t fault_type = data_fault_type();
-  if (0x807 == fault_type || 7 == fault_type) {
+  uint32_t fa = fault_address();
+  if (fa == 0x4000) {
+    Write0( "XXX " ); WriteNum( L1TT[0] ); NewLine;
+    Write0( "XXX " ); WriteNum( bottom_MiB_tt[4] ); NewLine;
+    //asm ( "bkpt 1" );
+  }
+  uint32_t fault_type = data_fault_type() & ~0x800; // Don't care if read or write
+  // Maybe I should care, but permission faults are different...
+  if (5 == fault_type || 7 == fault_type) {
     uint32_t fa = fault_address();
 WriteS( "Data abort that can be handled " ); WriteNum( fa ); NewLine;
     claim_lock( &shared.mmu.lock );

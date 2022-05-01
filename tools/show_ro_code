@@ -1,0 +1,62 @@
+#! /bin/bash
+
+# Assumes this file is in a subdirectory of the directory containing the
+# root of the RiscOS build structure.
+cd $( dirname $0 )/..
+
+# This is not a well-written script, but it seems to work
+
+if [ $# -ne 1 ]; then
+  echo Usage: $0 virtual_address
+fi
+
+if [ "$1" == "--help" ]; then
+  echo $0 attempts to open the vi editor on the instruction located at the virtual address
+fi
+
+VA=${1/0x}
+
+LATEST=RiscOS/BuildSys/Logs/$( ls -rt RiscOS/BuildSys/Logs/ | tail -n 1 )
+
+function target {
+if [ "$1" == "SharedRISC_OSLib" ] 
+then
+  echo RISC_OSLib
+  exit
+else
+  grep install_rom.*COMPONENT=$1 $LATEST | sed -n 's/^.*TARGET=\([^ ]*\>\).*$/\1/p'
+fi
+}
+
+function rocode {
+  sed -n '/Position in ROM/,/^$/p' $LATEST |
+    sed -n 's!^\(\<.*\>\).*\<\(FC......\)\>.*\<00\(......\)$!D=$( printf 0x%x $(( 0x'$1' - 0x\2 )) ) ; if [ $(( $D >= 0 \&\& $D < 0x\3 )) -ne 0 ]; then echo \1 $D ; fi!p' | sh
+}
+
+function vi_cmd {
+  M=$( target $* )
+  GPA=$( grep ${M}_gpa /tmp/GPAs )
+  echo $GPA >&2
+  if [ "$1" == "Kernel" ]; then
+  grep -i -e File: -e ${3/0x/} $GPA |
+    grep -B 1 -i ${3/0x/} | 
+      sed 's!File: !vi '$( dirname $GPA )'/../!;s!^\([0-9]*\>\).*$!+\1!' |
+        grep vi -A 1
+  else
+  grep -i -e File: -e '\<0*'${2/0x/} $GPA |
+    grep -B 1 -i ${2/0x/} | 
+      sed 's!File: !vi '$( dirname $GPA )'/../../!;s!^\([0-9]*\>\).*$!+\1!' |
+        grep vi -A 1
+  fi
+}
+
+if [ ! -e /tmp/GPAs ]; then
+  echo Finding GPAs
+  find RiscOS/Sources -name *_gpa > /tmp/GPAs
+  echo Found GPAs
+fi
+
+MOD=$( rocode $VA )
+echo $MOD
+target $MOD
+$( vi_cmd $MOD $1 )

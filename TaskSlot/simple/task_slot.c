@@ -121,13 +121,13 @@ void __attribute__(( naked )) default_os_changeenvironment()
   asm ( "pop { r0-r3, pc }" );
 }
 
-static bool is_in_tasks( uint32_t va )
+static inline bool is_in_tasks( uint32_t va )
 {
   // FIXME More pages!
   return va >= (uint32_t) tasks && va < 4096 + (uint32_t) tasks;
 }
 
-static bool is_in_task_slots( uint32_t va )
+static inline bool is_in_task_slots( uint32_t va )
 {
   // FIXME More pages!
   return va >= (uint32_t) task_slots && va < 4096 + (uint32_t) task_slots;
@@ -274,6 +274,10 @@ WriteS( "Allocated TaskSlot " ); WriteNum( i ); NewLine;
   result->command = copy;
   result->start_time = 0; // cs since Jan 1st 1900 TODO
 
+#ifdef DEBUG__WATCH_TASK_SLOTS
+  Write0( "TaskSlot_new " ); WriteNum( (uint32_t) result ); NewLine;
+#endif
+
   return result;
 }
 
@@ -308,6 +312,10 @@ void TaskSlot_add( TaskSlot *slot, physical_memory_block memory )
   for (int i = 0; i < number_of( slot->blocks ); i++) {
     if (slot->blocks[i].size == 0) {
       slot->blocks[i] = memory;
+#ifdef DEBUG__WATCH_TASK_SLOTS
+  Write0( "TaskSlot_add " ); WriteNum( (uint32_t) slot ); Write0( " " ); WriteNum( slot->blocks[i].virtual_base ); Write0( " " ); WriteNum( slot->blocks[i].size ); NewLine;
+#endif
+
       break;
     }
   }
@@ -316,7 +324,11 @@ void TaskSlot_add( TaskSlot *slot, physical_memory_block memory )
 
 uint32_t TaskSlot_asid( TaskSlot *slot )
 {
-  return (slot - task_slots) + 1;
+  uint32_t result = (slot - task_slots) + 1;
+#ifdef DEBUG__WATCH_TASK_SLOTS
+Write0( "TaskSlot_asid " ); WriteNum( result ); NewLine;
+#endif
+  return result;
 }
 
 uint32_t TaskSlot_Himem( TaskSlot *slot )
@@ -326,6 +338,11 @@ uint32_t TaskSlot_Himem( TaskSlot *slot )
 
   // FIXME lock per slot?
   claim_lock( &shared.mmu.lock );
+
+#ifdef DEBUG__WATCH_TASK_SLOTS
+  Write0( "TaskSlot_Himem " ); WriteNum( (uint32_t) slot ); Write0( " " ); WriteNum( slot->blocks[0].virtual_base ); Write0( " " ); WriteNum( slot->blocks[0].size ); NewLine;
+#endif
+
   result = slot->blocks[0].size + slot->blocks[0].virtual_base;
   release_lock( &shared.mmu.lock );
   return result;

@@ -188,7 +188,7 @@ static bool ReadLegacyModeVariable( uint32_t selector, uint32_t var, uint32_t *v
   if (selector >= number_of( legacy_mode_vars ))
     return false;
 
-  uint32_t *modevars = legacy_mode_vars[selector];
+  uint32_t const *modevars = legacy_mode_vars[selector];
 
   // Not all filled in yet
   if (modevars[1] == 0) {
@@ -273,8 +273,8 @@ static bool ReadSpriteModeVariable( uint32_t selector, uint32_t var, uint32_t *v
   union {
     struct __attribute__(( packed )) {
       uint32_t one:1;
-      uint32_t xdpi:12;
-      uint32_t ydpi:12;
+      uint32_t xdpi:13;
+      uint32_t ydpi:13;
       uint32_t type:4;
       uint32_t alphamask:1;
     };
@@ -312,6 +312,7 @@ static bool ReadModeSelectorBlockVariable( uint32_t selector, uint32_t var, uint
 {
   const mode_selector_block *mode = (void*) selector;
 
+Write0( __func__ ); Write0( " " ); WriteNum( selector ); Write0( " " ); WriteNum( var ); NewLine;
   bool result = true;
 
   switch (var) {
