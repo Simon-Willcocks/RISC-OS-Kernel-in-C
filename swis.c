@@ -846,61 +846,63 @@ OSRSI6_PhysRamtableFormat                      = 89  // 0 = addresses are in byt
 
 // Testing. Is this read-only?
 // I don't think so, we need to update MetroGnome, don't we? Still, this will do as the initial values.
+// I just spent ages combing through code until I worked out that this was where the strange address came
+// from. Make it more obvious.
 static const uint32_t SysInfo[] = {
-  [OSRSI6_CamEntriesPointer]                       = 0,
-  [OSRSI6_MaxCamEntry]                             = 1,
-  [OSRSI6_PageFlags_Unavailable]                   = 2,
-  [OSRSI6_PhysRamTable]                            = 3,
-  [OSRSI6_ARMA_Cleaner_flipflop]                   = 4, // Unused in HAL kernels
-  [OSRSI6_TickNodeChain]                           = 5,
-  [OSRSI6_ROMModuleChain]                          = 6,
-  [OSRSI6_DAList]                                  = 7,
-  [OSRSI6_AppSpaceDANode]                          = 8,
-  [OSRSI6_Module_List]                             = 9,
-  [OSRSI6_ModuleSHT_Entries]                       = 10,
-  [OSRSI6_ModuleSWI_HashTab]                       = 11,
-  [OSRSI6_IOSystemType]                            = 12,
-  [OSRSI6_L1PT]                                    = 13,
-  [OSRSI6_L2PT]                                    = 14,
+  [OSRSI6_CamEntriesPointer]                       = 0xbaad0000 | 0,
+  [OSRSI6_MaxCamEntry]                             = 0xbaad0000 | 1,
+  [OSRSI6_PageFlags_Unavailable]                   = 0xbaad0000 | 2,
+  [OSRSI6_PhysRamTable]                            = 0xbaad0000 | 3,
+  [OSRSI6_ARMA_Cleaner_flipflop]                   = 0xbaad0000 | 4, // Unused in HAL kernels
+  [OSRSI6_TickNodeChain]                           = 0xbaad0000 | 5,
+  [OSRSI6_ROMModuleChain]                          = 0xbaad0000 | 6,
+  [OSRSI6_DAList]                                  = 0xbaad0000 | 7,
+  [OSRSI6_AppSpaceDANode]                          = 0xbaad0000 | 8,
+  [OSRSI6_Module_List]                             = 0xbaad0000 | 9,
+  [OSRSI6_ModuleSHT_Entries]                       = 0xbaad0000 | 10,
+  [OSRSI6_ModuleSWI_HashTab]                       = 0xbaad0000 | 11,
+  [OSRSI6_IOSystemType]                            = 0xbaad0000 | 12,
+  [OSRSI6_L1PT]                                    = 0xbaad0000 | 13,
+  [OSRSI6_L2PT]                                    = 0xbaad0000 | 14,
   [OSRSI6_UNDSTK]                                  = 
         sizeof( workspace.kernel.undef_stack ) + (uint32_t) &workspace.kernel.undef_stack,
-  [OSRSI6_SVCSTK]                                  = 0x73273273, // A trap! Why does FileSwitch need to know this?
+  [OSRSI6_SVCSTK]                                  = 0xbaad0000 | 0x73273273, // A trap! Why does FileSwitch need to know this?
         //sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack,
-  [OSRSI6_SysHeapStart]                            = 17,
+  [OSRSI6_SysHeapStart]                            = 0xbaad0000 | 17,
 
 // Safe versions of the danger allocations
 // Only supported by OS 5.17+, so if backwards compatability is required code
 // should (safely!) fall back on the danger versions
 
-  [OSRSI6_SWIDispatchTable]                        = 64, // JTABLE-SWIRelocation (Relocated base of OS SWI dispatch table)
-  [OSRSI6_Devices]                                 = 65, // Relocated base of IRQ device head nodes
-  [OSRSI6_DevicesEnd]                              = 66, // Relocated end of IRQ device head nodes
-  [OSRSI6_IRQSTK]                                  = 67,
-  [OSRSI6_SoundWorkSpace]                          = 68, // workspace (8K) and buffers (2*4K)
+  [OSRSI6_SWIDispatchTable]                        = 0xbaad0000 | 64, // JTABLE-SWIRelocation (Relocated base of OS SWI dispatch table)
+  [OSRSI6_Devices]                                 = 0xbaad0000 | 65, // Relocated base of IRQ device head nodes
+  [OSRSI6_DevicesEnd]                              = 0xbaad0000 | 66, // Relocated end of IRQ device head nodes
+  [OSRSI6_IRQSTK]                                  = 0xbaad0000 | 67,
+  [OSRSI6_SoundWorkSpace]                          = 0xbaad0000 | 68, // workspace (8K) and buffers (2*4K)
   [OSRSI6_IRQsema]                                 = (uint32_t) &workspace.vectors.zp.IRQsema,
 
 // New ROOL allocations
 
   [OSRSI6_DomainId]                                = (uint32_t) &workspace.vectors.zp.DomainId, // current Wimp task handle
-  [OSRSI6_OSByteVars]                              = 71, // OS_Byte vars (previously available via OS_Byte &A6/VarStart)
-  [OSRSI6_FgEcfOraEor]                             = 72,
-  [OSRSI6_BgEcfOraEor]                             = 73,
-  [OSRSI6_DebuggerSpace]                           = 74,
-  [OSRSI6_DebuggerSpace_Size]                      = 75,
-  [OSRSI6_CannotReset]                             = 76,
-  [OSRSI6_MetroGnome]                              = 77, // OS_ReadMonotonicTime
+  [OSRSI6_OSByteVars]                              = 0xbaad0000 | 71, // OS_Byte vars (previously available via OS_Byte &A6/VarStart)
+  [OSRSI6_FgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor, // Used by SpriteExtend
+  [OSRSI6_BgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.BgEcfOraEor, // Used by SpriteExtend
+  [OSRSI6_DebuggerSpace]                           = 0xbaad0000 | 74,
+  [OSRSI6_DebuggerSpace_Size]                      = 0xbaad0000 | 75,
+  [OSRSI6_CannotReset]                             = 0xbaad0000 | 76,
+  [OSRSI6_MetroGnome]                              = 0xbaad0000 | 77, // OS_ReadMonotonicTime
   [OSRSI6_CLibCounter]                             = (uint32_t) &workspace.vectors.zp.CLibCounter,
   [OSRSI6_RISCOSLibWord]                           = (uint32_t) &workspace.vectors.zp.RISCOSLibWord,
   [OSRSI6_CLibWord]                                = (uint32_t) &workspace.vectors.zp.CLibWord,
-  [OSRSI6_FPEAnchor]                               = 81,
-  [OSRSI6_ESC_Status]                              = 82,
-  [OSRSI6_ECFYOffset]                              = 83,
-  [OSRSI6_ECFShift]                                = 84,
-  [OSRSI6_VecPtrTab]                               = 85,
-  [OSRSI6_NVECTORS]                                = 86,
-  [OSRSI6_CAMFormat]                               = 87, // 0 = 8 bytes per entry, 1 = 16 bytes per entry
-  [OSRSI6_ABTSTK]                                  = 88,
-  [OSRSI6_PhysRamtableFormat]                      = 89  // 0 = addresses are in byte units, 1 = addresses are in 4KB units
+  [OSRSI6_FPEAnchor]                               = 0xbaad0000 | 81,
+  [OSRSI6_ESC_Status]                              = 0xbaad0000 | 82,
+  [OSRSI6_ECFYOffset]                              = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.ECFYOffset, // Used by SpriteExtend
+  [OSRSI6_ECFShift]                                = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.ECFShift, // Used by SpriteExtend
+  [OSRSI6_VecPtrTab]                               = 0xbaad0000 | 85,
+  [OSRSI6_NVECTORS]                                = 0xbaad0000 | 86,
+  [OSRSI6_CAMFormat]                               = 0xbaad0000 | 87, // 0 = 8 bytes per entry, 1 = 16 bytes per entry
+  [OSRSI6_ABTSTK]                                  = 0xbaad0000 | 88,
+  [OSRSI6_PhysRamtableFormat]                      = 0xbaad0000 | 89  // 0 = addresses are in byte units, 1 = addresses are in 4KB units
 };
 
 bool read_kernel_value( svc_registers *regs )
@@ -1124,7 +1126,13 @@ static bool do_OS_SubstituteArgs32( svc_registers *regs ) { return Kernel_Error_
 
 static bool do_OS_SynchroniseCodeAreas( svc_registers *regs )
 {
-  WriteS( "OS_SynchroniseCodeAreas FIXME" );
+  WriteS( "OS_SynchroniseCodeAreas" );
+
+  // FIXME: too much?
+  clean_cache_to_PoC();
+  clean_cache_to_PoU();
+  asm volatile ( "isb sy" );
+
   return true;
 }
 

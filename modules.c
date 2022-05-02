@@ -1264,6 +1264,11 @@ bool excluded( const char *name )
                                   //, "ROMFonts"
                                   //, "ScreenModes"       // Indavertantly overwrites my translation tables when used. Rude!
 
+                                  // I'll explicitly start these three in order before all the others.
+                                  , "UtilityModule" // Already initialised?
+                                  , "ColourTrans" // Already initialised?
+                                  , "SpriteExtend" // Already initialised?
+
                                   // , "WindowManager"     // Sprite problems
                                   , "Debugger"
                                   , "BCMSupport"        // Unknown dynamic area
@@ -1401,18 +1406,35 @@ void init_modules()
 
 #ifdef DEBUG__SHOW_MODULE_INIT
     WriteS( "INIT: " );
+    WriteNum( rom_module ); Write0( " " );
     Write0( workspace.kernel.env );
 #endif
     if (!excluded( workspace.kernel.env )) {
+#ifdef DEBUG__SHOW_MODULE_INIT
+      {
+      if (header->offset_to_service_call_handler != 0) {
+        Write0( " services " );
+        uint32_t *p = pointer_at_offset_from( header, header->offset_to_service_call_handler );
+        if (0xe1a00000 == p[0]) {
+          Write0( " with table" );
+          uint32_t table_offset = p[-1];
+
+          uint32_t *p = pointer_at_offset_from( header, table_offset );
+
+          NewLine; Write0( "Flags: " ); WriteNum( *p++ ); NewLine; p++; // Skip handler offset
+          do {
+            NewLine; Write0( "Expects service: " ); WriteNum( *p++ );
+          } while (*p != 0);
+        }
+      }
       NewLine;
+      }
+#endif
+
       register uint32_t code asm( "r0" ) = 10;
       register module_header *module asm( "r1" ) = header;
 
       asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
-
-#ifdef DEBUG__SHOW_MODULE_INIT
-      NewLine;
-#endif
 
       // Not in USR mode, but we are idling
       run_transient_callbacks();
@@ -1424,9 +1446,6 @@ void init_modules()
       NewLine;
     }
     rom_module += (*rom_module)/4; // Includes size of length field
-#ifdef DEBUG__SHOW_MODULE_INIT
-    WriteNum( rom_module );
-#endif
   }
 }
 
@@ -2707,7 +2726,17 @@ WriteS( ", " ); WriteNum( workspace.vectors.zp.VduDriverWorkSpace.ws.ModeFlags )
 NewLine;
   workspace.vectors.zp.OsbyteVars.VDUqueueItems = 0; // Isn't this already zeroed?
 
+  init_module( "UtilityModule" );
+  init_module( "ColourTrans" );
+  init_module( "SpriteExtend" ); // Calls RMEnsure (from UtilityModule), looking for ColourTrans
+
   init_modules();
+
+  {
+    svc_registers regs = {};
+    regs.r[1] = 0x73; // Service_PostInit
+    do_OS_ServiceCall( &regs );
+  }
 
   NewLine; WriteS( "All modules initialised, starting USR mode code" ); NewLine;
 
@@ -2798,8 +2827,7 @@ WriteS( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
 static void user_mode_code( int core_number )
 {
   {
-    register uint32_t code asm( "r0" ) = 0x211; // Verify...
-    register uint32_t *sprite_area asm( "r1" ) = {
+    static uint32_t const test_sprite_area[] = {
         0x44,
         1,
         0x10,
@@ -2816,8 +2844,44 @@ static void user_mode_code( int core_number )
         0x30,  // mask offset
         0x80000001+(90<<1)+(90<<14)+(1<<27)
     };
+    register uint32_t code asm( "r0" ) = 0x211; // Verify...
+    register uint32_t *sprite_area asm( "r1" ) = test_sprite_area;
     asm ( "svc 0x2002e" : : "r" (code), "r" (sprite_area) );
-    for (;;) { asm ( "wfi" ); };
+  }
+
+// SpriteFile.h created by xxd -i RiscOS/SpriteFile,ff9 SpriteFile.h and editing to put the
+// length into four extra bytes at the beginning of the array to make a proper sprite area.
+//   unsigned char RiscOS_SpriteFile_ff9[] = {
+// 0x58, 0x01, 0x00, 0x00, // 344, added manually
+//   0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x5c, 0x01, 0x00, 0x00,
+// ...
+// unsigned int RiscOS_SpriteFile_ff9_len = 344;
+// (344 = 0x158).
+
+static const
+#include "SpriteFile.h"
+  {
+  Write0( "Plot sprite small" ); NewLine;
+  register uint32_t code asm ( "r0" ) = 256 + 34; // Plot named sprite at user coordinates
+  register const char *cb asm ( "r1" ) = RiscOS_SpriteFile_ff9;
+  register const char *sp asm ( "r2" ) = "newsprite";
+  register int32_t x asm ( "r3" ) = 100;
+  register int32_t y asm ( "r4" ) = 100;
+  register uint32_t plot asm ( "r5" ) = 0;
+  asm ( "svc 0x2e" : : "r" (code), "r" (cb), "r" (sp), "r" (x), "r" (y) : "lr" );
+  }
+  {
+  Write0( "Plot sprite large" ); NewLine;
+  // 4x bigger, at (64, 64)
+  static const uint32_t transformation[6] = { 0x40000, 0, 0, 0x40000, 0x4000, 0x4000 };
+  register uint32_t code asm ( "r0" ) = 256 + 56; // Put named sprite transformed
+  register const char *cb asm ( "r1" ) = RiscOS_SpriteFile_ff9;
+  register const char *sp asm ( "r2" ) = "newsprite";
+  register int32_t flags asm ( "r3" ) = 0;
+  register uint32_t plot asm ( "r5" ) = 0;
+  register int32_t *matrix asm ( "r6" ) = transformation;
+  register uint32_t translate asm ( "r7" ) = 0;
+  asm ( "svc 0x2e" : : "r" (code), "r" (cb), "r" (sp), "r" (flags), "r" (matrix), "r" (plot), "r" (translate) : "lr" );
   }
 
   if (1) {
