@@ -292,7 +292,7 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs )
   WriteS( "Resizing DA by 0 bytes" ); NewLine;
   WriteS( "What if this call is to ensure the callbacks are called?" ); NewLine;
 #endif
-    //return true;
+    return true;
   }
 
   if (0 != (resize_by & 0xfff)) {
@@ -597,8 +597,6 @@ bool do_OS_DynamicArea( svc_registers *regs )
       da->next = workspace.memory.dynamic_areas;
       workspace.memory.dynamic_areas = da;
 
-// TODO Service_DynamicAreaCreate 5a-50
-
       if (regs->r[2] > 0) {
         svc_registers cda;
         cda.r[0] = da->number;
@@ -610,6 +608,13 @@ bool do_OS_DynamicArea( svc_registers *regs )
           regs->r[0] = cda.r[0];
           return false;
         }
+      }
+
+      {
+        // Service_DynamicAreaCreate 5a-50
+        register uint32_t code asm( "r1" ) = 0x90;
+        register uint32_t area asm( "r2" ) = da->number;
+        asm ( "svc 0x30" : : "r" (code), "r" (area) );
       }
 
       break;

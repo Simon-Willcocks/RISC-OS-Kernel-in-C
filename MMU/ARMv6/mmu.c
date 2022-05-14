@@ -160,6 +160,9 @@ static void map_translation_table( uint32_t *l2tt, uint32_t physical, void *virt
 
 // Map a privileged read-write page into the top 1MiB of virtual memory
 // Might be better with pages instead of addresses
+// Should be readable in usr32, but the new access permissions don't allow
+// for it. I hope it's not critical, or we have to make it all r/w! (Better
+// to handle read requests in exceptions to return the current values.)
 static void map_work_area( uint32_t *l2tt, uint32_t physical, void *virtual, uint32_t size )
 {
   uint32_t va = 0xff000 & (uint32_t) virtual;
@@ -391,16 +394,18 @@ static void map_block( physical_memory_block block )
 static bool __attribute__(( noinline )) handle_data_abort()
 {
   uint32_t fa = fault_address();
-  if (fa == 0x4000) {
-    Write0( "XXX " ); WriteNum( L1TT[0] ); NewLine;
-    Write0( "XXX " ); WriteNum( bottom_MiB_tt[4] ); NewLine;
-    //asm ( "bkpt 1" );
-  }
+
   uint32_t fault_type = data_fault_type() & ~0x800; // Don't care if read or write
+
   // Maybe I should care, but permission faults are different...
   if (5 == fault_type || 7 == fault_type) {
-    uint32_t fa = fault_address();
-WriteS( "Data abort that can be handled " ); WriteNum( fa ); NewLine;
+WriteS( "Translation fault: va = " ); WriteNum( fa ); NewLine;
+uint32_t *p;
+asm ( "mov %[p], sp" : [p] "=r" (p) );
+for (int i = 15; i < 17; i++) { // Should be faulting instruction and spsr
+  WriteNum( p[i] ); Write0( " " );
+}
+NewLine;
     claim_lock( &shared.mmu.lock );
     physical_memory_block block = Kernel_physical_address( fa );
     release_lock( &shared.mmu.lock );

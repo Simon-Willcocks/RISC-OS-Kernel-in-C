@@ -17,8 +17,9 @@
 
 
 // This is the only mode supported at the moment. Search for it to find
-// places to modify to cope with more
-static mode_selector_block const only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 5, .frame_rate = 60, { { -1, 0 } } };
+// places to modify to cope with more. It's also referenced in modules.c,
+// at the moment.
+mode_selector_block const only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 5, .frame_rate = 60, { { -1, 0 } } };
 
 bool Kernel_Error_UnknownSWI( svc_registers *regs )
 {
@@ -209,6 +210,13 @@ static bool do_OS_EnterOS( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
   regs->spsr = (regs->spsr & ~15) | 3;
+  return true;
+}
+
+static bool do_OS_LeaveOS( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+  regs->spsr = (regs->spsr & ~15);
   return true;
 }
 
@@ -912,6 +920,10 @@ bool read_kernel_value( svc_registers *regs )
   if (regs->r[1] == 0) {
     // Single value, number in r2, result to r2
     regs->r[2] = SysInfo[regs->r[2]];
+
+    // Fail early, fail hard! (Then make a note of what uses it and fix it here or there.)
+    if ((regs->r[2] & 0xffff0000) == 0xbaad0000) asm ( "bkpt 1" );
+
     return true;
   }
 
@@ -990,14 +1002,47 @@ typedef union {
   uint32_t raw;
 } OS_SetColour_Flags;
 
+static void SetColours( uint32_t bpp, uint32_t fore, uint32_t back )
+{
+  switch (bpp) {
+  }
+}
+
 static bool do_OS_SetColour( svc_registers *regs )
 {
   OS_SetColour_Flags flags = { .raw = regs->r[0] };
 
-  if (flags.read_colour || flags.text_colour) {
-WriteS( "Set Colour unimplemented code " ); WriteNum( regs->r[0] ); NewLine;
-    // asm ( "bkpt 1" );
-    return true; // (totally did that, honest!) Kernel_Error_UnimplementedSWI( regs );
+  if (flags.read_colour) {
+    if (flags.text_colour) {
+      if (flags.background)
+        regs->r[1] = workspace.vectors.zp.VduDriverWorkSpace.ws.TextBgColour;
+      else
+        regs->r[1] = workspace.vectors.zp.VduDriverWorkSpace.ws.TextFgColour;
+    }
+    else {
+      uint32_t *pattern_data = (void*) regs->r[1];
+      uint32_t *to_read;
+
+      if (flags.background)
+        to_read = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgPattern[0];
+      else
+        to_read = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgPattern[0];
+
+      for (int i = 0; i < 8; i++) {
+        pattern_data[i] = to_read[i];
+      }
+    }
+
+    return true;
+  }
+
+  if (flags.text_colour) {
+    if (flags.background)
+      workspace.vectors.zp.VduDriverWorkSpace.ws.TextBgColour = regs->r[1];
+    else
+      workspace.vectors.zp.VduDriverWorkSpace.ws.TextFgColour = regs->r[1];
+
+    return true;
   }
 
   extern uint32_t *vduvarloc[];
@@ -1007,13 +1052,13 @@ WriteS( "Set Colour unimplemented code " ); WriteNum( regs->r[0] ); NewLine;
 
   if (flags.background) {
     workspace.vectors.zp.VduDriverWorkSpace.ws.GPLBMD = flags.action | 0x60;
-    pattern = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgPattern;
+    pattern = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgPattern[0];
     ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgEcfOraEor;
     *vduvarloc[154 - 128] = regs->r[1];
   }
   else {
     workspace.vectors.zp.VduDriverWorkSpace.ws.GPLFMD = flags.action | 0x60;
-    pattern = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgPattern;
+    pattern = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgPattern[0];
     ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor;
     *vduvarloc[153 - 128] = regs->r[1];
   }
@@ -1119,7 +1164,6 @@ static bool do_OS_VIDCDivider( svc_registers *regs ) { return Kernel_Error_Unimp
 static bool do_OS_NVMemory( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_Hardware( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_IICOp( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_LeaveOS( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadLine32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SubstituteArgs32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 // static bool do_OS_HeapSort32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
@@ -1854,7 +1898,7 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
       case 0x400de: StartTask( regs ); return;
       case 0x80146: regs->r[0] = 0; return; // PDriver_CurrentJob (called from Desktop?!)
       }
-      bool read_var_val_for_length = (number == 0x23 && regs->r[2] == -1);
+      bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
 
   uint32_t r0 = regs->lr;
 
@@ -1877,18 +1921,19 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
       case 0x606c0 ... 0x606ff: // Hourglass
         break;
       default:
-        if (e->code != 0x124 && !read_var_val_for_length) {
-          WriteS( "Returned error: " );
+        if (e->code != 0x1e4 && e->code != 0x124 && !read_var_val_for_length) {
+          NewLine;
+          Write0( "Returned error: " );
           WriteNum( number );
-          WriteS( " " );
+          Write0( " " );
           WriteNum( r0 );
-          WriteS( " " );
+          Write0( " " );
           WriteNum( regs->r[1] );
-          WriteS( " " );
+          Write0( " " );
           WriteNum( regs->r[2] );
-          WriteS( " " );
+          Write0( " " );
           WriteNum( *(uint32_t *)(regs->r[0]) );
-          WriteS( " " );
+          Write0( " " );
           Write0( (char *)(regs->r[0] + 4 ) );
           NewLine;
         }
@@ -2032,6 +2077,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
     case OS_Find:
     case OS_ReadLine:
     case OS_FSControl:
+    case 0x40080 ... 0x400bf:
       {
         // These SWIs expect only a single program running on a single processor
         Task *blocked = 0;

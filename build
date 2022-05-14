@@ -68,6 +68,8 @@ fi
 # Take the most recent image
 ROM=RiscOS/Images/$( ls -rt RiscOS/Images | tail -n 1 )
 
+echo Building with RiscOS build $ROM
+
 function build_shared_module {
   MOD=$1 ; shift ; # All other parameters are passed to gcc
   echo Building shared module $MOD
@@ -99,7 +101,7 @@ build_shared_module $HAL &&
 METRICS="0xfc$( strings $ROM -t x | grep Trinity.Medium.Int | cut -f 2 -d ' ' )" &&
 OUTLINE="0xfc$( strings $ROM -t x | grep Trinity.Medium.Out | cut -f 2 -d ' ' )" &&
 echo Found Trinity.Medium at $METRICS $OUTLINE &&
-build_shared_module FontManager -DFONT_METRICS=$METRICS -DFONT_OUTLINE=$OUTLINE &&
+# build_shared_module FontManager -DFONT_METRICS=$METRICS -DFONT_OUTLINE=$OUTLINE &&
 build_shared_module VFPSupport &&
 build_shared_module Portable &&
 

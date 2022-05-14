@@ -44,6 +44,7 @@ static inline error_block *OSCLI( const char *command )
 
 #define assert( x ) while (!(x)) { asm ( "bkpt 5" ); }
 
+#ifndef NO_DEBUG_OUTPUT
 #define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "cc", "lr" )
 
 extern const char hex[16];
@@ -66,3 +67,10 @@ extern const char hex[16];
 
 #define NewLine asm ( "svc 3" : : : "cc", "lr" )
 
+#else
+#define WriteS( string )
+#define Write0( string )
+#define WriteNum( n )
+#define NewLine 
+#define WriteN( string, len )
+#endif
