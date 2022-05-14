@@ -103,12 +103,20 @@ static inline void clear_VF()
   asm ( "msr cpsr_f, #0" );
 }
 
+#ifdef DEBUG_OUTPUT
 #define WriteS( string ) asm ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "lr" )
 
 #define NewLine asm ( "svc 3" : : : "lr" )
 
 #define Write0( string ) do { register uint32_t r0 asm( "r0" ) = (uint32_t) (string); asm ( "push { r0-r12, lr }\nsvc 2\n  pop {r0-r12, lr}" : : "r" (r0) ); } while (false)
 #define Write13( string ) do { const char *s = (void*) (string); register uint32_t r0 asm( "r0" ); while (31 < (r0 = *s++)) { asm ( "push { r1-r12, lr }\nsvc 0\n  pop {r1-r12, lr}" : : "r" (r0) ); } } while (false)
+
+#else
+#define WriteS( string )
+#define NewLine
+#define Write0( string )
+#define Write13( string )
+#endif
 
 static void WriteNum( uint32_t number )
 {
@@ -206,8 +214,8 @@ void init( uint32_t this_core, uint32_t number_of_cores )
     the_font->next = 0;
     // The one true font: Trinity.Medium, located in ROM
     // In other words this is going to break he first time a ROM is re-built
-    the_font->IntMetrics0 = (void*) 0xfc2e1d98 + 36; // 0xfc2f3470; strings latest.bin -t x | grep Trinity.Medium.Int
-    the_font->Outlines0 = (void*) 0xfc2e21c8 + 36; // 0xfc2f38a0;   strings latest.bin -t x | grep Trinity.Medium.Out
+    the_font->IntMetrics0 = (void*) FONT_METRICS + 36; // 0xfc2f3470; strings latest.bin -t x | grep Trinity.Medium.Int
+    the_font->Outlines0 = (void*) FONT_OUTLINE + 36; // 0xfc2f38a0;   strings latest.bin -t x | grep Trinity.Medium.Out
 
     // WIMPSymbol
     //the_font->IntMetrics0 = (void*) 0xfc169388;
@@ -216,9 +224,9 @@ void init( uint32_t this_core, uint32_t number_of_cores )
     workspace->fonts = the_font;
   }
 
-  Write0( "FontManager initialised" ); NewLine;
+  if (first_entry) { Write0( "FontManager initially initialised" ); NewLine; }
+  else { Write0( "FontManager initialised" ); NewLine; }
 
-  if (first_entry) { Write0( "FontManager initialised" ); NewLine; }
 }
 
 /* Access routines for IntMetrics0 format files (v. 2) */
@@ -494,11 +502,12 @@ static struct Scaffold ReadScaffold( uint8_t *entry )
                              .linear = scaffold.bits.linear,
                              .width = entry[2] };
 
+#ifdef DEBUG__VERBOSE
   WriteSmallNum( result.coord, 1 ); Write0( " " );
   WriteSmallNum( result.link_index, 1 ); Write0( " " );
   WriteSmallNum( result.linear, 1 ); Write0( " " );
   Write0( " width " ); WriteSmallNum( result.width, 1 ); NewLine;
-
+#endif
   return result;
 }
 
@@ -592,11 +601,28 @@ static void SetColour( uint32_t flags, uint32_t colour )
 
 static void SetGraphicsFgColour( uint32_t colour )
 {
+#ifdef DEBUG__VERBOSE
   Write0( "Setting graphics foreground colour with ColourTrans... " );
+#endif
   register uint32_t pal asm( "r0" ) = colour;
   register uint32_t Rflags asm( "r3" ) = 0; // FG, no ECFs
   register uint32_t action asm( "r4" ) = 0; // set
   asm ( "svc %[swi]" : : [swi] "i" (0x60743), "r" (pal), "r" (Rflags), "r" (action) : "lr", "cc" );
+}
+
+static void Font_Draw_TransformPath( uint32_t *path, int32_t *transformation_matrix )
+{
+  register uint32_t *draw_path asm( "r0" ) = path;
+  register uint32_t output asm( "r1" ) = 0; // Overwrite
+  register  int32_t *matrix asm( "r2" ) = transformation_matrix;
+  register uint32_t zero asm( "r3" ) = 0;
+  asm ( "swi 0x6070a"
+        :
+        : "r" (draw_path)
+        , "r" (output)
+        , "r" (matrix)
+        , "r" (zero)
+        : "lr", "cc" );
 }
 
 static void Font_Draw_Fill( uint32_t *path, int32_t *transformation_matrix )
@@ -756,11 +782,15 @@ static error_block *MakeCharPaths( Font const *font,
 
   uint16_t index = IntMetrics0_char_index( metrics, ch );
 
+#ifdef DEBUG__VERBOSE
 Write0( "Character: " ); WriteSmallNum( ch, 1 ); Write0( ", index " ); WriteSmallNum( index, 1 ); NewLine;
+#endif
 
   uint32_t *chunks = OutlineFontFile_chunks_offsets( outline_font );
 
+#ifdef DEBUG__VERBOSE
 Write0( "Chunk offset: " ); WriteSmallNum( chunks[ch / 32], 1 ); NewLine;
+#endif
 
   if (outline_font->number_of_chunks < ch / 32) {
     // No such char FIXME
@@ -784,7 +814,9 @@ Write0( "Chunk offset: " ); WriteSmallNum( chunks[ch / 32], 1 ); NewLine;
   uint32_t *char_offsets = chunk + 1;
 
   uint8_t *char_data = pointer_at_offset_from( char_offsets, char_offsets[ch % 32] );
+#ifdef DEBUG__VERBOSE
 Write0( "Char offset: " ); WriteNum( char_offsets[ch % 32] ); NewLine;
+#endif
 
   if (0 == char_offsets[ch % 32]) {
     // No such char FIXME
@@ -796,6 +828,7 @@ Write0( "Char offset: " ); WriteNum( char_offsets[ch % 32] ); NewLine;
   // Note: the flags byte is only in versions 8+
   FontCharacterFlags character = read_font_character_flags( char_data[0] );
 
+#ifdef DEBUG__VERBOSE
   if (character.coords_12bit) { Write0( "12 bit coordinates" ); NewLine; }
   if (character.data_1bpp) { Write0( "1 bit per pixel (or outline)" ); NewLine; }
   if (character.initial_pixel_black) { Write0( "Initial pixel black" ); NewLine; }
@@ -803,6 +836,7 @@ Write0( "Char offset: " ); WriteNum( char_offsets[ch % 32] ); NewLine;
   if (character.composite) { Write0( "composite" ); NewLine; }
   if (character.has_accent) { Write0( "Has accent" ); NewLine; }
   if (character.codes_16bit) { Write0( "16-bit character codes" ); NewLine; }
+#endif
 
   uint8_t const *next_byte = char_data+1;
   uint16_t base_character = 0; // Only important if character.composite
@@ -841,11 +875,13 @@ Write0( "Char offset: " ); WriteNum( char_offsets[ch % 32] ); NewLine;
     next_byte = read_font_coord_pair( next_byte, character.coords_12bit,
                                       &bbox->width, &bbox->height );
 
+#ifdef DEBUG__VERBOSE
     Write0( "BBox: " );
     WriteSmallNum( bbox->left_inclusive, 4 ); Write0( ", " );
     WriteSmallNum( bbox->bottom_inclusive, 4 ); Write0( ", " );
     WriteSmallNum( bbox->width, 4 ); Write0( ", " );
     WriteSmallNum( bbox->height, 4 ); NewLine;
+#endif
   }
   else {
     *bbox = outline_font->font_max_bbox;
@@ -953,9 +989,20 @@ static bool Paint( struct workspace *workspace, SWI_regs *regs )
   uint32_t design_size = outline_font->design_size;
   uint32_t fp_zoom = ((point_size * dpi * 0x1000)/points_per_inch) / design_size;
 
+#ifdef DEBUG__VERBOSE
 Write0( "FP Zoom: " ); WriteNum( fp_zoom ); NewLine;
+#endif
 
-  int32_t matrix[6] = { fp_zoom, 0, 0, fp_zoom, 0x1000, 0x4000 };
+  int32_t x = regs->r[3];
+  int32_t y = regs->r[4];
+
+  if (0 == (regs->r[2] & (1 << 4))) {
+    // Coordinates are in millipoints, not OS units
+    x = (x / 400);
+    y = (y / 400);
+  }
+
+  int32_t matrix[6] = { fp_zoom, 0, 0, fp_zoom, x * 256 / 2, y * 256 / 2 }; // Internal draw units FIXME
   while ((ch = *p++) >= ' ') {
     uint32_t fill_path[128];
     uint32_t stroke_path[64];
@@ -969,6 +1016,8 @@ Write0( "FP Zoom: " ); WriteNum( fp_zoom ); NewLine;
 Write0( "Fill path" ); NewLine; DebugPrintPath( fill_path );
 Write0( "Stroke path" ); NewLine; DebugPrintPath( stroke_path );
 #endif
+//Font_Draw_TransformPath( fill_path, matrix );
+//Font_Draw_TransformPath( stroke_path, matrix );
 
     Font_Draw_Fill( fill_path, matrix );
     Font_Draw_Stroke( stroke_path, matrix );
@@ -1040,7 +1089,7 @@ static bool FontScanString( struct workspace *workspace, SWI_regs *regs )
 
 bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI_regs *regs )
 {
-  NewLine; Write0( "Handling Font SWI " ); WriteNum( regs->number ); NewLine;
+  NewLine; Write0( "Handling Font SWI " ); WriteNum( MODULE_CHUNK + regs->number ); NewLine;
 
   switch (regs->number) {
   case 0x01: return FindFont( workspace, regs );
@@ -1048,7 +1097,9 @@ bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI
   case 0x04: return ReadInfo( workspace, regs );
   case 0x06: return Paint( workspace, regs );
   case 0x08: return ConverttoOS( workspace, regs );
+  case 0x09: regs->r[1] *= 400; regs->r[2] *= 400; return true;
   case 0x0b: return CurrentFont( workspace, regs );
+  case 0x0f: regs->r[1] = 400; regs->r[2] = 400; return true;
   case 0x12: return SetFontColours( workspace, regs );
   case 0x13: return SetPalette( workspace, regs );
   case 0x1e: return SwitchOutputToBuffer( workspace, regs );
@@ -1104,3 +1155,421 @@ char const swi_names[] = { "Font"
           "\0ApplyFields"
           "\0LookupFont"
           "\0" };
+
+
+// The following is documentation of the assembler, it's not likely to be
+// correct!
+
+typedef struct {
+  int32_t XX;
+  int32_t YX;
+  int32_t XY;
+  int32_t YY;
+  int32_t X;
+  int32_t Y;
+} umatrix;
+
+typedef struct {
+  int32_t XX;
+  int32_t YX;
+  int32_t XY;
+  int32_t YY;
+  int32_t X;
+  int32_t Y;
+  int32_t coord_shift;
+} matrix;
+
+typedef struct {
+  int32_t mantissa;
+  int32_t exponent;
+} fp;
+
+typedef struct {
+  fp XX;
+  fp YX;
+  fp XY;
+  fp YY;
+  fp X;
+  fp Y;
+} fpmatrix;
+
+typedef struct {
+  int32_t x0;
+  int32_t y0;
+  int32_t x1;
+  int32_t y1;
+} box;
+
+typedef struct {
+  char name[12];
+} short_string;
+
+typedef struct {
+  char name[11]; // 10 chars, terminator, space for flags after
+} leaf_name;
+
+// The objects in the cache form a tree, with a single link list for
+// the top level items (fonts only?), and pointers to sub-items.
+// 
+typedef struct {
+  uint32_t size:28;
+  uint32_t marker:1;    // Maybe not valid in all objects
+  uint32_t ischar:1;    // ditto
+  uint32_t claimed:1;
+  uint32_t locked:1;
+
+  object_header *link;  // Next object at top level
+  header **backlink;    // Link back to the pointer to this object. TCBO1?
+  void *anchor;
+} object_header;
+
+typedef struct {
+  object_header header;
+  umatrix       unscaled;
+  matrix        metricsmatrix;
+  fpmatrix      scaled;
+} matrixblock;
+
+typedef struct {
+  object_header header;
+  uint32_t flags;
+
+} cache_chunk;
+
+typedef struct {
+  object_header header;
+  union {
+    cache_chunk *pointers[];
+    uint32_t offsets[];
+  };
+} pixo;
+
+typedef struct {
+  object_header header;
+// hdr_usage       #       4               ; font usage count
+  uint32_t usage;
+//  
+// hdr_metricshandle  #    1               ; metrics
+  char metricshandle;
+// hdr4_pixelshandle  #    1               ; 4 bpp (old or new format or outlines)
+  char pixelshandle1;
+// hdr1_pixelshandle  #    1               ; 1 bpp
+  char pixelshandle4;
+// hdr_flags          #    1               ; bit 0 set => swap over x/y subpixel posns
+  char flags;
+
+// hdr_name        #       40
+  char name[40];
+// hdr_nameend     #       0
+// hdr_xsize       #       4               ; x-size of font (1/16ths point)
+  int32_t xsize;
+// hdr_ysize       #       4               ; y-size of font
+  int32_t ysize;
+
+// hdr_nchars      #       4               ; number of defined characters       ) read from metrics file header
+  int32_t nchars;
+// hdr_metflags    #       1               ; metrics flags                      )
+  char metflags;
+// hdr_masterfont  #       1               ; used for 4bpp and outline masters
+  char masterfont;
+// hdr_masterflag  #       1               ; is this a 'proper' master font?
+  char masterflag;      // enum { normal, ramscaled, master } - FindFont called with font name, {26, handle}, r2 == -1 (the last being undocumented?)
+// hdr_skelthresh  #       1               ; skeleton line threshold (pixels)
+  char skelthresh;
+
+// hdr_encoding    #       12              ; lower-cased zero-padded version of /E parameter
+  short_string encoding;
+// hdr_base        #       4               ; base encoding number (for setleafnames_R6)
+  uint32_t base;
+
+// hdr_xmag        #       4
+  uint32_t xmag;
+// hdr_ymag        #       4               ; these are only used for 4-bpp bitmaps
+  uint32_t ymag;
+
+// hdr_xscale      #       4               ; = psiz * xres * xscaling * 16
+  uint32_t xscale;
+// hdr_yscale      #       4               ; = psiz * yres * yscaling * 16
+  uint32_t yscale;
+// hdr_xres        #       4               ; 0,0 => variable resolution (pixelmatrix derived from res. at the time)
+  uint32_t xres;
+// hdr_yres        #       4
+  uint32_t yres;
+// hdr_filebbox    #       4               ; held in byte form in old-style file
+  uint32_t filebbox;
+
+//                 ASSERT  (@-hdr_xscale)=(fpix_index-fpix_xscale)
+
+// hdr_threshold1  #       4               ; max height for scaled bitmaps
+  uint32_t threshold1;
+// hdr_threshold2  #       4               ; max height for 4-bpp
+  uint32_t threshold2;
+// hdr_threshold3  #       4               ; max cached bitmaps from outlines
+  uint32_t threshold3;
+// hdr_threshold4  #       4               ; max width for subpixel scaling
+  uint32_t threshold4;
+// hdr_threshold5  #       4               ; max height for subpixel scaling
+  uint32_t threshold5;
+
+// hdr_MetOffset   #       4               ; from fmet_chmap onwards
+  uint32_t MetOffset;
+// hdr_MetSize     #       4
+  uint32_t MetSize;
+// hdr_PixOffset   #       4               ; from fpix_index onwards
+  uint32_t PixOffset;
+// hdr_PixSize     #       4
+  uint32_t PixSize;
+// hdr_scaffoldsize   #    4               ; from fnew_tablesize onwards
+  uint32_t scaffoldsize;
+
+
+
+// hdr_designsize  #       4               ; design size (for the outline file)
+  uint32_t designsize;
+// hdr_rendermatrix  #     mat_end         ; if no paint matrix, transforms from design units -> pixels << 9
+  matrix rendermatrix;
+// hdr_bboxmatrix  #       mat_end         ; transforms from design units -> 1/1000pt
+  matrix bboxmatrix;
+// hdr_resXX       #       8               ; xres << 9 / 72000   : the resolution matrix
+  fp resXX;
+// hdr_resYY       #       8               ; yres << 9 / 72000   : (floating point)
+  fp resYY;
+
+
+// hdr_metaddress  #       4               ; base of file data, or 0 if not ROM
+  uint32_t metaddress;
+// hdr_oldkernsize #       4               ; cached size of old-style kerning table (for ReadFontMetrics)
+  uint32_t oldkernsize;
+
+
+  struct {
+
+// hdr4_leafname   #       11              ; 10-char filename, loaded as 3 words
+    leaf_name leafname;
+// hdr4_flags      #       1               ; flags given by pp_*
+    uint8_t flags;
+
+// hdr4_PixOffStart  #     4               ; offset to chunk offset array in file
+    uint32_t PixOffStart;
+// hdr4_nchunks    #       4               ; number of chunks in file
+    uint32_t nchunks;
+// hdr4_nscaffolds #       4               ; number of scaffold index entries
+    uint32_t nscaffolds;
+// hdr4_address    #       4               ; for ROM-based fonts
+    uint32_t address;
+// hdr4_boxx0      #       4               ;
+    uint32_t boxx0;
+// hdr4_boxy0      #       4               ; separate copies for 4-bpp and 1-bpp
+    uint32_t boxy0;
+// hdr4_boxx1      #       4               ; (used internally in cachebitmaps)
+    uint32_t boxx1;
+// hdr4_boxy1      #       4               ;
+    uint32_t boxy1;
+
+  } hdr4;
+
+  struct {
+// hdr1_leafname   #       11              ; 10-char filename, loaded as 3 words
+    leaf_name leafname;
+// hdr1_flags      #       1               ; flags given by pp_*
+    uint8_t flags;
+// hdr1_PixOffStart  #     4               ; offset to chunk offset array in file
+    uint32_t PixOffStart;
+// hdr1_nchunks    #       4               ; number of chunks in file
+    uint32_t nchunks;
+// hdr1_nscaffolds #       4               ; number of scaffold index entries
+    uint32_t nscaffolds;
+// hdr1_address    #       4               ; for ROM-based fonts
+    uint32_t address;
+// hdr1_boxx0      #       4               ;
+    uint32_t boxx0;
+// hdr1_boxy0      #       4               ; Font_ReadInfo returns whichever
+    uint32_t boxy0;
+// hdr1_boxx1      #       4               ; box happens to be defined
+    uint32_t boxx1;
+// hdr1_boxy1      #       4               ;
+    uint32_t boxy1;
+
+  } hdr1;
+
+// hdr_MetricsPtr  #       4               ; 1 set for all characters
+  uint32_t MetricsPtr;
+// hdr_Kerns       #       4               ; only cached if needed
+  uint32_t Kerns;
+// hdr_Charlist    #       4
+  uint32_t Charlist;
+// hdr_Scaffold    #       4
+  uint32_t Scaffold;
+// hdr_PathName    #       4               ; block containing (expanded) pathname
+  uint32_t PathName;
+// hdr_PathName2   #       4               ; 0 unless shared font pixels used
+  uint32_t PathName2;
+// hdr_FontMatrix  #       4               ; derived font matrix, or font matrix (unscaled and scaled)
+  uint32_t FontMatrix;
+// hdr_mapindex    #       4*4             ; master font's list of mappings (target encoding / private base)
+  uint32_t mapindex[4];
+
+// hdr4_PixoPtr    #       4
+// Pointer to array of nchunks chunk pointers (or nchunks+1 offsets?)
+  pixo *hdr4_PixoPtr;
+// hdr1_PixoPtr    #       4               ; pointer to block containing file offsets and pointers to chunks
+  pixo *hdr1_PixoPtr;
+
+// hdr_transforms  #       0               ; chain of different transforms pointing to chunks
+// hdr4_transforms #       4*8             ; 4-bpp versions
+  uint32_t hdr4_transforms[8];
+// hdr1_transforms #       4*8             ; 1-bpp versions
+  uint32_t hdr1_transforms[8];
+// hdr_transformend  #     0
+// nhdr_ptrs       *       (@-hdr_MetricsPtr)/4
+} cache_font_header;
+
+typedef struct {
+  object_header header;
+} cache_header;
+
+
+
+struct {
+  error_block *error; // zero if no error
+  const char *font_file;
+  // input leafname modified unless error or...
+  bool data_not_found;
+  bool file_not_found;
+} ScanFontDir_res;
+
+ScanFontDir_res ScanFontDir( cache_font_header *header, char *leaf_ptr )
+{
+  if (leaf_ptr == &header->hdr1_leafname) {
+  }
+  else { // (leaf_ptr == &header->hdr4_leafname)
+  }
+
+  if (header->masterflag == 
+}
+
+typedef struct {
+  char encoding[12];
+} encoding_id;
+
+typedef struct {
+  encoding_id encbuf;
+  void *paintmatrix;
+  void *transformptr;
+  void *font_cache;
+  void *font_cache_end;
+} workspace;
+
+typedef struct {
+  error_block *error; // zero if no error
+  bool match_found;
+  uint32_t handle;
+  cache_font_header *header;
+} MatchFont_res;
+
+error_block *FindMaster( workspace *ws, const char *name, cache_font_header *header )
+{
+}
+
+static void MarkPixos( pixo *p, uint32_t n, bool claimed )
+{
+  for (uint32_t i = 0; i < n; i++) {
+    cache_chunk *cc = p->pointers[i];
+    cc->claimed = claimed ? 1 : 0;
+    if (cc->pix_flags
+  }
+}
+
+error_block *ClaimFont( workspace *ws, const char *name, cache_font_header *header )
+{
+  error_block *result = 0;
+
+  if (header->masterflag == normal) {
+    if (header->masterfont != 0) {
+      result = FindMaster( ws, name, header );
+      if (result) return result;
+
+      // assert (header->masterfont != 0) ?
+    }
+  }
+
+  header->usage ++;
+
+  // markfontclaimed_R7
+  if (header->usage != 1) { // Not already claimed
+    header->header->claimed = 1;
+    header->header->locked = 1;
+
+    uint32_t font_cache = ws->font_cache;
+    uint32_t font_cache_end = ws->font_cache_end;
+
+    uint32_t *pp = &header->MetricsPtr; // First pointer in header
+    while (pp < &header->hdr4_PixoPtr) { // Follows last one?
+      uint32_t p = *pp++;
+      if (p > font_cache && font_cache_end > p) { // In cache
+        header *h = (void*) p;
+        h->claimed = 1;
+      }
+    }
+
+    // Mark the pixo entries as used, as well.
+    MarkPixos( header->hdr4_PixoPtr, header->hdr4.nchunks, true );
+    MarkPixos( header->hdr1_PixoPtr, header->hdr1.nchunks, true );
+  }
+}
+
+typedef struct {
+  error_block *error; // zero if no error
+  uint32_t handle;
+  uint32_t xres;
+  uint32_t yres;
+} FindFont_res;
+
+FindFont_res Int_FindFont( worspace *ws,
+        const char *name,
+        uint32_t xpoints, uint32_t ypoints,
+        uint32_t xres, uint32_t yres )
+{
+  FindFont_res result = { .error = 0 };
+
+  ws->paintmatrix = 0;
+  ws->transformptr = 0;
+
+  result.error = SetModeData( ws, name, xpoints, ypoints, xres, yres );
+  if (result.error) return result;
+  result.error = DefaultRes( ws, name, xpoints, ypoints, xres, yres );
+  if (result.error) return result;
+
+  uint32_t handle;
+  cache_font_header *header;
+
+  {
+    MatchFont_res res = MatchFont( ws, name, xpoints, ypoints, xres, yres );
+    if (res.error) { result.error = res.error; return result; }
+
+    if (!res.match_found) {
+      
+    }
+    header = res.header;
+    handle = res.handle;
+  }
+
+  result.error = ClaimFont( ws, name, header );
+  if (result.error) return result;
+
+  return result;
+}
+
+FindFont_res FindFont( worspace *ws,
+        const char *name,
+        uint32_t xpoints, uint32_t ypoints,
+        uint32_t xres, uint32_t yres )
+{
+  FindFont_res result = { .error = 0 };
+
+  // Fill in a variable in workspace
+  result.error = GetEncodingId( ws, name, xpoints, ypoints, xres, yres );
+  if (result.error) return result;
+
+  return Int_FindFont;
+}

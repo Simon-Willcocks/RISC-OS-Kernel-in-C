@@ -203,8 +203,28 @@ if (svc == 0x41b40 || svc == 0x61b40) {
   return (regs->spsr & VF) == 0;
 }
 
+#ifdef DEBUG__SHOW_VECTORS
+vector do_nothing;
+#endif
+
 static bool run_vector( int vec, svc_registers *regs )
 {
+#ifdef DEBUG__SHOW_VECTORS
+  if (vec != 3 && workspace.kernel.vectors[3] != &do_nothing)
+  {
+    Write0( "Running vector " ); WriteNum( vec ); NewLine;
+    vector *v = workspace.kernel.vectors[vec];
+    while (v != 0) {
+      WriteNum( v->code ); Write0( " " ); WriteNum( v->private_word ); Write0( " " ); WriteNum( v->next ); NewLine;
+      v = v->next;
+    }
+    NewLine;
+    for (int i = 0; i < 10; i++) { WriteNum( regs->r[i] ); Write0( " " ); }
+    WriteNum( regs->lr );
+    NewLine;
+  }
+#endif
+
   // "If your routine passes the call on, you can deliberately alter some of
   // the registers values to change the effect of the call, however, you must
   // arrange for control to return to your routine again to restore to those
@@ -215,7 +235,7 @@ static bool run_vector( int vec, svc_registers *regs )
   //    Replaces it with an address in its own code
   //    Returns with mov pc, lr (allowing other handlers to execute)
   // AND the final, default, action of every vector handler is pop {pc}.
-  vector *v = workspace.kernel.vectors[vec];
+  register vector *v asm( "r10" ) = workspace.kernel.vectors[vec];
   register uint32_t flags asm( "r1" );
 
   // Code always exits via intercepted.
@@ -250,6 +270,12 @@ static bool run_vector( int vec, svc_registers *regs )
 
       : "r0", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r12", "r14" );
 
+#ifdef DEBUG__SHOW_VECTORS
+  if (vec != 3 && workspace.kernel.vectors[3] != &do_nothing)
+  {
+    Write0( "Vector " ); WriteNum( vec ); WriteNum( flags ); NewLine;
+  }
+#endif
   return (flags & VF) == 0;
 }
 
@@ -300,16 +326,16 @@ static inline int riscoscmp( const char *left, const char *right, bool space_ter
 
     result = l - r;
     if (result == 'a'-'A') {
-      result = (l >= 'a' && l <= 'z');
+      if (l >= 'a' && l <= 'z') result = 0;
     }
     else if (result == 'A'-'a') {
-      result = (r >= 'a' && r <= 'z');
+      if (r >= 'a' && r <= 'z') result = 0;
     }
   }
   return result;
 }
 
-static void describe_service_call( svc_registers *regs )
+static inline void describe_service_call( svc_registers *regs )
 {
 WriteS( "*** ServiceCall_" );
 switch (regs->r[1]) {
@@ -504,6 +530,7 @@ Write0( title_string( m->header ) ); WriteS( " " ); WriteNum( m->header->offset_
 static bool Unknown_OS_Module_call( svc_registers *regs )
 {
   static error_block error = { 0x105, "Unknown OS_Module call" };
+  Write0( "OS_Module Unknown call: " ); WriteNum( regs->r[0] ); NewLine;
   regs->r[0] = (uint32_t)&error;
   return false;
 }
@@ -551,8 +578,8 @@ static bool do_Module_Enter( svc_registers *regs )
   // At the moment, we're just starting the WindowManager (Wimp), via
   // Desktop.
 
-  char const *module_name = regs->r[1];
-  char const *parameters = regs->r[2];
+  char const *module_name = (void*) regs->r[1];
+  // char const *parameters = (void*) regs->r[2]; FIXME
   module *m = find_module( module_name );
 
   if (m == 0) {
@@ -569,7 +596,7 @@ static bool do_Module_Enter( svc_registers *regs )
 
   // Remember: eret is unpredictable in System mode
   // TODO: This does not yet reset the SVC stack.
-  register uint32_t private asm ( "r12" ) = m->private_word;
+  register void *private asm ( "r12" ) = m->private_word;
   asm ( "isb"
     "\n\tmsr spsr, %[usermode]"
     "\n\tmov lr, %[usr]"
@@ -610,21 +637,70 @@ static bool do_Module_DescribeRMA( svc_registers *regs )
   return result;
 }
 
-static bool do_Module_Claim( svc_registers *regs )
+static bool IntoRMAHeapOp( svc_registers *regs )
 {
+  uint32_t r0 = regs->r[0];
   uint32_t r1 = regs->r[1];
-  regs->r[0] = 2;
+  uint32_t r2 = regs->r[2];
+  uint32_t r3 = regs->r[3];
+
   regs->r[1] = (uint32_t) &rma_heap;
 
   bool result = do_OS_Heap( regs );
   if (result) {
-    regs->r[0] = 6;
+    regs->r[0] = r0 == 2 ? 6 : 24; // Aligned, or not
     regs->r[1] = r1;
+    regs->r[3] = r3;
+
+#ifdef DEBUG__RMA_ALLOCATIONS
+    Write0( "Allocated RMA memory at " ); WriteNum( regs->r[2] ); Write0( " @" ); WriteNum( regs->lr ); NewLine;
+#endif
   }
   else {
+    asm ( "bkpt 88" ); // TODO stuff with extending and r2
+    r2 = r2;
     result = error_nomem( regs );
   }
+  return result;
+}
 
+static bool do_Module_Claim( svc_registers *regs )
+{
+  uint32_t r1 = regs->r[1];
+  uint32_t r3 = regs->r[3];
+
+  regs->r[0] = 2;
+
+  // s.ModHand, RMAClaim_Chunk
+  // "now force size to 32*n-4 so heap manager always has 8-word aligned blocks"
+  regs->r[3] = ((r3 + 31 + 4) & ~31) - 4;
+
+  bool result = IntoRMAHeapOp( regs );
+  if (result) regs->r[0] = 6;
+  regs->r[1] = r1;
+  regs->r[3] = r3;
+  return result;
+}
+
+static bool do_Module_ClaimAligned( svc_registers *regs )
+{
+  if (regs->r[4] == 0 || 0 != (regs->r[4] & (regs->r[4]-1))) {
+    static error_block const error = { 0x117, "Bad alignment request" };
+    regs->r[0] = (uint32_t) &error;
+    return false;
+  }
+
+  uint32_t r1 = regs->r[1];
+  uint32_t r4 = regs->r[4];
+
+  regs->r[0] = 7;       // #HeapReason_GetAligned
+  regs->r[2] = regs->r[4];
+  regs->r[4] = 0;       // "any boundary"
+
+  bool result = IntoRMAHeapOp( regs );
+  if (result) regs->r[0] = 24;
+  regs->r[1] = r1;
+  regs->r[4] = r4;
   return result;
 }
 
@@ -633,6 +709,10 @@ static bool do_Module_Free( svc_registers *regs )
   uint32_t r1 = regs->r[1];
   regs->r[0] = 3; // Free
   regs->r[1] = (uint32_t) &rma_heap;
+
+#ifdef DEBUG__RMA_ALLOCATIONS
+  Write0( "Free RMA memory at " ); WriteNum( regs->r[2] ); Write0( " @" ); WriteNum( regs->lr ); NewLine;
+#endif
 
   bool result = do_OS_Heap( regs );
   if (result) {
@@ -853,6 +933,7 @@ WriteS( ", not " ); Write0( title_string( m->header ) );
 
   if (m == 0) {
     // TODO personalised error messages will have to be stored associated with a task
+Write0( __func__ ); WriteS( " " ); Write0( regs->r[1] );
     static error_block error = { 258, "Module not found" }; // FIXME "Module %s not found"
     regs->r[0] = (uint32_t) &error;
     return false;
@@ -967,7 +1048,10 @@ bool do_OS_Module( svc_registers *regs )
          ExtendBlock, CreateNewInstantiation, RenameInstantiation,
          MakePreferredInstantiation, AddExpansionCardModule,
          LookupModuleName, EnumerateROMModules, EnumerateROMModulesWithVersion,
-         FindEndOfROM_ModuleChain };
+         FindEndOfROM_ModuleChain, 
+         Enumerate_modules_with_private_word_pointer,
+         Unplug_or_insert_modules,
+         ClaimAligned };
 
   switch (regs->r[0]) {
   case Run: return do_Module_Run( regs );
@@ -992,7 +1076,13 @@ bool do_OS_Module( svc_registers *regs )
   case EnumerateROMModules: return do_Module_EnumerateROMModules( regs );
   case EnumerateROMModulesWithVersion: return do_Module_EnumerateROMModulesWithVersion( regs );
   case FindEndOfROM_ModuleChain: return do_Module_FindEndOfROM_ModuleChain( regs );
+  case Enumerate_modules_with_private_word_pointer:
+    return Unknown_OS_Module_call( regs );
+  case Unplug_or_insert_modules:
+    return Unknown_OS_Module_call( regs );
+  case ClaimAligned: return do_Module_ClaimAligned( regs );
   default:
+    NewLine; WriteNum( regs->r[0] );
     return Unknown_OS_Module_call( regs );
   }
 }
@@ -1027,9 +1117,11 @@ static callback *get_a_callback()
 
 bool do_OS_Claim( svc_registers *regs )
 {
-  WriteS( "New vector " ); WriteNum( regs->r[0] );
+#ifdef DEBUG__SHOW_VECTORS
+  WriteS( "New vector claim " ); WriteNum( regs->r[0] );
   WriteS( " Code " ); WriteNum( regs->r[1] );
   WriteS( " Private " ); WriteNum( regs->r[2] ); NewLine;
+#endif
   int number = regs->r[0];
   if (number > number_of( workspace.kernel.vectors )) {
     return error_InvalidVector( regs );
@@ -1042,6 +1134,9 @@ bool do_OS_Claim( svc_registers *regs )
     if (v->code == regs->r[1] && v->private_word == regs->r[2]) {
       // Duplicate to be removed, except we'll just move it up to the head instead,
       // without having to allocate new space.
+#ifdef DEBUG__SHOW_VECTORS
+  Write0( "Raising vector to top" ); NewLine;
+#endif
       *p = v->next; // Removed from list
       v->next = workspace.kernel.vectors[number];
       workspace.kernel.vectors[number] = v; // Added at head;
@@ -1057,11 +1152,15 @@ bool do_OS_Claim( svc_registers *regs )
     return error_nomem( regs );
   }
 
+#ifdef DEBUG__SHOW_VECTORS
+  Write0( "New new vector" ); NewLine;
+#endif
+
   new->code = regs->r[1];
   new->private_word = regs->r[2];
   new->next = workspace.kernel.vectors[number];
 
-  workspace.kernel.vectors[regs->r[0]] = new;
+  workspace.kernel.vectors[number] = new;
 
   return true;
 }
@@ -1117,7 +1216,7 @@ bool do_OS_GetEnv( svc_registers *regs )
   return true;
 }
 
-static void show_module_commands( module_header *header )
+static inline void show_module_commands( module_header *header )
 {
   const char *cmd = (void*) (header->offset_to_help_and_command_keyword_table + (uint32_t) header);
   while (cmd[0] != '\0') {
@@ -1129,49 +1228,81 @@ static void show_module_commands( module_header *header )
   NewLine;
 }
 
-void init_module( const char *name )
+// Transient callbacks are usually called when returning to USR mode,
+// but it's important to call them when a module has just been initialised
+// as well.
+// This could also be managed by initialising them from a script, since it
+// runs in USR mode.
+extern void run_transient_callbacks();
+
+static module_header *find_rom_module( const char *name )
 {
   uint32_t *rom_modules = &_binary_AllMods_start;
   uint32_t *rom_module = rom_modules;
-
-  workspace.kernel.env = name;
-  workspace.kernel.start_time = 0x0101010101ull;
-
-#ifdef DEBUG__SHOW_MODULE_INIT
-  WriteS( "INIT: " );
-  Write0( name );
-#endif
-
-  // UtilityModule isn't a real module
-  // PCI calls XOS_Hardware (and XOS_Heap 8)
-  // BASIC? - starts two other modules...
-  // Obey.
-  // The intention is to initialise a HAL module, which can kick off a centisecond
-  // upcall and initialise the hardware, including checking for pressed buttons on
-  // a keyboard or similar.
 
   while (0 != *rom_module) {
     module_header *header = (void*) (rom_module+1);
     register const char *title = title_string( header );
     if (0 == strcmp( title, name )) {
-
-#ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
-      show_module_commands( header );
-#endif
-
-      register uint32_t code asm( "r0" ) = 10;
-      register module_header *module asm( "r1" ) = header;
-      asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
+      return (void*) (rom_module+1); // Header without size
     }
     rom_module += (*rom_module)/4; // Includes size of length field
   }
+
+  return 0;
 }
+
+void init_module( const char *name )
+{
+  workspace.kernel.env = name;
+  workspace.kernel.start_time = 0x0101010101ull;
+
+#ifdef DEBUG__SHOW_MODULE_INIT
+  NewLine;
+  Write0( "INIT: " );
+  Write0( name );
+#endif
+
+  module_header *header = find_rom_module( name );
+
+  if (0 != header) {
+#ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
+    show_module_commands( header );
+#endif
+
+    register uint32_t code asm( "r0" ) = 10;
+    register module_header *module asm( "r1" ) = header;
+    asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
+
+    // Not in USR mode, but we are idling
+    run_transient_callbacks();
+  }
+}
+
+#define REPLACEMENT( modname ) \
+  if (0 == strcmp( name, #modname )) { \
+    extern uint32_t _binary_Modules_##modname##_start; \
+    module_header *header = find_rom_module( #modname ); \
+    register uint32_t code asm( "r0" ) = 10; \
+    register uint32_t *module asm( "r1" ) = &_binary_Modules_##modname##_start; \
+    register module_header *original asm ( "r2" ) = header; \
+ \
+    asm ( "svc %[os_module]" \
+       : \
+       : "r" (code) \
+       , "r" (module) \
+       , "r" (original) \
+       , [os_module] "i" (OS_Module) \
+       : "lr", "cc" ); \
+    Write0( "Replacement " ); Write0( #modname ); NewLine; \
+    return true; \
+  }
 
 bool excluded( const char *name )
 {
   // These modules fail on init, at the moment.
   static const char *excludes[] = { "PCI"               // Data abort fc01ff04 prob. pci_handles
-                                  // , "WindowManager"     // Sprite problems
+
                                   , "Debugger"
                                   , "BCMSupport"        // Unknown dynamic area
                                   , "Portable"          // Uses OS_MMUControl
@@ -1189,7 +1320,6 @@ bool excluded( const char *name )
                                   , "SoundChannels"     // ???
                                   , "SoundScheduler"    // Sound_Tuning
                                   , "TaskManager"       // Initialisation returns an error
-                                  , "ScreenModes"       // Doesn't return, afaics
                                   , "BCMVideo"          // Tries to use OS_MMUControl
                                   , "FilterManager"     // Uses Wimp_ReadSysInfo 
                                   , "WaveSynth"         // throws exception
@@ -1204,8 +1334,7 @@ bool excluded( const char *name )
                                   , "SDIODriver"        // 0x8600003f
                                   , "SDFS"              // 0x8600003f
                                   , "SDCMOS"              // 0x8600003f
-                                  , "ColourPicker"      // 0x8600003f
-                     //             , "DrawFile"          // Data abort on InvalidateCache service call?
+                                  //, "ColourPicker"      // 0x8600003f
                      //             , "BootCommands"      // 0x8600003f
                                   , "WindowScroll"      // 0x8600003f OS_Pointer not yet supported
                                   , "Internet"          // 0x8600003f
@@ -1261,7 +1390,7 @@ bool excluded( const char *name )
                                   , "DragASprite"       // Doesn't return, afaics
                                   , "RamFS"             // Tries to use OS_MMUControl
                                   , "Filer"             // Doesn't return, afaics
-                                  , "VFPSupport"        // Init returned with V set
+                                  , "VFPSupport"        // Tries to claim processor vector
                                   , "Hourglass"        // OS_ReadPalette
                                   , "InternationalKeyboard" // Probably because there isn't one?
                                   , "NetFS"             // Doesn't return
@@ -1281,15 +1410,10 @@ bool excluded( const char *name )
 /**/
   };
 
-  if (0 == strcmp( name, "FontManager" )) {
-    extern uint32_t _binary_Modules_FontManager_start;
-    register uint32_t code asm( "r0" ) = 10;
-    register uint32_t *module asm( "r1" ) = &_binary_Modules_FontManager_start;
-
-    asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
-    WriteS( "Replacement FontManager" ); NewLine;
-    return true;
-  }
+  // C Modules that replace ROM modules (experimental)
+  //REPLACEMENT( FontManager );
+  REPLACEMENT( Portable );
+  REPLACEMENT( VFPSupport );
 
   for (int i = 0; i < number_of( excludes ); i++) {
     if (0 == strcmp( name, excludes[i] ))
@@ -1297,8 +1421,6 @@ bool excluded( const char *name )
   }
   return false;
 }
-
-extern void run_transient_callbacks();
 
 void init_modules()
 {
@@ -1313,36 +1435,52 @@ void init_modules()
     workspace.kernel.env = title_string( header );
 
 #ifdef DEBUG__SHOW_MODULE_INIT
-    WriteS( "INIT: " );
+    NewLine;
+    Write0( "INIT: " );
+    WriteNum( rom_module ); Write0( " " );
     Write0( workspace.kernel.env );
 #endif
     if (!excluded( workspace.kernel.env )) {
+#ifdef DEBUG__SHOW_MODULE_INIT
+      {
+      if (header->offset_to_service_call_handler != 0) {
+        Write0( " services " );
+        uint32_t *p = pointer_at_offset_from( header, header->offset_to_service_call_handler );
+        if (0xe1a00000 == p[0]) {
+          Write0( " with table" );
+          uint32_t table_offset = p[-1];
+
+          uint32_t *p = pointer_at_offset_from( header, table_offset );
+
+          NewLine; Write0( "Flags: " ); WriteNum( *p++ ); NewLine; p++; // Skip handler offset
+          do {
+            NewLine; Write0( "Expects service: " ); WriteNum( *p++ );
+          } while (*p != 0);
+        }
+      }
       NewLine;
+      }
+#endif
+
       register uint32_t code asm( "r0" ) = 10;
       register module_header *module asm( "r1" ) = header;
 
       asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
 
-#ifdef DEBUG__SHOW_MODULE_INIT
-      NewLine;
-#endif
-
       // Not in USR mode, but we are idling
       run_transient_callbacks();
     }
     else {
-      Write0( workspace.kernel.env );
+#ifdef DEBUG__SHOW_MODULE_INIT
       WriteS( " - excluded" );
+#endif
       NewLine;
     }
     rom_module += (*rom_module)/4; // Includes size of length field
-#ifdef DEBUG__SHOW_MODULE_INIT
-    WriteNum( rom_module );
-#endif
   }
 }
 
-static void set_var( const char *name, const char *value )
+static inline void set_var( const char *name, const char *value )
 {
   svc_registers regs;
   regs.r[0] = (uint32_t) name;
@@ -1354,7 +1492,7 @@ static void set_var( const char *name, const char *value )
   do_OS_SetVarVal( &regs );
 }
 
-static void Plot( uint32_t type, uint32_t x, uint32_t y )
+static inline void Plot( uint32_t type, uint32_t x, uint32_t y )
 {
   register uint32_t Rtype asm( "r0" ) = type;
   register uint32_t Rx asm( "r1" ) = x * 2; // pixel units to OS units, just for the tests
@@ -1362,7 +1500,7 @@ static void Plot( uint32_t type, uint32_t x, uint32_t y )
   asm ( "svc %[swi]" : : [swi] "i" (OS_Plot), "r" (Rtype), "r" (Rx), "r" (Ry) );
 }
 
-static void Draw_Fill( uint32_t *path, int32_t *transformation_matrix )
+static inline void Draw_Fill( uint32_t *path, int32_t *transformation_matrix )
 {
   register uint32_t *draw_path asm( "r0" ) = path;
   register uint32_t fill_style asm( "r1" ) = 0;
@@ -1389,7 +1527,7 @@ typedef union {
   uint32_t raw;
 } OS_SetColour_Flags;
 
-static void SetColour( uint32_t flags, uint32_t colour )
+static inline void SetColour( uint32_t flags, uint32_t colour )
 {
   register uint32_t in_flags asm( "r0" ) = flags;
   register uint32_t in_colour asm( "r1" ) = colour;
@@ -1400,7 +1538,7 @@ static void SetColour( uint32_t flags, uint32_t colour )
         : "lr" );
 }
 
-static void SetGraphicsFgColour( uint32_t colour )
+static inline void SetGraphicsFgColour( uint32_t colour )
 {
   WriteS( "Setting graphics foreground colour with ColourTrans... " );
   register uint32_t pal asm( "r0" ) = colour;
@@ -1409,7 +1547,7 @@ static void SetGraphicsFgColour( uint32_t colour )
   asm ( "svc %[swi]" : : [swi] "i" (0x60743), "r" (pal), "r" (Rflags), "r" (action) : "lr", "cc" );
 }
 
-static void SetGraphicsBgColour( uint32_t colour )
+static inline void SetGraphicsBgColour( uint32_t colour )
 {
   WriteS( "Setting graphics background colour with ColourTrans... " );
   register uint32_t pal asm( "r0" ) = colour;
@@ -1461,7 +1599,7 @@ static inline uint32_t Font_FindFont( const char *name, uint32_t xpoints, uint32
         , "r" (rypoints)
         , "r" (rxdpi)
         , "r" (rydpi)
-        , [swi] "i" (0x20000 | 0x40081)
+        , [swi] "i" (0x40081)
         : "lr" );
 
   return result;
@@ -1556,7 +1694,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
   switch (regs[0]) {
   case 0x00: // Display OS version or return machine type
     {
-      static error_block version = { 0, "C Kernel version 0.01" };
+      static error_block version = { 0, "RISC OS, C Kernel 0.01 (1 May 2022)" };
       if (regs[1] == 0) {
         regs[0] = (uint32_t) &version;
         set_VF();
@@ -1634,6 +1772,11 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     {
     }
     break;
+  case 0x75: // Read VDU status
+    {
+      regs[1] = 0;
+    }
+    break;
   case 0x7c: // Clear escape condition
     {
     }
@@ -1641,7 +1784,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
   case 0xa1:
     {
 #ifdef DEBUG__SHOW_OS_BYTE
-    WriteS( "Read CMOS " ); WriteNum( regs[1] ); WriteS( " " ); WriteNum( regs[2] );
+    WriteS( "Read CMOS " ); WriteNum( regs[1] );
 #endif
     switch (regs[1]) {
 
@@ -1670,15 +1813,18 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     // FileSwitch options
     case 0x1c: regs[2] = 0b00000010; break; // FIXME made up!
 
-    // Font Cache pages: 512k
-    case 0x86: regs[2] = 16; break;
-    // case 0x86: regs[2] = 0; break; // Bug in font caching, does this turn it off?
+    case 0x84: regs[2] = 0xa4; break;   // FIXME from real hardware
+    case 0x85: regs[2] = 0x40; break;   // FIXME from real hardware
+
+    // Font Cache, pages (see also 0xc8-0xcd
+    case 0x86: regs[2] = 64; break; // 4KiB pages = 256KiB
 
     // Time zone (15 mins as signed)
     case 0x8b: regs[2] = 0; break;
 
     // Desktop features
-    case 0x8c: regs[2] = 0x1; break; // FIXME made up, not pretty
+    //case 0x8c: regs[2] = 0x11; break; // From real hardware
+    case 0x8c: regs[2] = 0x91; break; // RO2-style, avoiding problem of not finding tile_6* sprite
 
     // Screen size (pages)
     case 0x8f: regs[2] = (1920 * 1080 + 4095) >> 12; break;
@@ -1700,7 +1846,12 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
 
     // FontMax, FontMax1-5
     // case 0xc8 ... 0xcd: regs[2] = 32; break;
-    case 0xc8 ... 0xcd: regs[2] = 0; break; // Bug in font caching, does this turn it off?
+    case 0xc8: regs[2] = 64; break; // 4KiB pages = 256k
+    case 0xc9: regs[2] = 0; break; // 0 => no x90y45?
+    case 0xca: regs[2] = 36; break;
+    case 0xcb: regs[2] = 36; break;
+    case 0xcc: regs[2] = 16; break;
+    case 0xcd: regs[2] = 12; break;
 
     // Alarm flags/DST ???
     case 0xdc: regs[2] = 0; break;
@@ -1778,11 +1929,28 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     break;
   case 0x81: // Scan keyboard/read OS version (two things that are made for each other!)
     {
-    if (regs[1] == 0 && regs[2] == 0xff) {
-      regs[1] = 171;
-    }
-    else
-      asm ( "bkpt 90" );
+      if (regs[2] == 0xff) {
+        if (regs[1] == 0) {
+          Write0( "OS Version number" ); NewLine;
+          regs[1] = 171;
+        }
+        else if (regs[1] <= 0x7f) {
+          Write0( "Scan for range of keys " ); WriteNum( regs[1] ); NewLine;
+          regs[1] = 0xff;       // No key (no keyboard!)
+        }
+        else {
+          Write0( "Scan for particular key " ); WriteNum( regs[1] ); NewLine;
+          regs[1] = 0xff;       // No key (no keyboard!)
+        }
+      }
+      else if (regs[2] <= 0x7f) {
+        Write0( "Scan keyboard with timeout." ); NewLine;
+        regs[2] = 0xff;       // Timeout (no keyboard!)
+      }
+      else {
+        Write0( "Unknown OS_Byte option!" ); NewLine;
+        asm ( "bkpt 90" );
+      }
     }
     break;
   default: asm ( "bkpt 91" );
@@ -1850,8 +2018,24 @@ WriteFunc;
 
 bool do_OS_File( svc_registers *regs )
 {
-WriteFunc;
-  return run_vector( 8, regs );
+#ifdef DEBUG__SHOW_FILES
+do { Write0( __func__ ); NewLine; for (int i = 0; i < 13; i++) { WriteNum( regs->r[i] ); asm ( "svc 0x100+' '" ); } WriteNum( regs->lr ); asm ( "svc 0x100+' '" ); WriteNum( regs->spsr ); NewLine; } while (false);
+uint32_t code = regs->r[0];
+switch (code) {
+  case 5:
+  case 13:
+  case 15:
+  case 17: Write0( "Catalogue info for: " ); Write0( regs->r[1] ); NewLine; break;
+  default: break;
+}
+#endif
+  bool result = run_vector( 8, regs );
+#ifdef DEBUG__SHOW_FILES
+Write0( "OS_File vector returned" ); NewLine;
+for (int i = 0; i < 6; i++) { WriteNum( regs->r[i] ); asm ( "svc 0x100+' '" ); }
+NewLine;
+#endif
+  return result;
 }
 
 bool do_OS_Args( svc_registers *regs )
@@ -1878,8 +2062,23 @@ WriteFunc;
 
 bool do_OS_Find( svc_registers *regs )
 {
+#ifdef DEBUG__SHOW_FILES
+uint32_t code = regs->r[0];
 WriteFunc;
-  return run_vector( 13, regs );
+switch (code) {
+case 0: Write0( "Close file " ); WriteNum( regs->r[1] ); NewLine; break;
+case 0x40 ... 0x7f: Write0( "Open existing file for reading " ); WriteNum( regs->r[0] ); Write0( " " ); Write0( regs->r[1] ); NewLine; break;
+case 0x80 ... 0xbf: Write0( "Create new file " ); WriteNum( regs->r[0] ); Write0( " " ); Write0( regs->r[1] ); NewLine; break;
+case 0xc0 ... 0xff: Write0( "Open existing file for writing " ); WriteNum( regs->r[0] ); Write0( " " ); Write0( regs->r[1] ); NewLine; break;
+}
+#endif
+  bool result = run_vector( 13, regs );
+#ifdef DEBUG__SHOW_FILES
+switch (code) {
+case 0x40 ... 0x7f: Write0( "Opened for reading, handle " ); WriteNum( regs->r[0] ); NewLine; break;
+}
+#endif
+  return result;
 }
 
 bool do_OS_ReadLine( svc_registers *regs )
@@ -1926,6 +2125,7 @@ WriteFunc;
 bool do_OS_SpriteOp( svc_registers *regs )
 {
 WriteFunc;
+if (regs->r[0] == 0x118) { Write0( "Select sprite " ); Write0( regs->r[2] ); NewLine; WriteNum( regs->lr ); NewLine; }
   return run_vector( 31, regs );
 }
 
@@ -2099,7 +2299,7 @@ static const uint32_t sines[] = {
   0x10000  // sin 90
   };        // sin 90, cos 0
 
-static uint32_t draw_sin( int deg )
+static inline uint32_t draw_sin( int deg )
 {
   while (deg < 0) { deg += 360; }
   while (deg > 360) { deg -= 360; }
@@ -2108,12 +2308,12 @@ static uint32_t draw_sin( int deg )
   return sines[deg];
 }
 
-static uint32_t draw_cos( int deg )
+static inline uint32_t draw_cos( int deg )
 {
   return draw_sin( deg + 90 );
 }
 
-static void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint32_t c )
+static inline void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint32_t c )
 {
   extern uint32_t frame_buffer;
   uint32_t *screen = &frame_buffer;
@@ -2126,14 +2326,14 @@ static void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint
 
 static void user_mode_code();
 
-static const char *discard_leading_characters( const char *command )
+static inline const char *discard_leading_characters( const char *command )
 {
   const char *c = command;
   while (*c == ' ' || *c == '*') c++;
   return c;
 }
 
-static const char *discard_leading_whitespace( const char *command )
+static inline const char *discard_leading_whitespace( const char *command )
 {
   const char *c = command;
   while (*c == ' ' || *c == '\t') c++;
@@ -2213,7 +2413,10 @@ static error_block *run_module_command( const char *command )
 
 static void __attribute__(( noinline )) do_CLI( const char *command )
 {
+#ifdef DEBUG__SHOW_COMMANDS
   WriteS( "CLI: " ); Write0( command ); NewLine;
+#endif
+  // Max length is 1024 bytes in RO 5.28
   // PRM 1-958
   command = discard_leading_characters( command );
   if (*command == '|') return; // Comment, nothing to do
@@ -2222,11 +2425,11 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
     command++;
   }
   else {
-    run = run ||
-     ((command[0] == 'R' || command[0] == 'r') &&
-      (command[1] == 'U' || command[1] == 'u') &&
-      (command[2] == 'N' || command[2] == 'n') &&
-      (command[3] == ' ' || command[3] == '\0' || command[3] == '\n'));
+    run = ((command[0] == 'R' || command[0] == 'r') &&
+           (command[1] == 'U' || command[1] == 'u') &&
+           (command[2] == 'N' || command[2] == 'n') &&
+           (command[3] == ' '  || command[3] == '\0' ||
+            command[3] == '\t' || command[3] == '\n'));
     if (run) {
       command += 3;
       command = discard_leading_characters( command );
@@ -2247,7 +2450,9 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
       i++;
     }
     variable[i + sizeof( alias ) - 1] = '\0';
+#ifdef DEBUG__SHOW_COMMANDS
     WriteS( "Looking for " ); Write0( variable ); NewLine;
+#endif
     char result[256];
     register const char *var_name asm( "r0" ) = variable;
     register char *value asm( "r1" ) = result;
@@ -2269,8 +2474,14 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
 
   if (error != 0 && error->code == 214) {
     // Not found in any module
-    WriteS( "Command not found" );
-    // asm( "bkpt 51" );
+#ifdef DEBUG__SHOW_COMMANDS
+    WriteS( "Command not found, try filesystem, then files..." );
+    // WindowManager runs FontInstall but is initialised before FontManager
+    // and ROMFonts. Let this one go... (and re-order the modules)
+    static const char exception[] = "FontInstall";
+    if (0 != riscoscmp( command, exception, true ))
+      asm( "bkpt 51" );
+#endif
   }
 }
 
@@ -2306,11 +2517,16 @@ static void __attribute__(( naked )) finish_vector()
 // to SpriteVecHandler. FIXME: This might no longer be necessary; I've bypassed this in another way, somewhere...
 extern void SpriteVecHandler();
 
+extern void MOSPaletteV();
+extern void MOSGraphicsV();
+
 vector default_SpriteV = { .next = 0, .code = (uint32_t) SpriteVecHandler, .private_word = 0 };
 vector default_ByteV = { .next = 0, .code = (uint32_t) default_os_byte, .private_word = 0 };
 vector default_ChEnvV = { .next = 0, .code = (uint32_t) default_os_changeenvironment, .private_word = 0 };
 vector default_CliV = { .next = 0, .code = (uint32_t) default_os_cli, .private_word = 0 };
 vector default_FSControlV = { .next = 0, .code = (uint32_t) default_os_fscontrol, .private_word = 0 };
+vector default_PaletteV = { .next = 0, .code = (uint32_t) MOSPaletteV, .private_word = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws };
+vector default_GraphicsV = { .next = 0, .code = (uint32_t) MOSGraphicsV, .private_word = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws };
 vector do_nothing = { .next = 0, .code = (uint32_t) finish_vector, .private_word = 0 };
 
 void Boot()
@@ -2318,6 +2534,17 @@ void Boot()
   // DrawMod uses ScratchSpace at 0x4000
   uint32_t for_drawmod = Kernel_allocate_pages( 4096, 4096 );
   MMU_map_at( (void*) 0x4000, for_drawmod, 4096 );
+
+  uint32_t for_eval = Kernel_allocate_pages( 4096, 4096 );
+  MMU_map_at( (void*) 0x6000, for_eval, 4096 );
+
+  uint32_t for_eval2 = Kernel_allocate_pages( 4096, 4096 );
+  MMU_map_at( (void*) 0x5000, for_eval2, 4096 );
+
+  // IDK what uses memory here, but it played havoc with my translation tables!
+  // Might be Squash.
+  uint32_t for_something_else = Kernel_allocate_pages( 4096, 4096 );
+  MMU_map_at( (void*) 0xfff00000, for_something_else, 4096 );
 
   for (int i = 0; i < number_of( workspace.kernel.vectors ); i++) {
     workspace.kernel.vectors[i] = &do_nothing;
@@ -2328,6 +2555,40 @@ void Boot()
   workspace.kernel.vectors[0x0f] = &default_FSControlV;
   workspace.kernel.vectors[0x1e] = &default_ChEnvV;
   workspace.kernel.vectors[0x1f] = &default_SpriteV;
+  workspace.kernel.vectors[0x22] = &default_GraphicsV;
+  workspace.kernel.vectors[0x23] = &default_PaletteV;
+
+  // For default PaletteV code
+  // Legacy code has this in System Heap, but whatever.
+  // PalEntries*5 = 0x514, sizeof( PV ) = 0x1850
+  svc_registers regs;
+  struct PV {
+    uint32_t blank[256+1+3];
+    uint32_t LogFirst[256+1+3];
+    uint32_t LogSecond[256+1+3];
+    uint32_t PhysFirst[256+1+3];
+    uint32_t PhysSecond[256+1+3];
+    uint8_t RTable[256];
+    uint8_t GTable[256];
+    uint8_t BTable[256];
+    uint8_t STable[256];
+  } *palette = rma_allocate( sizeof( struct PV ), &regs );
+  if (sizeof( struct PV ) != 0x1850) { asm ( "bkpt 1" ); }
+
+  memset( palette, 0, sizeof( struct PV ) );
+  workspace.vectors.zp.VduDriverWorkSpace.ws.BlankPalAddr = (uint32_t) &palette->LogFirst;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.FirPalAddr = (uint32_t) &palette->LogFirst;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.SecPalAddr = (uint32_t) &palette->LogSecond;
+  for (int i = 0; i < 256; i++) {
+    palette->RTable[i] = i;
+    palette->GTable[i] = i;
+    palette->BTable[i] = i;
+    palette->STable[i] = i;
+  }
+
+  // For sprites
+  workspace.vectors.zp.VduDriverWorkSpace.ws.SpChoosePtr = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.SpChooseName[12] = 13;
 
   static const int eigen = 1;
 
@@ -2426,6 +2687,7 @@ WriteS( "Page size 0x1000" );
   // and probably allow for more than one at a time...
 
   // In ReadModeVariable number order:
+  // (Matches only_one_mode.)
   workspace.vectors.zp.VduDriverWorkSpace.ws.ModeFlags = 64;
   workspace.vectors.zp.VduDriverWorkSpace.ws.ScrRCol = 239;
   workspace.vectors.zp.VduDriverWorkSpace.ws.ScrBRow = 134;
@@ -2449,6 +2711,60 @@ WriteS( "Page size 0x1000" );
 
   // The above is set from this, in Kernel/s/vdu/vdugrafl:
   workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayScreenStart = (uint32_t) &frame_buffer;
+
+  // From dump of active RISC OS "zero page"
+  // Next task: find out where they're set and used
+  for (int i = 0; i < 8; i++) {
+    workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcf[i] = 0;
+    workspace.vectors.zp.VduDriverWorkSpace.ws.BgEcf[i] = 0x00ffffff;
+  }
+  // These two are double what they should be
+  // workspace.vectors.zp.VduDriverWorkSpace.ws.GFCOL = 
+  // workspace.vectors.zp.VduDriverWorkSpace.ws.GBCOL = 
+  workspace.vectors.zp.VduDriverWorkSpace.ws.BitsPerPix = 32;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.BytesPerChar = 32;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayLineLength = 0x1e00;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.RowMult = 8;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.RowLength = 0xf000;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.CursorAddr = (uint32_t) &frame_buffer;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.InputCursorAddr = 0x33fd8000; // Clearly wrong, no idea what this is
+  // workspace.vectors.zp.VduDriverWorkSpace.ws.CBWS Clear Block workspace
+  // workspace.vectors.zp.VduDriverWorkSpace.ws.CBStart = 0x1f50; // ??
+  // workspace.vectors.zp.VduDriverWorkSpace.ws.CBEnd = 0x0d500d00; // ??
+
+
+  workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayBankAddr = (uint32_t) &frame_buffer;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayNColour = 0xffffffff;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayModeFlags = 0x40;
+
+  extern mode_selector_block only_one_mode;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayModeNo = (uint32_t) &only_one_mode; // This is read at fc031e40 - ValidateModeSelector in SanitizeSGetMode, in PreCreateHeader, in CreateHeader (for sprite), in GetSprite, having fallen through from GetSpriteUserCoords, SWI SpriteReason_GetSpriteUserCoords+256 from clipboard_mode_changed_int in Wimp/s/Clipboard due to WindowManager init.
+  workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayXWindLimit = 1919;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayYWindLimit = 1079;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayXEigFactor = 1;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayYEigFactor = 1;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayLog2BPP = 5;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.PointerXEigFactor = 1;
+  *(uint64_t*) workspace.vectors.zp.VduDriverWorkSpace.ws.Ecf1 = 0xFFFEFDFCFFFEFDFCull;
+  *(uint64_t*) workspace.vectors.zp.VduDriverWorkSpace.ws.Ecf2 = 0x00102030010203ull;
+  *(uint64_t*) workspace.vectors.zp.VduDriverWorkSpace.ws.Ecf3 = 0x2021222320212223ull;
+  *(uint64_t*) workspace.vectors.zp.VduDriverWorkSpace.ws.Ecf4 = 0x0000000000ffffffull;
+  *(uint64_t*) &workspace.vectors.zp.VduDriverWorkSpace.ws.DotLineStyle = 0x9f9f9f9f9f9f9f9full;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ModeNo = (uint32_t) &only_one_mode;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GFTint = 0xc0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.TotalScreenSize = 0x00FD2000; // Twice what I say...?
+  workspace.vectors.zp.VduDriverWorkSpace.ws.MaxMode = 0x35;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenEndAddr = (uint32_t) &frame_buffer + 4 * 1920 * 1080;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags = 0x60007A41;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ECFShift = 0x20;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.ECFYOffset = 4;
+
+  // That's everything up to ffff1220, I think
+  // workspace.vectors.zp.VduDriverWorkSpace.ws.
+
+
+
+
 
   // This is the ECF pattern to be used, 8 pairs of eor/orr values
   for (int i = 0; i < 8; i++) {
@@ -2540,43 +2856,44 @@ WriteS( ", " ); WriteNum( workspace.vectors.zp.VduDriverWorkSpace.ws.ModeFlags )
 NewLine;
   workspace.vectors.zp.OsbyteVars.VDUqueueItems = 0; // Isn't this already zeroed?
 
-  // Serious problems trying to get FontManager to create its own cache DA, so let's try manually...
-  // Before the module creates its own.
-  // Makes little or no difference. Keep for the time being.
-  if (0) {
-    workspace.vectors.zp.Module_List = 1; // So handler thinks modules initialised
-    register uint32_t Rcode asm( "r0" ) = 0;
-    register uint32_t Rarea asm( "r1" ) = 4; // Font cache
-    register uint32_t Rsize asm( "r2" ) = 64*1024;
-    register uint32_t Raddr asm( "r3" ) = -1;
-    register uint32_t Rflags asm( "r4" ) = 0xa2;
-    register uint32_t Rmax asm( "r5" ) = 0x2000000;
-    register uint32_t Rhandler asm( "r6" ) = 0xfc01e454; // DynAreaHandler_FontArea;
-    register uint32_t Rworkspace asm( "r7" ) = 0xbaabab00;
-    register const char * Rname asm( "r8" ) = "Font Cache";
+#ifdef LIMITED_MODULES
+  init_module( "UtilityModule" );
+  init_module( "ColourTrans" );
 
-    asm ( "svc %[swi]" : : [swi] "i" (OS_DynamicArea)
-       , "r" (Rcode)
-       , "r" (Rarea)
-       , "r" (Rsize)
-       , "r" (Raddr)
-       , "r" (Rflags)
-       , "r" (Rmax)
-       , "r" (Rhandler)
-       , "r" (Rworkspace)
-       , "r" (Rname) );
+  init_module( "Draw" ); // needed by...
+  init_module( "SpriteExtend" ); // and...
+
+  // Order is important: FontManager and ResourceFS before ROMFonts
+  init_module( "FontManager" ); // needed by ROMFonts
+  init_module( "FileSwitch" ); // needed by...
+  init_module( "ResourceFS" ); // needed by...
+  init_module( "ROMFonts" );
+
+  init_module( "SuperSample" ); // needed for anti-aliasing fonts
+
+  init_module( "TerritoryManager" );
+  init_module( "Messages" );
+  init_module( "MessageTrans" );
+  init_module( "UK" );
+#else
+  init_modules();
+#endif
+
+  {
+    svc_registers regs = {};
+    regs.r[1] = 0x73; // Service_PostInit
+    do_OS_ServiceCall( &regs );
   }
 
-  init_modules();
+  {
+    svc_registers regs = {};
+    regs.r[1] = 0x46; // Service_ModeChange
+    regs.r[2] = (uint32_t) &only_one_mode;
+    regs.r[3] = 0;
+    do_OS_ServiceCall( &regs );
+  }
 
   NewLine; WriteS( "All modules initialised, starting USR mode code" ); NewLine;
-#if 0
-  // This has been changed during initialisation; maybe I've missed a reset command?
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = 0;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = 0;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol = 1920-1;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow = 1080-1;
-#endif
 
   // This will be replaced with code to load an application at 0x8000 and run it...
   uint32_t const initial_slot_size = 64 << 10;  // 64k
@@ -2610,7 +2927,7 @@ NewLine;
 */
 
 // The following routines are designed for user mode, so they don't have to save lr.
-static uint32_t open_file_to_read( const char *name )
+static inline uint32_t open_file_to_read( const char *name )
 {
   // OS_Find
   register uint32_t os_find_code asm( "r0" ) = 0x43 | (1 << 3);
@@ -2662,28 +2979,208 @@ WriteS( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
   return mem;
 }
 
+static void dump_zero_page()
+{
+  Write0( "\"Zero page\"" ); NewLine;
+  // Dump "zero page"
+  uint32_t *p = (void*)0xffff0000;
+  while (p < (uint32_t*) 0xffff4000) {
+    NewLine;
+    WriteS( "Address  :     3 2 1 0     7 6 5 4     B A 9 8     F E D C     3 2 1 0     7 6 5 4     B A 9 8     F E D C :            ASCII Data" );
+    NewLine;
+    for (int o = 0; o < 16; o++) { // 128 words, 8 to a line, 16 lines
+      WriteNum( (uint32_t) p );
+      Write0( " :" );
+      for (int w = 0; w < 32/4; w++) {
+        Write0( "    " );
+        WriteNum( p[w] );
+      }
+      Write0( " : " );
+      char *a = (void*) p;
+      for (int c = 0; c < 32; c++) {
+        char s[] = ".";
+        if (a[c] >= ' ') s[0] = a[c];
+        Write0( s );
+      }
+      NewLine;
+      p += 8; // words
+    }
+  }
+}
+
 static void user_mode_code( int core_number )
 {
-  OSCLI( "%FontInstall" );
+  Write0( "In USR32 mode" ); NewLine;
+  {
+  register const char *string asm ( "r0" ) = "Hello world";
+  register int len asm ( "r1" ) = 11;
+  asm ( "svc 0x46" : : "r" (string), "r" (len) );
+
+  }
+  //OSCLI( "%FontList" );
+  {
+    register uint32_t size asm( "r0" ) = 1 << 20;
+    register uint32_t fm1 asm ( "r1" ) = 16;
+    register uint32_t fm2 asm ( "r2" ) = 36;
+    register uint32_t fm3 asm ( "r3" ) = 36;
+    register uint32_t fm4 asm ( "r4" ) = 16;
+    register uint32_t fm5 asm ( "r5" ) = 12;
+    asm ( "svc %[swi]" : : [swi] "i" (0x4009b), "r" (size), "r" (fm1), "r" (fm2), "r" (fm3), "r" (fm4), "r" (fm5) );
+  }
+  //OSCLI( "%FontList" );
+  if (1) {
+    // This has started working for large fonts... (thanks to Service_ModeChange)
+    // Anti-aliasing needs SuperSample
+
+    // Grab a lock so only one core enters the Font SWI (protecting the cache, which is shared)
+    // Don't care what lock; all modules have been initialised.
+    asm ( "svc %[swi]" : : [swi] "i" (OS_EnterOS) );
+    claim_lock( &shared.kernel.mp_module_init_lock );
+    asm ( "svc %[swi]" : : [swi] "i" (OS_LeaveOS) );
+
+    uint32_t font = Font_FindFont( "Trinity.Medium", (1+core_number) * 0xc0, (1+core_number) * 0xc0, 90, 90 );
+    NewLine; Write0( "Font: " ); WriteNum( font );
+    NewLine; OSCLI( "%FontList" );
+
+      // SetColour( 0, 0x00997700 );
+      //SetGraphicsFgColour( 0x7280fa00 );
+      //SetGraphicsBgColour( 0x8070fa00 );
+    // ColourTrans_SetFontColours( font, 0xffffff00 << (4 * core_number), 0xff000000, 14 );
+    // White on black
+    ColourTrans_SetFontColours( font, 0x00000000, 0xffffff00, 14 );
+    Write0( "Printing AB" ); NewLine;
+    Font_Paint( font, "AB", 0, core_number*(960 << 8), 1 * 72000, 0 );
+    Write0( "Printing CD" ); NewLine;
+    Font_Paint( font, "CD", 0, 72000+core_number*(960 << 8), 1 * 72000, 0 );
+    Write0( "Printing EFGHI" ); NewLine;
+    Font_Paint( font, "EFGHI", 0, 72000*2+core_number*(960 << 8), 1 * 72000, 0 );
+    Write0( "All printed OK" ); NewLine;
+
+    //OSCLI( "%FontList" );
+
+    asm ( "svc %[swi]" : : [swi] "i" (OS_EnterOS) );
+    release_lock( &shared.kernel.mp_module_init_lock );
+    asm ( "svc %[swi]" : : [swi] "i" (OS_LeaveOS) );
+
+    for (;;) { asm ( "wfi" ); }
+  }
+
+/*
+  asm ( "svc %[swi]" : : [swi] "i" (OS_EnterOS) );
+  dump_zero_page();
+  asm ( "svc %[swi]" : : [swi] "i" (OS_LeaveOS) );
+*/
+
+  {
+    static uint32_t const test_sprite_area[] = {
+        0x44,
+        1,
+        0x10,
+        0x44,
+        0x34,
+        0x61,  // 'a'
+        0,
+        0,
+        0,    // width
+        0,    // height
+        0,    // left bit
+        0,    // right bit
+        0x2C,  // image offset
+        0x30,  // mask offset
+        0x80000001+(90<<1)+(90<<14)+(1<<27)
+    };
+    register uint32_t code asm( "r0" ) = 0x211; // Verify...
+    register uint32_t const *sprite_area asm( "r1" ) = test_sprite_area;
+    asm ( "svc 0x2002e" : : "r" (code), "r" (sprite_area) );
+  }
+
+// SpriteFile.h created by xxd -i RiscOS/SpriteFile,ff9 SpriteFile.h and editing to put the
+// length into four extra bytes at the beginning of the array to make a proper sprite area.
+//   unsigned char RiscOS_SpriteFile_ff9[] = {
+// 0x58, 0x01, 0x00, 0x00, // 344, added manually
+//   0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x5c, 0x01, 0x00, 0x00,
+// ...}
+// unsigned int RiscOS_SpriteFile_ff9_len = 344;
+// (344 = 0x158).
+
+static const
+#include "SpriteFile.h"
+  {
+  Write0( "Plot sprite small" ); NewLine;
+  register uint32_t code asm ( "r0" ) = 256 + 34; // Plot named sprite at user coordinates
+  register const unsigned char *cb asm ( "r1" ) = RiscOS_SpriteFile_ff9;
+  register const char *sp asm ( "r2" ) = "newsprite";
+  register int32_t x asm ( "r3" ) = 100;
+  register int32_t y asm ( "r4" ) = 100;
+  register uint32_t plot asm ( "r5" ) = 0;
+  asm ( "svc 0x2e" : : "r" (code), "r" (cb), "r" (sp), "r" (x), "r" (y), "r" (plot) : "lr" );
+  }
+  if (1) {
+  Write0( "Plot sprite large" ); NewLine;
+  // 8x bigger, at (64, 64)
+  int32_t transformation[6] = { 0x100000, 0, 0, 0x100000, 0x4000 + core_number * 0x15000, 0x4000 };
+  register uint32_t code asm ( "r0" ) = 256 + 56; // Put named sprite transformed
+  register const char *cb asm ( "r1" ) = RiscOS_SpriteFile_ff9;
+  register const char *sp asm ( "r2" ) = "newsprite";
+  register int32_t flags asm ( "r3" ) = 0;
+  register uint32_t plot asm ( "r5" ) = 0;
+  register int32_t *matrix asm ( "r6" ) = transformation;
+  register uint32_t translate asm ( "r7" ) = 0;
+  asm ( "svc 0x2e" : : "r" (code), "r" (cb), "r" (sp), "r" (flags), "r" (matrix), "r" (plot), "r" (translate) : "lr" );
+  }
+
+  if (0) {
+// Generated using xxd -i DrawFile,aff DrawFile.h
+static // ...
+#include "DrawFile.h"
+
+  register uint32_t flags asm( "r0" ) = 1;
+  register void *file asm( "r1" ) = DrawFile;
+  register uint32_t size asm( "r2" ) = DrawFile_len;
+  register uint32_t *matrix asm( "r3" ) = 0;
+  register uint32_t clip asm( "r4" ) = 0;
+  register uint32_t flatness asm( "r5" ) = 0;
+  asm ( "svc 0x45540" :
+    : "r" (flags)
+    , "r" (file)
+    , "r" (size)
+    , "r" (matrix)
+    , "r" (clip)
+    , "r" (flatness)
+    : "lr" );
+  }
+
   // The size and DPI values really do affect the size of the displayed characters
-  uint32_t font = Font_FindFont( "Trinity.Medium", 0xc0, 0xc0, 90, 90 );
+  //uint32_t font = Font_FindFont( "Trinity.Medium", 0xc0, 0xc0, 90, 90 );
+  uint32_t font = Font_FindFont( "Trinity.Medium", 0x300, 0x300, 90, 90 );
 
 WriteS( "Setting font colours..." ); NewLine;
   // This is necessary before the first Paint
-  ColourTrans_SetFontColours( font, 0xff800000, 0x00000000, 14 );
+  ColourTrans_SetFontColours( font, 0xff000000, 0xffffff00, 14 );
 WriteS( "Set font colours." ); NewLine;
 
-#if 1
+  // OSCLI( "modules" );
+/*
+  OSCLI( "type Resources:$.Apps.!Alarm.!Help" );
+  OSCLI( "set Some$Path Resources:$.Apps.!Alarm" );
+  OSCLI( "set FileSwitch$Resources$CSD $" ); // This should obviously be initialised somewhere else!
+  OSCLI( "show" );
+  OSCLI( "type Some:!Help" );
+*/
+  if (core_number == 0) {
+    SetColour( 0, 0x00997700 );
+    SetGraphicsFgColour( 0x7280fa00 );
+    SetGraphicsBgColour( 0x8070fa00 );
+    //Plot( 4, 200, 200 );
+    Font_Paint( font, "Running Desktop", 0, core_number * 4*72000, 4 * 72000, 0 );
+    Font_Paint( font, "abcdefghijklmnopqrstuvwxyz", 0, 4*72000, 5 * 72000, 0 );
+    //OSCLI( "Desktop" );
+    Font_Paint( font, "Desktop returned", 0, core_number * 4*72000, 2 * 72000, 0 );
+  }
+  else {
+    Font_Paint( font, "Other core", 0, core_number * 40*72000, 72000, 0 );
+  }
 
-  Font_Paint( font, "Ax", 0, 2*72000, 72000, 0 );
-
-  OSCLI( "Desktop" ); // Needs more SVC stack? Recursion!
-
-  for (;;) {}
-  __builtin_unreachable();
-}
-
-#else
 static uint32_t path1[] = {
  0x00000002, 0x00000400, 0xffff7400,
  0x00000008, 0x00006900, 0xffff9e00,
@@ -3023,12 +3520,14 @@ static uint32_t path3[] = {
   int step = 2;
 
 OSCLI( "Echo Hello" );
-// OSCLI( "Eval 1 + 1" ); Fails with data abort attempting to read from 0 
+OSCLI( "Eval 1 + 1" ); // Uses memory at 0x5000-0x6fff, and causes error "Expression stack overflow", returning the original "1 + 1"
+OSCLI( "Eval 1" );
 // OSCLI( "ROMModules" ); Fails with lots of Buffer overflows.
 
 
     SetGraphicsFgColour( 0x7280fa00 );
 
+if (0) {
 WriteS( "Displaying triangle?" );
 //static const char triangle[] = { 42, 25, 4, 100, 0, 100, 0, 25, 4, 0, 0, 0xe8, 3, 25, 85, 100, 0, 0xe8, 3, 42 };
 static const char triangle[] = { 42, 25, 4, 0, 0, 0, 0, 25, 4, 0xe8, 0, 0xe8, 0, 25, 85, 0, 0, 0xe8, 0, 42 };
@@ -3037,6 +3536,7 @@ for (int i = 0; i < number_of( triangle ); i++) {
   asm ( "svc 0" : : "r" (c) );
 }
 NewLine;
+}
 
   for (int loop = 0;; loop++) {
 
@@ -3072,4 +3572,3 @@ NewLine;
   }
   __builtin_unreachable();
 }
-#endif

@@ -188,7 +188,7 @@ static bool ReadLegacyModeVariable( uint32_t selector, uint32_t var, uint32_t *v
   if (selector >= number_of( legacy_mode_vars ))
     return false;
 
-  uint32_t *modevars = legacy_mode_vars[selector];
+  uint32_t const *modevars = legacy_mode_vars[selector];
 
   // Not all filled in yet
   if (modevars[1] == 0) {
@@ -273,8 +273,8 @@ static bool ReadSpriteModeVariable( uint32_t selector, uint32_t var, uint32_t *v
   union {
     struct __attribute__(( packed )) {
       uint32_t one:1;
-      uint32_t xdpi:12;
-      uint32_t ydpi:12;
+      uint32_t xdpi:13;
+      uint32_t ydpi:13;
       uint32_t type:4;
       uint32_t alphamask:1;
     };
@@ -312,13 +312,16 @@ static bool ReadModeSelectorBlockVariable( uint32_t selector, uint32_t var, uint
 {
   const mode_selector_block *mode = (void*) selector;
 
+#ifdef DEBUG__SHOW_VDU_VARS
+Write0( __func__ ); Write0( " " ); WriteNum( selector ); Write0( " " ); WriteNum( var ); NewLine;
+#endif
   bool result = true;
 
   switch (var) {
   case 0: *val = mode->mode_selector_flags; break;
   case 1: *val = mode->xres/8; break; // I think this is characters, not pixels
   case 2: *val = mode->yres/8; break;
-  case 3: *val = (1 << mode->log2bpp) - 1; break;
+  case 3: *val = (1 << (1 << mode->log2bpp)) - 1; break;
   case 9: *val = mode->log2bpp; break;
   case 10: *val = mode->log2bpp; break; // No "double-pixel" mode->
   case 11: *val = mode->xres; break;

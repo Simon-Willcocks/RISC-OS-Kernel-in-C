@@ -465,14 +465,14 @@ static void add_to_display( char c, struct core_workspace *workspace )
   }
 }
 
-static void add_string( const char *s, struct core_workspace *workspace )
+static inline void add_string( const char *s, struct core_workspace *workspace )
 {
   while (*s != 0) {
     add_to_display( *s++, workspace );
   }
 }
 
-static void add_num( uint32_t number, struct core_workspace *workspace )
+static inline void add_num( uint32_t number, struct core_workspace *workspace )
 {
   for (int nibble = 7; nibble >= 0; nibble--) {
     char c = '0' + ((number >> (nibble*4)) & 0xf);
@@ -518,8 +518,8 @@ void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace 
       case 13: add_to_display( c, workspace ); break;       // Carriage return
       default:
         {
-          register code asm( "r0" ) = workspace->queue[0];
-          register params asm( "r1" ) = &workspace->queue[1];
+          register uint32_t code asm( "r0" ) = workspace->queue[0];
+          register void *params asm( "r1" ) = &workspace->queue[1];
           // FIXME handle errors
           // OS_VduCommand
           asm ( "svc 0x200fb" : : "r" (code), "r" (params) : "lr", "cc" );
@@ -544,6 +544,26 @@ static void __attribute__(( naked )) WrchV_handler( char c )
   asm ( "push { r0, r1, r2, r3, r12 }" );
   register struct core_workspace *workspace asm( "r12" );
   C_WrchV_handler( c, workspace );
+  // Intercepting call (pops pc from the stack)
+  asm ( "bvc 0f\n  bkpt #2\n0:" );
+  asm ( "pop { r0, r1, r2, r3, r12, pc }" );
+}
+
+static void __attribute__(( noinline )) C_MouseV_handler( uint32_t *regs, struct workspace *workspace )
+{
+  // FIXME
+  regs[0] = 100;        // x
+  regs[1] = 100;        // y
+  regs[2] = 0;          // Buttons
+  regs[3] = 0;          // Time
+}
+
+static void __attribute__(( naked )) MouseV_handler( char c )
+{
+  uint32_t *regs;
+  asm ( "push { r0, r1, r2, r3, r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+  register struct workspace *workspace asm( "r12" );
+  C_MouseV_handler( regs, workspace );
   // Intercepting call (pops pc from the stack)
   asm ( "bvc 0f\n  bkpt #2\n0:" );
   asm ( "pop { r0, r1, r2, r3, r12, pc }" );
@@ -899,33 +919,29 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   }
 
   {
+    void *handler = MouseV_handler;
+    register uint32_t vector asm( "r0" ) = 3;
+    register void *routine asm( "r1" ) = handler;
+    register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
+    asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
+
+    WriteS( "HAL obtained MouseV\\n\\r" );
+  }
+
+  {
     void *handler = WrchV_handler;
     register uint32_t vector asm( "r0" ) = 3;
     register void *routine asm( "r1" ) = handler;
     register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
     asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
+
+    WriteS( "HAL obtained WrchV\\n\\r" );
   }
 
-  WriteS( "HAL obtained WrchV\\n\\r" );
-
-  if (0 && first_entry) {
+  if (first_entry) {
     register void *callback asm( "r0" ) = start_display;
     register struct workspace *ws asm( "r1" ) = workspace;
     asm( "svc 0x20054" : : "r" (callback), "r" (ws) );
-  }
-
-  if (0) {
-    static uint32_t const test[] = { 4, 4, 4, 0 };
-    register uint32_t const *r4 asm( "r4" ) = &test;
-    uint32_t out;
-    asm volatile ( "   mov lr, #0"
-                 "\n0: ldr lr, [r4, lr]!"
-                 "\n   teq lr, #0"
-                 "\n   bne 0b"
-                 "\n   mov %[out], r4"
-                 : [out] "=r" (out) : "r" (r4) : "lr" );
-    WriteNum( out );
-    for (;;) { asm ( "wfi" ); }
   }
 }
 

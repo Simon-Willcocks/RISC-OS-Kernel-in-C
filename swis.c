@@ -15,6 +15,12 @@
 
 #include "inkernel.h"
 
+
+// This is the only mode supported at the moment. Search for it to find
+// places to modify to cope with more. It's also referenced in modules.c,
+// at the moment.
+mode_selector_block const only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 5, .frame_rate = 60, { { -1, 0 } } };
+
 bool Kernel_Error_UnknownSWI( svc_registers *regs )
 {
   static error_block error = { 0x1e6, "Unknown SWI" }; // Could be "SWI name not known", or "SWI &3333 not known"
@@ -27,6 +33,7 @@ bool Kernel_Error_UnimplementedSWI( svc_registers *regs )
   static error_block error = { 0x999, "Unimplemented SWI" };
   regs->r[0] = (uint32_t) &error;
 
+  Write0( "Unimplemented SWI" ); NewLine;
   asm ( "bkpt 77" );
   return false;
 }
@@ -184,11 +191,35 @@ static bool do_OS_Exit( svc_registers *regs )
 }
 
 static bool do_OS_SetEnv( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_IntOn( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_IntOn( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+  regs->spsr = (regs->spsr & ~0x80);
+  return true;
+}
 
-static bool do_OS_IntOff( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_IntOff( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+  regs->spsr = (regs->spsr & ~0x80) | 0x80;
+  return true;
+}
+
 static bool do_OS_CallBack( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_EnterOS( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_EnterOS( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+  regs->spsr = (regs->spsr & ~15) | 3;
+  return true;
+}
+
+static bool do_OS_LeaveOS( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+  regs->spsr = (regs->spsr & ~15);
+  return true;
+}
+
 static bool do_OS_BreakPt( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_BreakCtrl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
@@ -412,7 +443,7 @@ FC000000 64M        ROM
 
 #endif
 
-static bool do_OS_BinaryToDecimal( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_BinaryToDecimal( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ReadEscapeState( svc_registers *regs )
 {
@@ -421,8 +452,8 @@ static bool do_OS_ReadEscapeState( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_EvaluateExpression( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ReadPalette( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_EvaluateExpression( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_ReadPalette( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_SWINumberToString( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SWINumberFromString( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
@@ -611,7 +642,14 @@ static bool do_OS_InstallKeyHandler( svc_registers *regs ) { return Kernel_Error
 
 static bool do_OS_CheckModeValid( svc_registers *regs )
 {
-  regs->spsr &= ~CF; // All are valid, mostly because I only support one, yet!
+  if (regs->r[0] != (uint32_t) &only_one_mode) {
+    regs->spsr |= CF;
+    regs->r[0] = -1;
+    regs->r[1] = (uint32_t) &only_one_mode;
+  }
+  else {
+    regs->spsr &= ~CF;
+  }
   return true;
 }
 
@@ -620,8 +658,13 @@ static bool do_OS_ClaimScreenMemory( svc_registers *regs ) { return Kernel_Error
 
 static bool do_OS_ReadMonotonicTime( svc_registers *regs )
 {
-  regs->r[0] = workspace.kernel.monotonic_time;
-  workspace.kernel.monotonic_time++; // FIXME! ASAP!
+  uint32_t lo;
+  uint32_t hi;
+  uint64_t time;
+  asm ( "mrrc p15, 0, %[lo], %[hi], c14" : [lo] "=r" (lo), [hi] "=r" (hi) );
+  time = (((uint64_t) hi) << 32) | lo;
+  regs->r[0] = time >> 16; // FIXME completely made up, just to make sure qemu supports it!
+  // Optimiser wants a function for uint64_t / uint32_t : __aeabi_uldivmod
   return true;
 }
 
@@ -674,61 +717,6 @@ static bool do_OS_ReadRAMFsLimits( svc_registers *regs )
 static bool do_OS_ClaimDeviceVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ReleaseDeviceVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-
-/* Untested
-static bool comparison_routine_says_less( uint32_t v1, uint32_t v2, uint32_t workspace, uint32_t routine )
-{
-  register uint32_t r0 asm( "r0" ) = v1;
-  register uint32_t r1 asm( "r1" ) = v2;
-  register uint32_t r12 asm( "r12" ) = workspace;
-  asm goto ( "blx %[routine]"
-         "\n  blt %l[less]"
-         : : "r" (r0), "r" (r1), "r" (r12), [routine] "r" (routine)
-         : "r2", "r3"
-         : less );
-
-  return false;
-less:
-  return true;
-}
-*/
-
-static bool do_OS_HeapSort( svc_registers *regs )
-{
-  // Not the proper implementation FIXME
-  int elements = regs->r[0];
-  //uint32_t *array = (void*) (regs->r[1] & ~0xe0000000);
-  uint32_t flags = regs->r[1] >> 29;
-  switch (regs->r[2]) {
-  case 3: // Pointers to integers (DrawMod)
-    {
-    if (flags != 0)
-      return Kernel_Error_UnimplementedSWI( regs );
-    int **array = (void*) (regs->r[1] & ~0xe0000000);
-    for (int i = 0; i < elements-1; i++) {
-      int lowest = *array[i];
-      int **p = 0;
-      for (int j = i+1; j < elements; j++) {
-        if (*array[j] < lowest) {
-          lowest = *array[j];
-          p = &array[j];
-        }
-      }
-
-      if (p != 0) {
-        // Swap pointers
-        int32_t *l = *p;
-        *p = array[i];
-        array[i] = l;
-      }
-    }
-    }
-    break;
-  default: return Kernel_Error_UnimplementedSWI( regs );
-  }
-
-  return true;
-}
 
 static bool do_OS_ExitAndDie( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadMemMapInfo( svc_registers *regs )
@@ -784,9 +772,6 @@ static bool do_OS_ReadDefaultHandler( svc_registers *regs )
   regs->r[3] = 0; // Only relevant for Error, CallBack, BreakPoint. These will probably have to be associated with Task Slots...?
   return true;
 }
-
-static bool do_OS_SetECFOrigin( svc_registers *regs ) { return true; } // FIXME
-
 
 // OS_ReadSysInfo 6 values
 // Not all of these will be needed or supported.
@@ -869,61 +854,63 @@ OSRSI6_PhysRamtableFormat                      = 89  // 0 = addresses are in byt
 
 // Testing. Is this read-only?
 // I don't think so, we need to update MetroGnome, don't we? Still, this will do as the initial values.
+// I just spent ages combing through code until I worked out that this was where the strange address came
+// from. Make it more obvious.
 static const uint32_t SysInfo[] = {
-  [OSRSI6_CamEntriesPointer]                       = 0,
-  [OSRSI6_MaxCamEntry]                             = 1,
-  [OSRSI6_PageFlags_Unavailable]                   = 2,
-  [OSRSI6_PhysRamTable]                            = 3,
-  [OSRSI6_ARMA_Cleaner_flipflop]                   = 4, // Unused in HAL kernels
-  [OSRSI6_TickNodeChain]                           = 5,
-  [OSRSI6_ROMModuleChain]                          = 6,
-  [OSRSI6_DAList]                                  = 7,
-  [OSRSI6_AppSpaceDANode]                          = 8,
-  [OSRSI6_Module_List]                             = 9,
-  [OSRSI6_ModuleSHT_Entries]                       = 10,
-  [OSRSI6_ModuleSWI_HashTab]                       = 11,
-  [OSRSI6_IOSystemType]                            = 12,
-  [OSRSI6_L1PT]                                    = 13,
-  [OSRSI6_L2PT]                                    = 14,
+  [OSRSI6_CamEntriesPointer]                       = 0xbaad0000 | 0,
+  [OSRSI6_MaxCamEntry]                             = 0xbaad0000 | 1,
+  [OSRSI6_PageFlags_Unavailable]                   = 0xbaad0000 | 2,
+  [OSRSI6_PhysRamTable]                            = 0xbaad0000 | 3,
+  [OSRSI6_ARMA_Cleaner_flipflop]                   = 0xbaad0000 | 4, // Unused in HAL kernels
+  [OSRSI6_TickNodeChain]                           = 0xbaad0000 | 5,
+  [OSRSI6_ROMModuleChain]                          = 0xbaad0000 | 6,
+  [OSRSI6_DAList]                                  = 0xbaad0000 | 7,
+  [OSRSI6_AppSpaceDANode]                          = 0xbaad0000 | 8,
+  [OSRSI6_Module_List]                             = 0xbaad0000 | 9,
+  [OSRSI6_ModuleSHT_Entries]                       = 0xbaad0000 | 10,
+  [OSRSI6_ModuleSWI_HashTab]                       = 0xbaad0000 | 11,
+  [OSRSI6_IOSystemType]                            = 0xbaad0000 | 12,
+  [OSRSI6_L1PT]                                    = 0xbaad0000 | 13,
+  [OSRSI6_L2PT]                                    = 0xbaad0000 | 14,
   [OSRSI6_UNDSTK]                                  = 
         sizeof( workspace.kernel.undef_stack ) + (uint32_t) &workspace.kernel.undef_stack,
-  [OSRSI6_SVCSTK]                                  = 0x73273273, // A trap! Why does FileSwitch need to know this?
+  [OSRSI6_SVCSTK]                                  = 0xbaad0000 | 0x73273273, // A trap! Why does FileSwitch need to know this?
         //sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack,
-  [OSRSI6_SysHeapStart]                            = 17,
+  [OSRSI6_SysHeapStart]                            = 0xbaad0000 | 17,
 
 // Safe versions of the danger allocations
 // Only supported by OS 5.17+, so if backwards compatability is required code
 // should (safely!) fall back on the danger versions
 
-  [OSRSI6_SWIDispatchTable]                        = 64, // JTABLE-SWIRelocation (Relocated base of OS SWI dispatch table)
-  [OSRSI6_Devices]                                 = 65, // Relocated base of IRQ device head nodes
-  [OSRSI6_DevicesEnd]                              = 66, // Relocated end of IRQ device head nodes
-  [OSRSI6_IRQSTK]                                  = 67,
-  [OSRSI6_SoundWorkSpace]                          = 68, // workspace (8K) and buffers (2*4K)
+  [OSRSI6_SWIDispatchTable]                        = 0xbaad0000 | 64, // JTABLE-SWIRelocation (Relocated base of OS SWI dispatch table)
+  [OSRSI6_Devices]                                 = 0xbaad0000 | 65, // Relocated base of IRQ device head nodes
+  [OSRSI6_DevicesEnd]                              = 0xbaad0000 | 66, // Relocated end of IRQ device head nodes
+  [OSRSI6_IRQSTK]                                  = 0xbaad0000 | 67,
+  [OSRSI6_SoundWorkSpace]                          = 0xbaad0000 | 68, // workspace (8K) and buffers (2*4K)
   [OSRSI6_IRQsema]                                 = (uint32_t) &workspace.vectors.zp.IRQsema,
 
 // New ROOL allocations
 
   [OSRSI6_DomainId]                                = (uint32_t) &workspace.vectors.zp.DomainId, // current Wimp task handle
-  [OSRSI6_OSByteVars]                              = 71, // OS_Byte vars (previously available via OS_Byte &A6/VarStart)
-  [OSRSI6_FgEcfOraEor]                             = 72,
-  [OSRSI6_BgEcfOraEor]                             = 73,
-  [OSRSI6_DebuggerSpace]                           = 74,
-  [OSRSI6_DebuggerSpace_Size]                      = 75,
-  [OSRSI6_CannotReset]                             = 76,
-  [OSRSI6_MetroGnome]                              = 77, // OS_ReadMonotonicTime
+  [OSRSI6_OSByteVars]                              = 0xbaad0000 | 71, // OS_Byte vars (previously available via OS_Byte &A6/VarStart)
+  [OSRSI6_FgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor, // Used by SpriteExtend
+  [OSRSI6_BgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.BgEcfOraEor, // Used by SpriteExtend
+  [OSRSI6_DebuggerSpace]                           = 0xbaad0000 | 74,
+  [OSRSI6_DebuggerSpace_Size]                      = 0xbaad0000 | 75,
+  [OSRSI6_CannotReset]                             = 0xbaad0000 | 76,
+  [OSRSI6_MetroGnome]                              = 0xbaad0000 | 77, // OS_ReadMonotonicTime
   [OSRSI6_CLibCounter]                             = (uint32_t) &workspace.vectors.zp.CLibCounter,
   [OSRSI6_RISCOSLibWord]                           = (uint32_t) &workspace.vectors.zp.RISCOSLibWord,
   [OSRSI6_CLibWord]                                = (uint32_t) &workspace.vectors.zp.CLibWord,
-  [OSRSI6_FPEAnchor]                               = 81,
-  [OSRSI6_ESC_Status]                              = 82,
-  [OSRSI6_ECFYOffset]                              = 83,
-  [OSRSI6_ECFShift]                                = 84,
-  [OSRSI6_VecPtrTab]                               = 85,
-  [OSRSI6_NVECTORS]                                = 86,
-  [OSRSI6_CAMFormat]                               = 87, // 0 = 8 bytes per entry, 1 = 16 bytes per entry
-  [OSRSI6_ABTSTK]                                  = 88,
-  [OSRSI6_PhysRamtableFormat]                      = 89  // 0 = addresses are in byte units, 1 = addresses are in 4KB units
+  [OSRSI6_FPEAnchor]                               = 0xbaad0000 | 81,
+  [OSRSI6_ESC_Status]                              = 0xbaad0000 | 82,
+  [OSRSI6_ECFYOffset]                              = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.ECFYOffset, // Used by SpriteExtend
+  [OSRSI6_ECFShift]                                = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.ECFShift, // Used by SpriteExtend
+  [OSRSI6_VecPtrTab]                               = 0xbaad0000 | 85,
+  [OSRSI6_NVECTORS]                                = 0xbaad0000 | 86,
+  [OSRSI6_CAMFormat]                               = 0xbaad0000 | 87, // 0 = 8 bytes per entry, 1 = 16 bytes per entry
+  [OSRSI6_ABTSTK]                                  = 0xbaad0000 | 88,
+  [OSRSI6_PhysRamtableFormat]                      = 0xbaad0000 | 89  // 0 = addresses are in byte units, 1 = addresses are in 4KB units
 };
 
 bool read_kernel_value( svc_registers *regs )
@@ -933,6 +920,10 @@ bool read_kernel_value( svc_registers *regs )
   if (regs->r[1] == 0) {
     // Single value, number in r2, result to r2
     regs->r[2] = SysInfo[regs->r[2]];
+
+    // Fail early, fail hard! (Then make a note of what uses it and fix it here or there.)
+    if ((regs->r[2] & 0xffff0000) == 0xbaad0000) asm ( "bkpt 1" );
+
     return true;
   }
 
@@ -942,15 +933,16 @@ bool read_kernel_value( svc_registers *regs )
 
 static bool do_OS_ReadSysInfo( svc_registers *regs )
 {
-  static error_block error = { 0x333, "ReadSysInfo unknown code" };
-
-  // Probably just ChkKernelVersion (code 1)
+  static error_block error = { 0x1ec, "Unknown OS_ReadSysInfo call" };
 
   switch (regs->r[0]) {
+  case 0:
+    {
+      regs->r[0] = 8 << 20; // FIXME
+      return true;
+    }
   case 1:
     {
-      static const mode_selector_block only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 5, .frame_rate = 60, { { -1, 0 } } };
-
       regs->r[0] = (uint32_t) &only_one_mode;
       regs->r[1] = 7;
       regs->r[2] = 0;
@@ -966,7 +958,7 @@ static bool do_OS_ReadSysInfo( svc_registers *regs )
     }
     break;
 
-  default: { WriteS( "OS_ReadSysInfo: " ); WriteNum( regs->r[0] ); NewLine; return Kernel_Error_UnknownSWI( regs ); }
+  default: { Write0( "OS_ReadSysInfo: " ); WriteNum( regs->r[0] ); NewLine; }
   }
 
   regs->r[0] = (uint32_t) &error;
@@ -1010,38 +1002,133 @@ typedef union {
   uint32_t raw;
 } OS_SetColour_Flags;
 
+static void SetColours( uint32_t bpp, uint32_t fore, uint32_t back )
+{
+  switch (bpp) {
+  }
+}
+
 static bool do_OS_SetColour( svc_registers *regs )
 {
   OS_SetColour_Flags flags = { .raw = regs->r[0] };
 
-  if (flags.action != 0 || flags.ECF_pattern) {
-    asm ( "bkpt 1" );
-    return Kernel_Error_UnimplementedSWI( regs );
+  if (flags.read_colour) {
+    if (flags.text_colour) {
+      if (flags.background)
+        regs->r[1] = workspace.vectors.zp.VduDriverWorkSpace.ws.TextBgColour;
+      else
+        regs->r[1] = workspace.vectors.zp.VduDriverWorkSpace.ws.TextFgColour;
+    }
+    else {
+      uint32_t *pattern_data = (void*) regs->r[1];
+      uint32_t *to_read;
+
+      if (flags.background)
+        to_read = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgPattern[0];
+      else
+        to_read = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgPattern[0];
+
+      for (int i = 0; i < 8; i++) {
+        pattern_data[i] = to_read[i];
+      }
+    }
+
+    return true;
   }
-WriteS( "Setting colour to " ); WriteNum( regs->r[1] ); NewLine;
+
+  if (flags.text_colour) {
+    if (flags.background)
+      workspace.vectors.zp.VduDriverWorkSpace.ws.TextBgColour = regs->r[1];
+    else
+      workspace.vectors.zp.VduDriverWorkSpace.ws.TextFgColour = regs->r[1];
+
+    return true;
+  }
+
   extern uint32_t *vduvarloc[];
 
   EcfOraEor *ecf;
+  uint32_t *pattern;
+
   if (flags.background) {
-    *vduvarloc[154 - 128] = regs->r[1];
+    workspace.vectors.zp.VduDriverWorkSpace.ws.GPLBMD = flags.action | 0x60;
+    pattern = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgPattern[0];
     ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgEcfOraEor;
+    *vduvarloc[154 - 128] = regs->r[1];
   }
   else {
-    *vduvarloc[153 - 128] = regs->r[1];
+    workspace.vectors.zp.VduDriverWorkSpace.ws.GPLFMD = flags.action | 0x60;
+    pattern = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgPattern[0];
     ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor;
+    *vduvarloc[153 - 128] = regs->r[1];
   }
-  for (int i = 0; i < number_of( ecf->line ); i++) {
-    // orr + eor allows you to set bits from the original pixel, or clear ones that you've set by the orr.
-    // orr => ignore these bits in the original pixel
-    // eor => invert these bits, afterwards.
-    ecf->line[i].orr = 0xffffffff;
-    ecf->line[i].eor = ~regs->r[1];
+
+  if (flags.ECF_pattern) {
+    uint32_t *new_pattern = (void*) regs->r[1];
+    for (int i = 0; i < 8; i++) {
+      pattern[i] = new_pattern[i];
+    }
   }
+  else {
+    uint32_t colour = regs->r[1];
+    uint32_t log2bpp = workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPP;
+    uint32_t bits = 1 << log2bpp;
+    uint32_t mask = (1 << bits) - 1;
+    colour = colour & mask;
+    while (bits != 32) {
+      colour = colour | (colour << bits);
+      mask = mask | (mask << bits);
+      bits = bits * 2;
+    }
+    for (int i = 0; i < 8; i++) {
+      pattern[i] = colour;
+    }
+  }
+
+/* This is not done yet, but it's not what's stopping the Wimp_Initialise call from returning
+  SetColour();
+    for (int i = 0; i < number_of( ecf->line ); i++) {
+      // orr + eor allows you to set bits from the original pixel, or clear ones that you've set by the orr.
+      // orr => ignore these bits in the original pixel
+      // eor => invert these bits, afterwards.
+      ecf->line[i].orr = 0xffffffff;
+      ecf->line[i].eor = ~regs->r[1];
+    }
+  }
+*/
   return true;
 }
 
 static bool do_OS_Pointer( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-//static bool do_OS_ScreenMode( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ScreenMode( svc_registers *regs )
+{
+  Write0( __func__ ); WriteNum( regs->r[0] ); NewLine;
+
+  enum { SelectMode, CurrentModeSpecifier, EnumerateModes, SetMonitorType, ConfigureAcceleration, FlushScreenCache, ForceFlushCache }; // ...
+
+  switch (regs->r[0]) {
+  case SelectMode: 
+    if (regs->r[1] == (uint32_t) &only_one_mode) {
+      return true;
+    }
+    else {
+      return Kernel_Error_UnimplementedSWI( regs );
+    }
+  case CurrentModeSpecifier: 
+    regs->r[1] = (uint32_t) &only_one_mode;
+    return true;
+  case EnumerateModes: 
+    if (regs->r[6] == 0) {
+      regs->r[7] = -(4 + sizeof( only_one_mode ));
+      return true;
+    }
+    else {
+      return Kernel_Error_UnimplementedSWI( regs );
+    }
+  case FlushScreenCache: return true;
+  default: return Kernel_Error_UnimplementedSWI( regs );
+  }
+}
 
 static bool do_OS_ClaimProcessorVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_Reset( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
@@ -1077,14 +1164,19 @@ static bool do_OS_VIDCDivider( svc_registers *regs ) { return Kernel_Error_Unimp
 static bool do_OS_NVMemory( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_Hardware( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_IICOp( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_LeaveOS( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadLine32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SubstituteArgs32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_HeapSort32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+// static bool do_OS_HeapSort32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_SynchroniseCodeAreas( svc_registers *regs )
 {
-  WriteS( "OS_SynchroniseCodeAreas FIXME" );
+  WriteS( "OS_SynchroniseCodeAreas" );
+
+  // FIXME: too much?
+  clean_cache_to_PoC();
+  clean_cache_to_PoU();
+  asm volatile ( "isb sy" );
+
   return true;
 }
 
@@ -1130,7 +1222,7 @@ static bool hex_convert( svc_registers *regs, int digits )
 
   regs->r[0] = regs->r[1];
 
-  for (int i = digits; i > 0; i--) {
+  for (int i = digits-1; i >= 0; i--) {
     if (!write_converted_character( regs, hex[(n >> (4*i))&0xf] )) return false;
   }
 
@@ -1264,7 +1356,18 @@ static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { return Kernel_Er
 
 static bool CLG( svc_registers *regs )
 {
-  Write0( __func__ );
+  // Move bottom left
+  register uint32_t code asm( "r0" ) = 4;
+  register uint32_t x asm( "r1" ) = 0;
+  register uint32_t y asm( "r2" ) = 0;
+  asm ( "svc 0x45" : : "r" (code), "r" (x), "r" (y) : "lr" );
+
+  // Fill rectangle top right. FIXME don't just try to draw over a random-sized screen!
+  code = 96 + 7;
+  x = 1920 * 4;
+  y = 1080 * 4; 
+  asm ( "svc 0x45" : : "r" (code), "r" (x), "r" (y) : "lr" );
+
   return true;
 }
 
@@ -1311,11 +1414,10 @@ static bool DefineGraphicsWindow( svc_registers *regs )
 {
   uint8_t *params = (void*) regs->r[1];
 
-  uint8_t type = params[0];
-  int32_t l = int16_at( &params[2] );
-  int32_t b = int16_at( &params[4] );
-  int32_t r = int16_at( &params[6] );
-  int32_t t = int16_at( &params[8] );
+  int32_t l = int16_at( &params[0] );
+  int32_t b = int16_at( &params[2] );
+  int32_t r = int16_at( &params[4] );
+  int32_t t = int16_at( &params[6] );
 
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = l;
   workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = b;
@@ -1346,7 +1448,11 @@ static bool Plot( svc_registers *regs )
 
 static bool RestoreDefaultWindows( svc_registers *regs )
 {
-  Write0( __func__ );
+  Write0( __func__ ); NewLine;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = 0;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol = 1920;
+  workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow = 1080;
   return true;
 }
 
@@ -1358,8 +1464,10 @@ static bool do_OS_VduCommand( svc_registers *regs )
 
   switch (regs->r[0]) {
   case 0: asm ( "bkpt 1" ); break; // do nothing, surely shouldn't be called
-  case 4: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= ~(1 << 5); return true;
-  case 5: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= (1 << 5); return true;
+  case 2: asm ( "bkpt 1" ); break; // "enable printer"
+  case 3: break; // do nothing, "disable printer"
+  case 4: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= ~(1 << 30); return true;
+  case 5: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= (1 << 30); return true;
   case 16: return CLG( regs );
   case 17: return SetTextColour( regs );
   case 19: return SetPalette( regs );
@@ -1759,12 +1867,15 @@ bool do_OS_PipeOp( svc_registers *regs )
 
 bool do_OS_Heap( svc_registers *regs )
 {
-  // Note: This could possibly be improved by having a lock per heap, one bit in the header, say.
-  // I would hope this is never called from an interrupt handler, but if so, we should probably return an error,
-  // if shared.memory.os_heap_lock is non-zero. Masking interrupts is no longer a guarantee of atomicity.
+  // Note: This could possibly be improved by having a lock per heap,
+  // one bit in the header, say.
+  // I would hope this is never called from an interrupt handler, but 
+  // if so, we should probably return an error, if shared.memory.os_heap_lock 
+  // is non-zero. Masking interrupts is no longer a guarantee of atomicity.
   // OS_Heap appears to call itself, even without interrupts...
   bool reclaimed = claim_lock( &shared.memory.os_heap_lock );
   bool result = run_risos_code_implementing_swi( regs, 0x1d );
+  //Write0( "OS_Heap returns " ); WriteNum( regs->r[3] ); NewLine;
   if (!reclaimed) release_lock( &shared.memory.os_heap_lock );
   return result;
 }
@@ -1886,7 +1997,7 @@ static swifn os_swis[256] = {
 
   [OS_AddCallBack] =  do_OS_AddCallBack,
   [OS_ReadDefaultHandler] =  do_OS_ReadDefaultHandler,
-  [OS_SetECFOrigin] =  do_OS_SetECFOrigin,
+  // [OS_SetECFOrigin] =  do_OS_SetECFOrigin,
   [OS_SerialOp] =  do_OS_SerialOp,
 
 
@@ -1904,7 +2015,7 @@ static swifn os_swis[256] = {
   [OS_FindMemMapEntries] =  do_OS_FindMemMapEntries,
   [OS_SetColour] =  do_OS_SetColour,
   [OS_Pointer] =  do_OS_Pointer,
-  // [OS_ScreenMode] =  do_OS_ScreenMode,
+  [OS_ScreenMode] =  do_OS_ScreenMode,
 
   [OS_DynamicArea] =  do_OS_DynamicArea,
   [OS_Memory] =  do_OS_Memory,
@@ -2041,7 +2152,7 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
       case 0x400de: StartTask( regs ); return;
       case 0x80146: regs->r[0] = 0; return; // PDriver_CurrentJob (called from Desktop?!)
       }
-      bool read_var_val_for_length = (number == 0x23 && regs->r[2] == -1);
+      bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
 
   uint32_t r0 = regs->lr;
 
@@ -2064,18 +2175,19 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
       case 0x606c0 ... 0x606ff: // Hourglass
         break;
       default:
-        if (e->code != 0x124 && !read_var_val_for_length) {
-          WriteS( "Returned error: " );
+        if (e->code != 0x1e4 && e->code != 0x124 && !read_var_val_for_length) {
+          NewLine;
+          Write0( "Returned error: " );
           WriteNum( number );
-          WriteS( " " );
+          Write0( " " );
           WriteNum( r0 );
-          WriteS( " " );
+          Write0( " " );
           WriteNum( regs->r[1] );
-          WriteS( " " );
+          Write0( " " );
           WriteNum( regs->r[2] );
-          WriteS( " " );
+          Write0( " " );
           WriteNum( *(uint32_t *)(regs->r[0]) );
-          WriteS( " " );
+          Write0( " " );
           Write0( (char *)(regs->r[0] + 4 ) );
           NewLine;
         }
@@ -2219,6 +2331,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
     case OS_Find:
     case OS_ReadLine:
     case OS_FSControl:
+    case 0x40080 ... 0x400bf:
       {
         // These SWIs expect only a single program running on a single processor
         Task *blocked = 0;
@@ -2280,6 +2393,18 @@ goto retry;
     default:
       do_svc( regs, number );
       break;
+  }
+
+  if ((number & ~Xbit) == 0x400c8 // Wimp_RedrawWindow
+   || (number & ~Xbit) == 0x400ca) { // Wimp_GetRectangle
+    if (regs->r[0] == 0) { Write0( "GetRectangle Done" ); NewLine; }
+    else {
+      uint32_t *block = (void*) regs->r[1];
+      Write0( "GetRectangle not done." ); NewLine;
+      for (int i = 0; i <= 10; i++) {
+        WriteNum( block[i] ); NewLine;
+      }
+    }
   }
 
   if (0 == (regs->spsr & 0x1f)) {

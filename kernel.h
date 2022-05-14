@@ -70,7 +70,7 @@ struct Kernel_workspace {
   uint32_t fiq_stack[640];
   const char *env;
   uint64_t start_time;
-  uint32_t monotonic_time;
+  // uint64_t monotonic_time;      // Use generic timer with a suitable divisor instead
 
   callback *callbacks_pool;
 

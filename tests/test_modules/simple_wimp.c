@@ -90,12 +90,19 @@ void *memset(void *s, int c, size_t n)
   return s;
 }
 
+#ifdef DEBUG_OUTPUT
 #define WriteS( string ) asm ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "lr" )
 
 #define NewLine asm ( "svc 3" : : : "lr" )
 
 #define Write0( string ) do { register uint32_t r0 asm( "r0" ) = (uint32_t) (string); asm ( "push { r0-r12, lr }\nsvc 2\n  pop {r0-r12, lr}" : : "r" (r0) ); } while (false)
 #define Write13( string ) do { const char *s = (void*) (string); register uint32_t r0 asm( "r0" ); while (31 < (r0 = *s++)) { asm ( "push { r1-r12, lr }\nsvc 0\n  pop {r1-r12, lr}" : : "r" (r0) ); } } while (false)
+#else
+#define WriteS( string )
+#define NewLine
+#define Write0( string )
+#define Write13( string )
+#endif
 
 static void WriteNum( uint32_t number )
 {

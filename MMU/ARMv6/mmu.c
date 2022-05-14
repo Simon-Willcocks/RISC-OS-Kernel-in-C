@@ -32,8 +32,8 @@ static uint32_t *const top_MiB_tt = (&translation_tables) + 4096;
 static uint32_t *const bottom_MiB_tt = (&translation_tables) + 4096 + 256; // Offsets in words, not bytes!
 // In anticipation...
 // I intend a slot's memory to be bottom pages, multiple full MiB blocks, then 1 or 2 MiB of flexible pages
-static uint32_t *const slot_top_MiB_tt = (&translation_tables) + 4096 + 512;
-static uint32_t *const slot_mid_MiB_tt = (&translation_tables) + 4096 + 768;
+//static uint32_t *const slot_top_MiB_tt = (&translation_tables) + 4096 + 512;
+//static uint32_t *const slot_mid_MiB_tt = (&translation_tables) + 4096 + 768;
 
 typedef union {
   struct {
@@ -160,6 +160,9 @@ static void map_translation_table( uint32_t *l2tt, uint32_t physical, void *virt
 
 // Map a privileged read-write page into the top 1MiB of virtual memory
 // Might be better with pages instead of addresses
+// Should be readable in usr32, but the new access permissions don't allow
+// for it. I hope it's not critical, or we have to make it all r/w! (Better
+// to handle read requests in exceptions to return the current values.)
 static void map_work_area( uint32_t *l2tt, uint32_t physical, void *virtual, uint32_t size )
 {
   uint32_t va = 0xff000 & (uint32_t) virtual;
@@ -375,11 +378,11 @@ static void map_block( physical_memory_block block )
   about_to_remap_memory();
 
   if (block.virtual_base < (1 << 20)) {
-    WriteS( "Mapping" );
+    WriteS( "Mapping" ); NewLine;
     uint32_t base = block.virtual_base >> 12;
     for (uint32_t b = 0; b < block.size >> 12; b++) {
       WriteS( "Page " ); WriteNum( (b+base) << 12 ); WriteS( " > " ); WriteNum( block.physical_base + (b << 12) ); NewLine;
-      bottom_MiB_tt[base + b] = (block.physical_base | (b << 12)) | entry.raw;
+      bottom_MiB_tt[base + b] = (block.physical_base + (b << 12)) | entry.raw;
     }
   }
 
@@ -390,10 +393,19 @@ static void map_block( physical_memory_block block )
 // There is no need for this routine to examine the fault generating instruction or the registers.
 static bool __attribute__(( noinline )) handle_data_abort()
 {
-  uint32_t fault_type = data_fault_type();
-  if (0x807 == fault_type || 7 == fault_type) {
-    uint32_t fa = fault_address();
-WriteS( "Data abort that can be handled " ); WriteNum( fa ); NewLine;
+  uint32_t fa = fault_address();
+
+  uint32_t fault_type = data_fault_type() & ~0x800; // Don't care if read or write
+
+  // Maybe I should care, but permission faults are different...
+  if (5 == fault_type || 7 == fault_type) {
+WriteS( "Translation fault: va = " ); WriteNum( fa ); NewLine;
+uint32_t *p;
+asm ( "mov %[p], sp" : [p] "=r" (p) );
+for (int i = 15; i < 17; i++) { // Should be faulting instruction and spsr
+  WriteNum( p[i] ); Write0( " " );
+}
+NewLine;
     claim_lock( &shared.mmu.lock );
     physical_memory_block block = Kernel_physical_address( fa );
     release_lock( &shared.mmu.lock );

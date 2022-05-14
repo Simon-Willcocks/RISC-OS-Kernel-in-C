@@ -131,8 +131,9 @@ memset( (void*) 0x7000, '\0', 4096 );
       da->virtual_page = ((uint32_t) &rma_base) >> 12;
       da->start_page = shared.memory.rma_memory >> 12;
       da->pages = initial_rma_size >> 12;
-      da->actual_pages = natural_alignment >> 12;
+      da->actual_pages = initial_rma_size >> 12;
       da->next = shared.memory.dynamic_areas;
+      da->handler_routine = 0;
       shared.memory.dynamic_areas = da;
     }
 
@@ -167,6 +168,7 @@ memset( (void*) 0x7000, '\0', 4096 );
     da->pages = 0;
     da->actual_pages = da->pages;
     da->start_page = 0xbadbad;
+    da->handler_routine = 0;
 
     da->next = workspace.memory.dynamic_areas;
     workspace.memory.dynamic_areas = da;
@@ -185,6 +187,7 @@ memset( (void*) 0x7000, '\0', 4096 );
     da->pages = 256;
     da->actual_pages = da->pages;
     da->start_page = Kernel_allocate_pages( da->actual_pages << 12, 1 << 12 ) >> 12;
+    da->handler_routine = 0;
 
     da->next = workspace.memory.dynamic_areas;
     workspace.memory.dynamic_areas = da;
@@ -206,6 +209,7 @@ memset( (void*) 0x7000, '\0', 4096 );
     da->pages = 256;
     da->actual_pages = da->pages;
     da->start_page = Kernel_allocate_pages( da->actual_pages << 12, 1 << 12 ) >> 12;
+    da->handler_routine = 0;
 
     da->next = workspace.memory.dynamic_areas;
     workspace.memory.dynamic_areas = da;
@@ -288,7 +292,7 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs )
   WriteS( "Resizing DA by 0 bytes" ); NewLine;
   WriteS( "What if this call is to ensure the callbacks are called?" ); NewLine;
 #endif
-    //return true;
+    return true;
   }
 
   if (0 != (resize_by & 0xfff)) {
@@ -324,7 +328,7 @@ WriteS( "  Pre-shrink " ); WriteNum( resize_by_pages << 12 );
     register uint32_t page_size asm ( "r5" ) = 4096;
     register uint32_t workspace asm ( "r12" ) = da->workarea;
     register uint32_t error asm( "r0" );
-    register uint32_t permitted asm ( "r3" );
+    register int32_t permitted asm ( "r3" );
     asm ( "blx %[preshrink]"
         : "=r" (error)
         , "=r" (permitted)
@@ -333,12 +337,14 @@ WriteS( "  Pre-shrink " ); WriteNum( resize_by_pages << 12 );
         , "r" (current_size)
         , "r" (page_size)
         , "r" (workspace)
-        , [preshrink] "r" (da->handler_routine) );
+        , [preshrink] "r" (da->handler_routine) 
+        : "lr" );
     if (error != 2) { // pre-shrink code
       regs->r[0] = error;
       return false;
     }
-    resize_by_pages = -permitted;
+    permitted = -permitted; // FIXME: Non-page multiples
+    resize_by_pages = permitted >> 12;
     resize_by = resize_by_pages << 12;
 #ifdef DEBUG__WATCH_DYNAMIC_AREAS
 WriteS( " permitted = " ); WriteNum( resize_by_pages << 12 ); NewLine;
@@ -347,7 +353,7 @@ WriteS( " permitted = " ); WriteNum( resize_by_pages << 12 ); NewLine;
 
   if (da->handler_routine != 0 && resize_by >= 0) {
 #ifdef DEBUG__WATCH_DYNAMIC_AREAS
-WriteS( "  Pre-grow +" ); WriteNum( resize_by_pages << 12 ); WriteS( ", from " ); WriteNum( da->pages << 12 ); NewLine;
+Write0( "  Pre-grow +" ); WriteNum( resize_by_pages << 12 ); Write0( ", from " ); WriteNum( da->pages << 12 ); Write0( ", routine: " ); WriteNum( da->handler_routine ); NewLine;
 #endif
     register uint32_t code asm ( "r0" ) = 0;
     register uint32_t page_block asm ( "r1" ) = 0xbadf00d;
@@ -366,7 +372,8 @@ WriteS( "  Pre-grow +" ); WriteNum( resize_by_pages << 12 ); WriteS( ", from " )
         , "r" (current_size)
         , "r" (page_size)
         , "r" (workspace)
-        , [pregrow] "r" (da->handler_routine) );
+        , [pregrow] "r" (da->handler_routine)
+        : "lr" );
     if (error != 0) {
       regs->r[0] = error;
       return false;
@@ -418,8 +425,34 @@ WriteS( " Post-grow" );
         , "r" (current_size)
         , "r" (page_size)
         , "r" (workspace)
-        , [postgrow] "r" (da->handler_routine) );
+        , [postgrow] "r" (da->handler_routine) 
+        : "lr" );
     if (error != 1) { // Changed
+      regs->r[0] = error;
+      return false;
+    }
+  }
+
+  if (da->handler_routine != 0 && resize_by < 0) {
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+WriteS( " Post-shrink" );
+#endif
+    register uint32_t code asm ( "r0" ) = 3;
+    register uint32_t grown_by asm ( "r3" ) = resize_by_pages << 12;
+    register uint32_t current_size asm ( "r4" ) = da->pages << 12;
+    register uint32_t page_size asm ( "r5" ) = 4096;
+    register uint32_t workspace asm ( "r12" ) = da->workarea;
+    register uint32_t error asm( "r0" );
+    asm ( "blx %[postgrow]"
+        : "=r" (error)
+        : "r" (code)
+        , "r" (grown_by)
+        , "r" (current_size)
+        , "r" (page_size)
+        , "r" (workspace)
+        , [postgrow] "r" (da->handler_routine) 
+        : "lr" );
+    if (error != 3) { // Changed
       regs->r[0] = error;
       return false;
     }
@@ -445,7 +478,8 @@ bool do_OS_ReadDynamicArea( svc_registers *regs )
     // Special case, PRM 5a-43
     TaskSlot *slot = workspace.task_slot.running->slot;
     regs->r[0] = 0x8000;
-    regs->r[1] = TaskSlot_Himem( slot ) - 0x8000;
+    regs->r[1] = TaskSlot_Himem( slot );
+    if (0 != regs->r[1]) regs->r[1] = regs->r[1] - 0x8000;
     regs->r[2] = 0x1fff8000;
 
     return true;
@@ -563,8 +597,6 @@ bool do_OS_DynamicArea( svc_registers *regs )
       da->next = workspace.memory.dynamic_areas;
       workspace.memory.dynamic_areas = da;
 
-// TODO Service_DynamicAreaCreate 5a-50
-
       if (regs->r[2] > 0) {
         svc_registers cda;
         cda.r[0] = da->number;
@@ -576,6 +608,13 @@ bool do_OS_DynamicArea( svc_registers *regs )
           regs->r[0] = cda.r[0];
           return false;
         }
+      }
+
+      {
+        // Service_DynamicAreaCreate 5a-50
+        register uint32_t code asm( "r1" ) = 0x90;
+        register uint32_t area asm( "r2" ) = da->number;
+        asm ( "svc 0x30" : : "r" (code), "r" (area) );
       }
 
       break;
@@ -605,6 +644,7 @@ bool do_OS_DynamicArea( svc_registers *regs )
         da->pages = regs->r[2] >> 12;
         da->actual_pages = da->pages;
         da->next = shared.memory.dynamic_areas;
+        da->handler_routine = 0;
         shared.memory.dynamic_areas = da;
       }
 
@@ -684,7 +724,35 @@ nomem:
 
 bool do_OS_Memory( svc_registers *regs )
 {
+  // Code calling this SWI is unlikely to be compatible with the C kernel!
+  typedef struct {
+    uint32_t physical_page;
+    uint32_t virtual_address;
+    uint32_t physical_address;
+  } page_block;
+
   switch (regs->r[0] & 0xff) {
+  case 0:
+    {
+    // General page block operations
+    if (regs->r[0] == ((1 << 9) | (1 << 13))) {
+      // Given virtual address, provide physical.
+      page_block *blocks = (void*) regs->r[1];
+      for (int i = 0; i < regs->r[2]; i++) {
+        asm ( "mcr p15, 0, %[va], c7, c8, 0\n  mrc p15, 0, %[pa], c7, c4, 0" 
+          : [pa] "=r" (blocks[i].physical_address) 
+          : [va] "r" (blocks[i].virtual_address) );
+        blocks[i].physical_address = (blocks[i].physical_address & ~0xfff) | (blocks[i].virtual_address & 0xfff);
+Write0( "OS_Memory operation " ); WriteNum( regs->r[0] ); Write0( " VA " ); WriteNum( blocks[i].virtual_address ); Write0( " PA " ); WriteNum( blocks[i].physical_address ); NewLine;
+      }
+    }
+    else {
+      Write0( "Unsupported OS_Memory operation" ); NewLine;
+      for (;;) { asm ( "wfi" ); }
+    }
+    return true;
+    }
+    break;
   case 10:
     {
     // Free pool lock (as in, affect the lock on the free pool).
@@ -696,6 +764,7 @@ bool do_OS_Memory( svc_registers *regs )
     break;
   default:
     WriteS( "OS_Memory: " ); WriteNum( regs->r[0] ); WriteS( " " ); WriteNum( regs->r[1] ); NewLine;
+    asm ( "bkpt 1" );
   }
   return Kernel_Error_UnimplementedSWI( regs );
 }
