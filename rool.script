@@ -1,0 +1,49 @@
+/* Copyright 2021 Simon Willcocks
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+
+ENTRY( _start )
+SECTIONS
+{
+  minimum_ram = 256 << 20 ; /* Boot configuration. */
+
+  /* Virtual addresses */
+  free_pool             = 0xc0000000 ; /* This will hopefully disappear (Wimp Sprites?) */
+  va_base               = 0xfc000000 ;
+  shared                = 0xfffef000 ; /* Make sure it doesn't overlap the workspace */
+  workspace             = 0xffff0000 ;
+  translation_tables    = 0xfff40000 ; /* Something writes near 0xfff00000 */
+  task_slots            = 0xfff70000 ; /* probably needs more space */
+  tasks                 = 0xfff80000 ; /* probably needs more space */
+  devices               = 0xfff90000 ;
+  rma_base              = 0x20000000 ;
+  rma_heap              = 0x20000000 ;
+  frame_buffer          = 0xef000000 ;
+  system_heap           = 0x30000000 ; /* To match legacy expectations. Had proposed 0xffe00000 */
+  dynamic_areas_base    = 0x31000000 ; /* Where DAs start from. */
+
+ . = va_base ;
+ .text : {
+  *(.text.init) ;
+  . = ALIGN( 1024 ) ; /* Space for GPU to overwrite */
+  *(.data) ; /* Pre-MMU data, not writable once kernel started. */
+  *(.text) ;
+  *(.rodata*) ;
+  . = ALIGN( 4096 ) ;
+  . = ALIGN( 2*65536 ) ; /* Ensure that the modules from the RISC OS ROM will be at their expected locations (for SharedCLib), has to match the ROM build */
+ }
+
+ /DISCARD/ : { *(.*) ; }
+} ;
