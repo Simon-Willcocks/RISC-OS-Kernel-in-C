@@ -1408,6 +1408,7 @@ static bool do_OS_ReleaseDMALock( svc_registers *regs )
 }
 
 // FIXME Move to TaskSlot
+// Or Pipes?
 static bool do_OS_LockForDMA( svc_registers *regs )
 {
   // On entry
@@ -1505,6 +1506,256 @@ static bool do_OS_FlushCache( svc_registers *regs )
 }
 
 static bool do_OS_ConvertFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+
+bool do_OS_Threads( svc_registers *regs )
+{
+
+}
+
+struct os_pipe {
+  os_pipe *next;
+  TaskSlot *sender;
+  TaskSlot *receiver;
+  uint32_t physical;
+  uint32_t allocated_mem;
+  uint32_t virtual_receiver;
+  uint32_t virtual_sender;
+  uint32_t max_block_size;
+  uint32_t max_data;
+  uint32_t write_index;
+  uint32_t read_index;
+};
+
+static bool PipeCreate( svc_registers *regs )
+{
+  uint32_t max_block_size = regs->r[2];
+  uint32_t max_data = regs->r[3];
+  uint32_t allocated_mem = regs->r[4];
+
+  if (max_block_size == 0 || max_block_size > max_data) {
+    // FIXME
+    return Kernel_Error_UnimplementedSWI( regs );
+  }
+
+  if (max_data != 0) {
+    // FIXME
+    return Kernel_Error_UnimplementedSWI( regs );
+  }
+
+  os_pipe *pipe = rma_allocate( sizeof( os_pipe ), regs );
+
+  if (pipe == 0) {
+    asm ( "bkpt 1" );
+  }
+
+  // At the moment, the running task's slot is the only one that knows about it.
+  // If it goes away, the resource should be cleaned up.
+  pipe->sender = pipe->receiver = workspace.task_slot.running->slot;
+
+  pipe->max_block_size = max_block_size;
+  pipe->max_data = max_data;
+  pipe->allocated_mem = allocated_mem;
+  pipe->physical = Kernel_allocate_pages( 4096, 4096 );
+
+  // The following will be updated on the first calls to WaitForSpace and WaitForData, respectively.
+  pipe->virtual_sender = -1;
+  pipe->virtual_receiver = -1;
+
+  pipe->write_index = allocated_mem & 0xfff;
+  pipe->read_index = allocated_mem & 0xfff;
+
+  claim_lock( &shared.kernel.pipes_lock );
+  pipe->next = shared.kernel.pipes;
+  shared.kernel.pipes = pipe;
+  release_lock( &shared.kernel.pipes_lock );
+
+  regs->r[1] = (uint32_t) pipe;
+
+  return true;
+}
+
+static bool PipeWaitForSpace( svc_registers *regs )
+{
+  return true;
+}
+
+static bool PipeSpaceFilled( svc_registers *regs )
+{
+  return true;
+}
+
+static bool PipePassingOver( svc_registers *regs )
+{
+  os_pipe *pipe = (void*) regs->r[1];
+
+  pipe->virtual_sender = -1;
+
+  return true;
+}
+
+static bool PipeNoMoreData( svc_registers *regs )
+{
+  return true;
+}
+
+static bool PipeWaitForData( svc_registers *regs )
+{
+  return true;
+}
+
+static bool PipeDataFreed( svc_registers *regs )
+{
+  return true;
+}
+
+static bool PipePassingOff( svc_registers *regs )
+{
+  os_pipe *pipe = (void*) regs->r[1];
+
+  pipe->virtual_receiver = -1;
+
+  return true;
+}
+
+static bool PipeNotListening( svc_registers *regs )
+{
+  return true;
+}
+
+
+bool do_OS_PipeOp( svc_registers *regs )
+{
+  enum { Create, WaitForSpace, SpaceFilled, PassingOver, NoMoreData, WaitForData, DataFreed, PassingOff, NotListening };
+  /*
+    OS_PipeOp
+    (SWI &fa)
+    Entry 	
+    R0 	Reason code
+    All other registers dependent on reason code
+
+    Exit
+    R0 	Preserved
+    All other registers dependent on reason code
+
+    Use
+
+    The purpose of this call is to transfer data between tasks, pausing the calling thread 
+    while it waits for data or space to write to.
+
+    Notes
+
+    The action performed depends on the reason code value in R0.
+    R1 is used to hold the handle for the pipe (On exit from Create, on entry to all other actions)
+
+    Reason Codes
+        # 	Hex # 	Action
+        0 	&00 	Create a pipe and return a handle
+        1 	&01 	Pause the thread until sufficient space is available for writing
+        2 	&02 	Indicate to the receiver that more data is available
+        3 	&03 	Indicate to the receiver that no more data will be written to the pipe
+        4 	&04 	Pause the thread until sufficient data is available for reading
+        5       &05     Indicate to the transmitter that some data has been consumed
+        6       &06     Indicate to the transmitter that the receiver is no longer interested in receiving data
+
+    OS_PipeOp 0
+    (SWI &fa)
+
+    Entry 	
+    R0 	0
+    R2  Maximum block size (the most that Transmitter or Receiver may request at a time)
+    R3  Maximum data amount (the total amount of data to be transferred through this pipe)
+                0 indicates the amount is unknown at creation
+    R4  Allocated memory (0 for the kernel to allocate memory)
+                Virtual memory address of where the transferred data will be stored.
+                Ignored if R3 is 0.
+
+    Exit
+    R0 	Preserved
+    R1 	Pipe handle
+    R2  Preserved
+    R3  Preserved
+    R4  Preserved
+
+    Use
+
+        Create a pipe to be shared between two threads, one Transmitter and one Receiver.
+
+    Notes
+        
+
+
+
+    PassingOver - about to ask another task to send its data to this pipe
+    PassingOff - about to ask another task to handle the data from this pipe
+  */
+
+/* Create a pipe, pass it to another thread to read or write, while you do the other.
+
+   Create:
+     max_block_size - neither reader nor writer may request a larger contiguous block than this
+     max_data       - The maximum amount that can be transferred (typically the size of a file)
+                    - if 0, undefined.
+     allocated_mem  - memory to use for the pipe (if 0, allocate memory internally)
+                    - useful for transferring chunks of data between programs.
+                    - e.g. JPEG_Decode( source pipe, destination pipe )
+                    - The other end of the pipe will have access to full pages of memory,
+                      the first area of memory returned to it will be offset by the least
+                      significant bits of the allocated_mem pointer.
+                    - Providing a non-page aligned block of memory for a file system to
+                      write to will result in copying overhead (possibly excepting if it's
+                      sector-size aligned).
+
+   The definition of the calls that return the address of the next available memory (to
+   write or read) allows for the OS to map the memory in different places as and if needed.
+
+
+
+   Read thread (example):
+     repeat
+       <available,location> = WaitForData( size ) -- may block
+       while available >= size then
+         process available (or size) bytes at location
+         <available,location> = FreeSpace( available (or size) )
+       endif
+     until location == 0
+
+   Write thread (example):
+     repeat
+       <available,location> = WaitForSpace( size ) -- may block
+       if location != 0 then
+         Write up to available bytes of data to location
+         <available,location> = SpaceUsed( amount_written (or less) )
+       endif
+     until location == 0
+
+   If the reader is no longer interested, it should call NotListening.
+   From that point on, the writer thread will be released if blocked,
+   and always receive <0,0> from WaitForSpace and SpaceUsed.
+
+   If the writer has no more data, it should call NoMoreData.
+   The reader thread will be released, and WaitForData will always return
+   immediately, possibly with available < the requested size.
+   Once all available data is freed, the read SWIs will return <0,0>.
+
+   Once NotListening and NoMoreData have both been called for a pipe, its
+   resources will be released.
+
+*/
+  switch (regs->r[0]) {
+  case Create: return PipeCreate( regs );
+  case WaitForSpace: return PipeWaitForSpace( regs );
+  case PassingOver: return PipePassingOver( regs );
+  case SpaceFilled: return PipeSpaceFilled( regs );
+  case NoMoreData: return PipeNoMoreData( regs );
+  case WaitForData: return PipeWaitForData( regs );
+  case DataFreed: return PipeDataFreed( regs );
+  case PassingOff: return PipePassingOver( regs );
+  case NotListening: return PipeNotListening( regs );
+  default:
+    asm( "bkpt 1" );
+  }
+  return false;
+}
 
 bool do_OS_Heap( svc_registers *regs )
 {
@@ -1718,6 +1969,9 @@ static swifn os_swis[256] = {
   [OS_ConvertNetStation] =  do_OS_ConvertNetStation,
   [OS_ConvertFixedFileSize] =  do_OS_ConvertFixedFileSize,
 
+  [OS_Threads] = do_OS_Threads,
+  [OS_PipeOp] = do_OS_PipeOp,
+
   [OS_VduCommand] = do_OS_VduCommand,
   [OS_LockForDMA] = do_OS_LockForDMA,
   [OS_ReleaseDMALock] = do_OS_ReleaseDMALock,
@@ -1777,12 +2031,12 @@ static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t nu
 {
   regs->spsr &= ~VF;
 
-if (OS_ValidateAddress == (number & ~Xbit)) {
+if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
   regs->spsr &= ~CF;
   return;
 }
 
-      switch (number & ~Xbit) {
+      switch (number & ~Xbit) { // FIXME
       case 0x406c0 ... 0x406ff: return; // Hourglass
       case 0x400de: StartTask( regs ); return;
       case 0x80146: regs->r[0] = 0; return; // PDriver_CurrentJob (called from Desktop?!)

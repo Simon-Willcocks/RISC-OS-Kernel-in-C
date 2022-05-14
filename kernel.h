@@ -44,6 +44,7 @@ typedef struct module module;
 typedef callback vector;
 typedef callback transient_callback;
 typedef struct variable variable;
+typedef struct os_pipe os_pipe;
 
 typedef struct ticker_event ticker_event;
 struct ticker_event {
@@ -90,6 +91,8 @@ struct Kernel_workspace {
   transient_callback *transient_callbacks_pool;
   ticker_event *ticker_queue;
   ticker_event *ticker_event_pool;
+
+  os_pipe *pipes_pool;
 };
 
 struct VDU_workspace {
@@ -125,6 +128,9 @@ struct Kernel_shared_workspace {
   // multi-processing modules; all cores share the same private word.
   module *module_list_head;
   module *module_list_tail;
+
+  uint32_t pipes_lock;
+  os_pipe *pipes;
 
   uint32_t screen_lock; // Not sure if this will always be wanted; it might make sense to make the screen memory outer (only) sharable, and flush the L1 cache to it before releasing this lock.
 };
