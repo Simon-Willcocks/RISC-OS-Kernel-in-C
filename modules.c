@@ -273,7 +273,7 @@ static bool run_vector( int vec, svc_registers *regs )
 #ifdef DEBUG__SHOW_VECTORS
   if (vec != 3 && workspace.kernel.vectors[3] != &do_nothing)
   {
-    Write0( "Vector " ); WriteNum( vec ); WriteNum( flags ); NewLine;
+    Write0( "Vector " ); WriteNum( vec ); asm ( "svc 0x120" ); WriteNum( flags ); NewLine;
   }
 #endif
   return (flags & VF) == 0;
