@@ -78,7 +78,7 @@ enum {
 /* ec */ OS_ConvertFileSize,
 
 // New SWIs for C kernel, if they duplicate another solution, one or the other approach may be discarded.
-/* f9 */ OS_Threads = 0xf9, OS_PipeOp, OS_VduCommand, // update the current graphics state for this task
+/* f9 */ OS_ThreadOp = 0xf9, OS_PipeOp, OS_VduCommand, // update the current graphics state for this task
 /* fc */ OS_LockForDMA = 0xfc, OS_ReleaseDMALock, OS_MapDevicePages, OS_FlushCache, // For screen updates, etc.
 /* 100-1ff */ OS_WriteI = 0x100 };
  

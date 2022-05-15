@@ -105,9 +105,10 @@ echo Found Trinity.Medium at $METRICS $OUTLINE &&
 build_shared_module VFPSupport &&
 build_shared_module Portable &&
 
+echo Making ROM-specific script >&2 &&
 cp rool.script hal.script &&
 sed -n 's/VduInit \(.*\)\.\..*$/VduInit = 0x\1 ;/p;s/MOSPaletteV \(.*\)\.\..*$/MOSPaletteV = 0x\1 ;/p;s/MOSGraphicsV \(.*\)\.\..*$/MOSGraphicsV = 0x\1 ;/p;s/JTABLE \(.*\)\.\..*$/JTABLE = 0x\1 ;/p;s/SysModules_Info \(.*\)\.\..*$/_binary_AllMods_start = 0x\1 ;/p;s/SpriteVecHandler \(.*\)\.\..*$/SpriteVecHandler = 0x\1 ;/p;s/\<HardFont\> \(.*\)\.\..*$/system_font = 0x\1 ;/p;s/ByteVarInitTable \(.*\)\.\..*$/ByteVarInitTable = 0x\1 ;/p' RiscOS/Sources/Kernel/bin/Kernel_gpa >> hal.script &&
-echo 'rom_size = ' $( stat -c %s $ROM )  ' ;' >> hal.script
+echo 'rom_size = ' $( stat -c %s $ROM )  ' ;' >> hal.script &&
 
 function rom_kernel_start {
   sed -n 's/KernelBase \(.*\)\.\..*$/\1/p' RiscOS/Sources/Kernel/bin/Kernel_gpa

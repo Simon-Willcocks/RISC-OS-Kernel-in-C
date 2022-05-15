@@ -61,13 +61,3 @@ struct TaskSlot_shared_workspace {
   Task **core_runnable; // Array of Tasks that may run on that core
 };
 
-/*
-  SWI OS_TaskSlot
-
-    0 AdjustSize R0 = signed amount to change in bytes, on exit R0 = new size (adjust by 0 to read)
-    1 CreateThread R0 = start address, R1 = stack size
-    2 LockMap 
-        Stop the memory from being re-mapped or re-located, so that background activites read or write it
-    3 ReleaseMap 
-        Re-enable background re-mapping of the slot's memory (once the release count matches the lock count)
-*/

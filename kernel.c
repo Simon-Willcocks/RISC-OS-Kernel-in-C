@@ -35,6 +35,17 @@ Drop support for: 26-bit modes
 
 void __attribute__(( noreturn, noinline )) Kernel_start()
 {
+  // Fail early, fail hard
+  {
+    // Problems occur when the shared and core workspaces overlap
+    // This can be fixed in the linker script by moving their allocated space further apart
+    // This check should ring alarm bells (in qemu).
+    char *ws = &workspace;
+    char *sh = &shared;
+    if ((ws > sh) && (ws - sh) < sizeof( shared )) asm ( "bkpt 1" );
+    if ((ws < sh) && (sh - ws) < sizeof( workspace )) asm ( "bkpt 1" );
+  }
+
   if (workspace.core_number == 0) {
     // Final use of the pre-mmu sequence's ram_blocks array, now read-only
 

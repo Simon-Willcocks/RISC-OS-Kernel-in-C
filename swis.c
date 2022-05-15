@@ -1615,15 +1615,162 @@ static bool do_OS_FlushCache( svc_registers *regs )
 
 static bool do_OS_ConvertFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
 
-bool do_OS_Threads( svc_registers *regs )
+bool do_OS_ThreadOp( svc_registers *regs )
 {
+  Write0( "ThreadOp " ); WriteNum( regs->r[0] ); NewLine;
+  if ((regs->spsr & 0x1f) != 0x10) {
+    WriteNum( regs->spsr ); NewLine;
+    static error_block error = { 0x999, "OS_ThreadOp only supported from usr mode, so far." };
+    regs->r[0] = (uint32_t) &error;
+    return false;
+  }
 
+  enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, SetInterruptHandler };
+  // Start a new thread
+  // Exit a thread (last one out turns out the lights for the slot)
+  // Wait until woken
+  // Sleep (microseconds)
+  // Wake thread (setting registers?)
+  // Get the handle of the current thread
+  // Set interrupt handler (not strictly thread related)
+  switch (regs->r[0]) {
+  case Start:
+    {
+      Task *new_task = Task_new( workspace.task_slot.running->slot );
+      Write0( "Task allocated " ); WriteNum( new_task ); NewLine;
+
+      new_task->slot = workspace.task_slot.running->slot;
+
+      Task *running = workspace.task_slot.running;
+      new_task->next = running;
+      workspace.task_slot.running = new_task;
+
+      // Save task context (integer only), including the usr stack pointer
+      // The register values when the creating task is resumed
+      running->regs.r[0] = (uint32_t) new_task;
+      running->regs.r[1] = regs->r[1];
+      running->regs.r[2] = regs->r[2];
+      running->regs.r[3] = regs->r[3];
+      running->regs.r[4] = regs->r[4];
+      running->regs.r[5] = regs->r[5];
+      running->regs.r[6] = regs->r[6];
+      running->regs.r[7] = regs->r[7];
+      running->regs.r[8] = regs->r[8];
+      running->regs.r[9] = regs->r[9];
+      running->regs.r[10] = regs->r[10];
+      running->regs.r[11] = regs->r[11];
+      running->regs.r[12] = regs->r[12];
+      running->regs.pc = regs->lr;
+      running->regs.psr = regs->spsr;
+
+      switch (regs->spsr & 0x1f) {
+      case 0x10:
+        {
+        asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (running->regs.sp) );
+        }
+        break;
+      default:
+        // FIXME
+        {
+          WriteNum( regs->spsr ); NewLine;
+          static error_block error = { 0x999, "Don't create threads from privileged modes?" };
+          regs->r[0] = (uint32_t) &error;
+        }
+        return false;
+      }
+
+      // Replace the calling task with the new task
+      regs->lr = regs->r[1];
+      regs->spsr = 0x10; // Always start new tasks as usr mode?
+      asm volatile ( "msr sp_usr, %[sp]" : [sp] "=r" (regs->r[2]) );
+
+      regs->r[0] = (uint32_t) new_task;
+      regs->r[1] = regs->r[3];
+      regs->r[2] = regs->r[4];
+      regs->r[3] = regs->r[5];
+      regs->r[4] = regs->r[6];
+      regs->r[5] = regs->r[7];
+      regs->r[6] = regs->r[8];
+
+      // FIXME: do something clever with floating point
+
+      Write0( "Task created" ); NewLine;
+
+      return true;
+    }
+  case Sleep:
+    {
+      // No interrupts yet, just yield to another thread
+
+      Task *running = workspace.task_slot.running;
+      workspace.task_slot.running = running->next;
+      Task *resume = workspace.task_slot.running;
+
+      // Save task context (integer only), including the usr stack pointer
+      // The register values when the task is resumed
+      running->regs.r[0] = regs->r[0];
+      running->regs.r[1] = regs->r[1];
+      running->regs.r[2] = regs->r[2];
+      running->regs.r[3] = regs->r[3];
+      running->regs.r[4] = regs->r[4];
+      running->regs.r[5] = regs->r[5];
+      running->regs.r[6] = regs->r[6];
+      running->regs.r[7] = regs->r[7];
+      running->regs.r[8] = regs->r[8];
+      running->regs.r[9] = regs->r[9];
+      running->regs.r[10] = regs->r[10];
+      running->regs.r[11] = regs->r[11];
+      running->regs.r[12] = regs->r[12];
+      running->regs.pc = regs->lr;
+      running->regs.psr = regs->spsr;
+
+      switch (regs->spsr & 0x1f) {
+      case 0x10:
+        {
+          asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (running->regs.sp) );
+        }
+        break;
+      default:
+        // FIXME
+        {
+          asm ( "bkpt 1" );
+        }
+        return false;
+      }
+
+      // Replace the calling task with the next task in the queue
+      regs->lr = resume->regs.pc;
+      regs->spsr = resume->regs.psr;
+      asm volatile ( "msr sp_usr, %[sp]" : [sp] "=r" (resume->regs.sp) );
+
+      regs->r[0] = resume->regs.r[0];
+      regs->r[1] = resume->regs.r[1];
+      regs->r[2] = resume->regs.r[2];
+      regs->r[3] = resume->regs.r[3];
+      regs->r[4] = resume->regs.r[4];
+      regs->r[5] = resume->regs.r[5];
+      regs->r[6] = resume->regs.r[6];
+      regs->r[7] = resume->regs.r[7];
+      regs->r[8] = resume->regs.r[8];
+      regs->r[9] = resume->regs.r[9];
+      regs->r[10] = resume->regs.r[10];
+      regs->r[11] = resume->regs.r[11];
+      regs->r[12] = resume->regs.r[12];
+
+      // FIXME: do something clever with floating point
+
+      Write0( "Task resuming" ); NewLine;
+
+      return true;
+    }
+  default: return Kernel_Error_UnimplementedSWI( regs );
+  }
 }
 
 struct os_pipe {
   os_pipe *next;
-  TaskSlot *sender;
-  TaskSlot *receiver;
+  Task *sender;
+  Task *receiver;
   uint32_t physical;
   uint32_t allocated_mem;
   uint32_t virtual_receiver;
@@ -1656,9 +1803,9 @@ static bool PipeCreate( svc_registers *regs )
     asm ( "bkpt 1" );
   }
 
-  // At the moment, the running task's slot is the only one that knows about it.
+  // At the moment, the running task is the only one that knows about it.
   // If it goes away, the resource should be cleaned up.
-  pipe->sender = pipe->receiver = workspace.task_slot.running->slot;
+  pipe->sender = pipe->receiver = workspace.task_slot.running;
 
   pipe->max_block_size = max_block_size;
   pipe->max_data = max_data;
@@ -2080,7 +2227,7 @@ static swifn os_swis[256] = {
   [OS_ConvertNetStation] =  do_OS_ConvertNetStation,
   [OS_ConvertFixedFileSize] =  do_OS_ConvertFixedFileSize,
 
-  [OS_Threads] = do_OS_Threads,
+  [OS_ThreadOp] = do_OS_ThreadOp,
   [OS_PipeOp] = do_OS_PipeOp,
 
   [OS_VduCommand] = do_OS_VduCommand,

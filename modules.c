@@ -1272,7 +1272,7 @@ void init_module( const char *name )
 
     register uint32_t code asm( "r0" ) = 10;
     register module_header *module asm( "r1" ) = header;
-    asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
+    asm volatile ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
 
     // Not in USR mode, but we are idling
     run_transient_callbacks();
@@ -1287,7 +1287,7 @@ void init_module( const char *name )
     register uint32_t *module asm( "r1" ) = &_binary_Modules_##modname##_start; \
     register module_header *original asm ( "r2" ) = header; \
  \
-    asm ( "svc %[os_module]" \
+    asm volatile ( "svc %[os_module]" \
        : \
        : "r" (code) \
        , "r" (module) \
@@ -1465,7 +1465,7 @@ void init_modules()
       register uint32_t code asm( "r0" ) = 10;
       register module_header *module asm( "r1" ) = header;
 
-      asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
+      asm volatile ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
 
       // Not in USR mode, but we are idling
       run_transient_callbacks();
@@ -1497,7 +1497,7 @@ static inline void Plot( uint32_t type, uint32_t x, uint32_t y )
   register uint32_t Rtype asm( "r0" ) = type;
   register uint32_t Rx asm( "r1" ) = x * 2; // pixel units to OS units, just for the tests
   register uint32_t Ry asm( "r2" ) = y * 2;
-  asm ( "svc %[swi]" : : [swi] "i" (OS_Plot), "r" (Rtype), "r" (Rx), "r" (Ry) );
+  asm volatile ( "svc %[swi]" : : [swi] "i" (OS_Plot), "r" (Rtype), "r" (Rx), "r" (Ry) );
 }
 
 static inline void Draw_Fill( uint32_t *path, int32_t *transformation_matrix )
@@ -1544,7 +1544,7 @@ static inline void SetGraphicsFgColour( uint32_t colour )
   register uint32_t pal asm( "r0" ) = colour;
   register uint32_t Rflags asm( "r3" ) = 0; // FG, no ECFs
   register uint32_t action asm( "r4" ) = 0; // set
-  asm ( "svc %[swi]" : : [swi] "i" (0x60743), "r" (pal), "r" (Rflags), "r" (action) : "lr", "cc" );
+  asm volatile ( "svc %[swi]" : : [swi] "i" (0x60743), "r" (pal), "r" (Rflags), "r" (action) : "lr", "cc" );
 }
 
 static inline void SetGraphicsBgColour( uint32_t colour )
@@ -1553,7 +1553,7 @@ static inline void SetGraphicsBgColour( uint32_t colour )
   register uint32_t pal asm( "r0" ) = colour;
   register uint32_t Rflags asm( "r3" ) = 0x80;
   register uint32_t action asm( "r4" ) = 0; // set
-  asm ( "svc %[swi]" : : [swi] "i" (0x60743), "r" (pal), "r" (Rflags), "r" (action) : "lr", "cc" );
+  asm volatile ( "svc %[swi]" : : [swi] "i" (0x60743), "r" (pal), "r" (Rflags), "r" (action) : "lr", "cc" );
 }
 
 void Draw_Stroke( uint32_t *path, uint32_t *transformation_matrix )
@@ -1972,7 +1972,7 @@ static void __attribute__(( naked )) default_os_byte( uint32_t r0, uint32_t r1, 
 }
 
 #ifdef DEBUG__SHOW_VECTOR_CALLS
-#define WriteFunc do { Write0( __func__ ); NewLine; for (int i = 0; i < 13; i++) { WriteNum( regs->r[i] ); asm ( "svc 0x100+' '" ); } WriteNum( regs->lr ); asm ( "svc 0x100+' '" ); WriteNum( regs->spsr ); NewLine; } while (false)
+#define WriteFunc do { Write0( __func__ ); NewLine; for (int i = 0; i < 13; i++) { WriteNum( regs->r[i] ); asm volatile ( "svc 0x100+' '" ); } WriteNum( regs->lr ); asm volatile ( "svc 0x100+' '" ); WriteNum( regs->spsr ); NewLine; } while (false)
 #else
 #define WriteFunc
 #endif
@@ -2019,7 +2019,7 @@ WriteFunc;
 bool do_OS_File( svc_registers *regs )
 {
 #ifdef DEBUG__SHOW_FILES
-do { Write0( __func__ ); NewLine; for (int i = 0; i < 13; i++) { WriteNum( regs->r[i] ); asm ( "svc 0x100+' '" ); } WriteNum( regs->lr ); asm ( "svc 0x100+' '" ); WriteNum( regs->spsr ); NewLine; } while (false);
+do { Write0( __func__ ); NewLine; for (int i = 0; i < 13; i++) { WriteNum( regs->r[i] ); asm volatile ( "svc 0x100+' '" ); } WriteNum( regs->lr ); asm volatile ( "svc 0x100+' '" ); WriteNum( regs->spsr ); NewLine; } while (false);
 uint32_t code = regs->r[0];
 switch (code) {
   case 5:
@@ -2032,7 +2032,7 @@ switch (code) {
   bool result = run_vector( 8, regs );
 #ifdef DEBUG__SHOW_FILES
 Write0( "OS_File vector returned" ); NewLine;
-for (int i = 0; i < 6; i++) { WriteNum( regs->r[i] ); asm ( "svc 0x100+' '" ); }
+for (int i = 0; i < 6; i++) { WriteNum( regs->r[i] ); asm volatile ( "svc 0x100+' '" ); }
 NewLine;
 #endif
   return result;
@@ -2460,7 +2460,7 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
     register uint32_t context asm( "r3" ) = 0;
     register uint32_t convert asm( "r4" ) = 0;
     error_block *error;
-    asm ( "svc 0x20023\n  movvs %[err], r0\n  movvc %[err], #0"
+    asm volatile ( "svc 0x20023\n  movvs %[err], r0\n  movvc %[err], #0"
         : "=r" (size), [err] "=r" (error)
         : "r" (var_name), "r" (value), "r" (size), "r" (context), "r" (convert)
         : "lr", "cc" );
@@ -2802,40 +2802,17 @@ WriteS( "Page size 0x1000" );
     register uint32_t code asm( "r0" ) = 10;
     register uint32_t *module asm( "r1" ) = &_binary_Modules_HAL_start;
 
-    asm ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
+    asm volatile ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
   }
 
   // The default task slot for this core, and its task (which will do nothing, quietly)
   TaskSlot *slot = TaskSlot_new( "System" );
   WriteS( "Slot: " ); WriteNum( (uint32_t) slot ); NewLine;
   Task *task = Task_new( slot );
-  WriteS( "Task: " ); WriteNum( (uint32_t) task ); WriteS( ", slot: " ); WriteNum( (uint32_t) slot ); NewLine;
+  WriteS( "Task: " ); WriteNum( (uint32_t) task ); WriteS( ", slot: " ); WriteNum( (uint32_t) task->slot ); NewLine;
   assert (task->slot == slot);
 
   workspace.task_slot.running = task;
-
-if (0) {
-
-static EcfOraEor my_ecf = { { { 0xff00ffff, 0xcc33cc33 },
-                            { 0xf0f0f0f0, 0 },
-                            { 0xffffff00, 0 },
-                            { 0x0f0f0f0f, 0 }, 
-                            { 0xfffff00f, 0 }, 
-                            { 0xaaaaaaaa, 0 },
-                            { 0x55550055, 0 }, 
-                            { 0xffffffff, 0 } } };
-
-
-// Internal (pixel) coordinates from bottom left
-for (int y = 100; y < 1000; y++ ) { // Get ExportedHLine working...
-  register uint32_t left asm( "r0" ) = workspace.core_number * 100;
-  register uint32_t right asm( "r2" ) = workspace.core_number * 100 + 50;
-  register uint32_t yy asm( "r1" ) = y;
-  register EcfOraEor *mode asm( "r3" ) = &my_ecf;
-
-  asm ( "blx %[code]" : : [code] "r" (0xfc0342ac), "r" (left), "r" (right), "r" (yy), "r" (mode) : "lr", "cc" );
-}
-}
 
   // To avoid problems in SWIPlot Kernel/s/vdu/vduswis
   // Rather than doing its job, it will put a stream of characters into the WrchV queue, if:
@@ -2933,7 +2910,7 @@ static inline uint32_t open_file_to_read( const char *name )
   register uint32_t os_find_code asm( "r0" ) = 0x43 | (1 << 3);
   register const char *filename asm( "r1" ) = name;
   register uint32_t file_handle asm( "r0" );
-  asm ( "svc 0x0d" : "=r" (file_handle) : "r" (os_find_code), "r" (filename) ); // Doesn't corrupt lr because running usr
+  asm volatile ( "svc 0x0d" : "=r" (file_handle) : "r" (os_find_code), "r" (filename) ); // Doesn't corrupt lr because running usr
 
   return file_handle;
 }
@@ -2943,7 +2920,7 @@ static uint32_t read_file_size( const char *name )
   register uint32_t os_file_code asm( "r0" ) = 17;
   register const char *filename asm( "r1" ) = name;
   register uint32_t file_size asm( "r4" );
-  asm ( "svc %[swi]" : "=r" (file_size) 
+  asm volatile ( "svc %[swi]" : "=r" (file_size) 
                      : [swi] "i" (OS_File), "r" (os_file_code), "r" (filename)
                      : "r2", "r3", "r5" );
   return file_size;
@@ -2955,7 +2932,7 @@ static void *claim_rma_memory( uint32_t size )
   register uint32_t amount asm( "r3" ) = size;
   register void *mem asm ( "r2" );
 
-  asm ( "svc %[swi]" : "=r" (mem) : [swi] "i" (OS_Module), "r" (reason), "r" (amount) );
+  asm volatile ( "svc %[swi]" : "=r" (mem) : [swi] "i" (OS_Module), "r" (reason), "r" (amount) );
 
   return mem;
 }
@@ -2973,7 +2950,7 @@ WriteS( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
     register const char *filename asm( "r1" ) = name;
     register void *load_address asm( "r2" ) = mem;
     register uint32_t load_at_r2 asm( "r3" ) = 0;
-    asm ( "svc %[swi]" : : [swi] "i" (OS_File), "r" (os_file_code), "r" (filename), "r" (load_address), "r" (load_at_r2) : "r4", "r5" );
+    asm volatile ( "svc %[swi]" : : [swi] "i" (OS_File), "r" (os_file_code), "r" (filename), "r" (load_address), "r" (load_at_r2) : "r4", "r5" );
   }
 
   return mem;
@@ -3008,179 +2985,21 @@ static void dump_zero_page()
   }
 }
 
-static void user_mode_code( int core_number )
+void Sleep( uint32_t microseconds )
 {
-  Write0( "In USR32 mode" ); NewLine;
-  {
-  register const char *string asm ( "r0" ) = "Hello world";
-  register int len asm ( "r1" ) = 11;
-  asm ( "svc 0x46" : : "r" (string), "r" (len) );
+  register uint32_t request asm ( "r0" ) = 3; // Sleep
+  register uint32_t time asm ( "r1" ) = microseconds;
 
-  }
-  //OSCLI( "%FontList" );
-  {
-    register uint32_t size asm( "r0" ) = 1 << 20;
-    register uint32_t fm1 asm ( "r1" ) = 16;
-    register uint32_t fm2 asm ( "r2" ) = 36;
-    register uint32_t fm3 asm ( "r3" ) = 36;
-    register uint32_t fm4 asm ( "r4" ) = 16;
-    register uint32_t fm5 asm ( "r5" ) = 12;
-    asm ( "svc %[swi]" : : [swi] "i" (0x4009b), "r" (size), "r" (fm1), "r" (fm2), "r" (fm3), "r" (fm4), "r" (fm5) );
-  }
-  //OSCLI( "%FontList" );
-  if (1) {
-    // This has started working for large fonts... (thanks to Service_ModeChange)
-    // Anti-aliasing needs SuperSample
+for (int i = 0; i < microseconds; i++) // Fakey fakey!
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (time) );
+}
 
-    // Grab a lock so only one core enters the Font SWI (protecting the cache, which is shared)
-    // Don't care what lock; all modules have been initialised.
-    asm ( "svc %[swi]" : : [swi] "i" (OS_EnterOS) );
-    claim_lock( &shared.kernel.mp_module_init_lock );
-    asm ( "svc %[swi]" : : [swi] "i" (OS_LeaveOS) );
-
-    uint32_t font = Font_FindFont( "Trinity.Medium", (1+core_number) * 0xc0, (1+core_number) * 0xc0, 90, 90 );
-    NewLine; Write0( "Font: " ); WriteNum( font );
-    NewLine; OSCLI( "%FontList" );
-
-      // SetColour( 0, 0x00997700 );
-      //SetGraphicsFgColour( 0x7280fa00 );
-      //SetGraphicsBgColour( 0x8070fa00 );
-    // ColourTrans_SetFontColours( font, 0xffffff00 << (4 * core_number), 0xff000000, 14 );
-    // White on black
-    ColourTrans_SetFontColours( font, 0x00000000, 0xffffff00, 14 );
-    Write0( "Printing AB" ); NewLine;
-    Font_Paint( font, "AB", 0, core_number*(960 << 8), 1 * 72000, 0 );
-    Write0( "Printing CD" ); NewLine;
-    Font_Paint( font, "CD", 0, 72000+core_number*(960 << 8), 1 * 72000, 0 );
-    Write0( "Printing EFGHI" ); NewLine;
-    Font_Paint( font, "EFGHI", 0, 72000*2+core_number*(960 << 8), 1 * 72000, 0 );
-    Write0( "All printed OK" ); NewLine;
-
-    //OSCLI( "%FontList" );
-
-    asm ( "svc %[swi]" : : [swi] "i" (OS_EnterOS) );
-    release_lock( &shared.kernel.mp_module_init_lock );
-    asm ( "svc %[swi]" : : [swi] "i" (OS_LeaveOS) );
-
-    for (;;) { asm ( "wfi" ); }
-  }
-
-/*
-  asm ( "svc %[swi]" : : [swi] "i" (OS_EnterOS) );
-  dump_zero_page();
-  asm ( "svc %[swi]" : : [swi] "i" (OS_LeaveOS) );
-*/
-
-  {
-    static uint32_t const test_sprite_area[] = {
-        0x44,
-        1,
-        0x10,
-        0x44,
-        0x34,
-        0x61,  // 'a'
-        0,
-        0,
-        0,    // width
-        0,    // height
-        0,    // left bit
-        0,    // right bit
-        0x2C,  // image offset
-        0x30,  // mask offset
-        0x80000001+(90<<1)+(90<<14)+(1<<27)
-    };
-    register uint32_t code asm( "r0" ) = 0x211; // Verify...
-    register uint32_t const *sprite_area asm( "r1" ) = test_sprite_area;
-    asm ( "svc 0x2002e" : : "r" (code), "r" (sprite_area) );
-  }
-
-// SpriteFile.h created by xxd -i RiscOS/SpriteFile,ff9 SpriteFile.h and editing to put the
-// length into four extra bytes at the beginning of the array to make a proper sprite area.
-//   unsigned char RiscOS_SpriteFile_ff9[] = {
-// 0x58, 0x01, 0x00, 0x00, // 344, added manually
-//   0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x5c, 0x01, 0x00, 0x00,
-// ...}
-// unsigned int RiscOS_SpriteFile_ff9_len = 344;
-// (344 = 0x158).
-
-static const
-#include "SpriteFile.h"
-  {
-  Write0( "Plot sprite small" ); NewLine;
-  register uint32_t code asm ( "r0" ) = 256 + 34; // Plot named sprite at user coordinates
-  register const unsigned char *cb asm ( "r1" ) = RiscOS_SpriteFile_ff9;
-  register const char *sp asm ( "r2" ) = "newsprite";
-  register int32_t x asm ( "r3" ) = 100;
-  register int32_t y asm ( "r4" ) = 100;
-  register uint32_t plot asm ( "r5" ) = 0;
-  asm ( "svc 0x2e" : : "r" (code), "r" (cb), "r" (sp), "r" (x), "r" (y), "r" (plot) : "lr" );
-  }
-  if (1) {
-  Write0( "Plot sprite large" ); NewLine;
-  // 8x bigger, at (64, 64)
-  int32_t transformation[6] = { 0x100000, 0, 0, 0x100000, 0x4000 + core_number * 0x15000, 0x4000 };
-  register uint32_t code asm ( "r0" ) = 256 + 56; // Put named sprite transformed
-  register const char *cb asm ( "r1" ) = RiscOS_SpriteFile_ff9;
-  register const char *sp asm ( "r2" ) = "newsprite";
-  register int32_t flags asm ( "r3" ) = 0;
-  register uint32_t plot asm ( "r5" ) = 0;
-  register int32_t *matrix asm ( "r6" ) = transformation;
-  register uint32_t translate asm ( "r7" ) = 0;
-  asm ( "svc 0x2e" : : "r" (code), "r" (cb), "r" (sp), "r" (flags), "r" (matrix), "r" (plot), "r" (translate) : "lr" );
-  }
-
-  if (0) {
-// Generated using xxd -i DrawFile,aff DrawFile.h
-static // ...
-#include "DrawFile.h"
-
-  register uint32_t flags asm( "r0" ) = 1;
-  register void *file asm( "r1" ) = DrawFile;
-  register uint32_t size asm( "r2" ) = DrawFile_len;
-  register uint32_t *matrix asm( "r3" ) = 0;
-  register uint32_t clip asm( "r4" ) = 0;
-  register uint32_t flatness asm( "r5" ) = 0;
-  asm ( "svc 0x45540" :
-    : "r" (flags)
-    , "r" (file)
-    , "r" (size)
-    , "r" (matrix)
-    , "r" (clip)
-    , "r" (flatness)
-    : "lr" );
-  }
-
-  // The size and DPI values really do affect the size of the displayed characters
-  //uint32_t font = Font_FindFont( "Trinity.Medium", 0xc0, 0xc0, 90, 90 );
-  uint32_t font = Font_FindFont( "Trinity.Medium", 0x300, 0x300, 90, 90 );
-
-WriteS( "Setting font colours..." ); NewLine;
-  // This is necessary before the first Paint
-  ColourTrans_SetFontColours( font, 0xff000000, 0xffffff00, 14 );
-WriteS( "Set font colours." ); NewLine;
-
-  // OSCLI( "modules" );
-/*
-  OSCLI( "type Resources:$.Apps.!Alarm.!Help" );
-  OSCLI( "set Some$Path Resources:$.Apps.!Alarm" );
-  OSCLI( "set FileSwitch$Resources$CSD $" ); // This should obviously be initialised somewhere else!
-  OSCLI( "show" );
-  OSCLI( "type Some:!Help" );
-*/
-  if (core_number == 0) {
-    SetColour( 0, 0x00997700 );
-    SetGraphicsFgColour( 0x7280fa00 );
-    SetGraphicsBgColour( 0x8070fa00 );
-    //Plot( 4, 200, 200 );
-    Font_Paint( font, "Running Desktop", 0, core_number * 4*72000, 4 * 72000, 0 );
-    Font_Paint( font, "abcdefghijklmnopqrstuvwxyz", 0, 4*72000, 5 * 72000, 0 );
-    //OSCLI( "Desktop" );
-    Font_Paint( font, "Desktop returned", 0, core_number * 4*72000, 2 * 72000, 0 );
-  }
-  else {
-    Font_Paint( font, "Other core", 0, core_number * 40*72000, 72000, 0 );
-  }
-
+static void __attribute__(( noreturn )) spin( uint32_t x, uint32_t y, bool clockwise )
+{
 static uint32_t path1[] = {
  0x00000002, 0x00000400, 0xffff7400,
  0x00000008, 0x00006900, 0xffff9e00,
@@ -3510,33 +3329,11 @@ static uint32_t path3[] = {
  0x00000008, 0x00004100, 0x0000d000,
  0x00000005, 0x00000000 };
 
-  int32_t offx = (400 << 8) + core_number * (560 << 8);
-  int32_t offy = 400 << 8;
-  int32_t matrix[6] = { 0, 0, 0, 0, offx, offy };
+  int32_t matrix[6] = { 0, 0, 0, 0, x << 8, y << 8 };
 
-  bool odd = 0 != (core_number & 1);
   // Re-start after 45 degree turn (octagonal cog)
-  int angle = odd ? 0 : 22; // Starting angle
+  int angle = clockwise ? 22 : 0; // Starting angle
   int step = 2;
-
-OSCLI( "Echo Hello" );
-OSCLI( "Eval 1 + 1" ); // Uses memory at 0x5000-0x6fff, and causes error "Expression stack overflow", returning the original "1 + 1"
-OSCLI( "Eval 1" );
-// OSCLI( "ROMModules" ); Fails with lots of Buffer overflows.
-
-
-    SetGraphicsFgColour( 0x7280fa00 );
-
-if (0) {
-WriteS( "Displaying triangle?" );
-//static const char triangle[] = { 42, 25, 4, 100, 0, 100, 0, 25, 4, 0, 0, 0xe8, 3, 25, 85, 100, 0, 0xe8, 3, 42 };
-static const char triangle[] = { 42, 25, 4, 0, 0, 0, 0, 25, 4, 0xe8, 0, 0xe8, 0, 25, 85, 0, 0, 0xe8, 0, 42 };
-for (int i = 0; i < number_of( triangle ); i++) {
-  register char c asm( "r0" ) = triangle[i];
-  asm ( "svc 0" : : "r" (c) );
-}
-NewLine;
-}
 
   for (int loop = 0;; loop++) {
 
@@ -3552,23 +3349,64 @@ NewLine;
     SetColour( 0, 0x004c0000 );
     Draw_Fill( path3, matrix );
 
-    asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) : "cc" ); // lr is not corrupted, in USR mode
+    asm volatile ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) : "cc" ); // lr is not corrupted in USR mode
 
-    for (int i = 0; i < 0x800000; i++) { asm ( "" ); }
+    Sleep( 100000 );
 
     SetColour( 0, 0x00000000 );
 //    Draw_Fill( path1, matrix ); // Not needed for small changes in angle
     Draw_Fill( path2, matrix );
     Draw_Fill( path3, matrix );
 
-    if (odd) {
-      angle -= step;
-      if (angle < 0) angle += 45;
-    }
-    else {
+    if (clockwise) {
       angle += step;
       if (angle >= 45) angle -= 45;
     }
+    else {
+      angle -= step;
+      if (angle < 0) angle += 45;
+    }
   }
+  __builtin_unreachable();
+}
+
+void user_thread( uint32_t thread, uint32_t x, uint32_t y, bool clockwise )
+{
+  Write0( "Task running" ); NewLine;
+  spin( x, y, clockwise );
+}
+
+static void user_mode_code( int core_number )
+{
+  Write0( "In USR32 mode" ); NewLine;
+
+  if (1) {
+    // CreateThread
+    // Registers 3-8 are passed to the code as arguments (r1-r6)
+    // FIXME: compatible with aapcs?
+    // Argument 1 is the handle for the thread
+    Write0( "Creating task" ); NewLine;
+
+    register uint32_t request asm ( "r0" ) = 0; // Create Thread
+    register void *code asm ( "r1" ) = user_thread;
+    register uint32_t stack_top asm ( "r2" ) = 0x9000 - 0x100;
+    register uint32_t x asm ( "r3" ) = 400 + 560/2 + core_number * 560;
+    register uint32_t y asm ( "r4" ) = 900;
+    register bool clockwise asm ( "r5" ) = 0 != (1 & core_number);
+    register uint32_t handle asm ( "r0" );
+
+    asm volatile ( "svc %[swi]"
+        : "=r" (handle) 
+        : [swi] "i" (OS_ThreadOp)
+        , "r" (request)
+        , "r" (code)
+        , "r" (stack_top)
+        , "r" (x), "r" (y), "r" (clockwise) );
+
+  }
+
+  Write0( "Spinning up!" ); NewLine;
+  spin( 400 + core_number * 560, 400, 0 != (1 & core_number) );
+
   __builtin_unreachable();
 }
