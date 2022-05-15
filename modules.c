@@ -273,7 +273,7 @@ static bool run_vector( int vec, svc_registers *regs )
 #ifdef DEBUG__SHOW_VECTORS
   if (vec != 3 && workspace.kernel.vectors[3] != &do_nothing)
   {
-    Write0( "Vector " ); WriteNum( vec ); WriteNum( flags ); NewLine;
+    Write0( "Vector " ); WriteNum( vec ); asm ( "svc 0x120" ); WriteNum( flags ); NewLine;
   }
 #endif
   return (flags & VF) == 0;
@@ -3011,12 +3011,6 @@ static void dump_zero_page()
 static void user_mode_code( int core_number )
 {
   Write0( "In USR32 mode" ); NewLine;
-  {
-  register const char *string asm ( "r0" ) = "Hello world";
-  register int len asm ( "r1" ) = 11;
-  asm ( "svc 0x46" : : "r" (string), "r" (len) );
-
-  }
   //OSCLI( "%FontList" );
   {
     register uint32_t size asm( "r0" ) = 1 << 20;

@@ -22,7 +22,7 @@ SECTIONS
   /* Virtual addresses */
   free_pool             = 0xc0000000 ; /* This will hopefully disappear (Wimp Sprites?) */
   va_base               = 0xfc000000 ;
-  shared                = 0xfffef000 ; /* Make sure it doesn't overlap the workspace */
+  shared                = 0xfffe0000 ; /* Make sure it doesn't overlap the workspace */
   workspace             = 0xffff0000 ;
   translation_tables    = 0xfff40000 ; /* Something writes near 0xfff00000 */
   task_slots            = 0xfff70000 ; /* probably needs more space */
