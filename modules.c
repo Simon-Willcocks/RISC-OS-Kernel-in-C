@@ -2990,7 +2990,7 @@ void Sleep( uint32_t microseconds )
   register uint32_t request asm ( "r0" ) = 3; // Sleep
   register uint32_t time asm ( "r1" ) = microseconds;
 
-for (int i = 0; i < microseconds; i++) // Fakey fakey!
+for (int i = 0; i < microseconds/10000; i++) // Fakey fakey!
   asm volatile ( "svc %[swi]"
       :
       : [swi] "i" (OS_ThreadOp)
@@ -3380,7 +3380,7 @@ static void user_mode_code( int core_number )
 {
   Write0( "In USR32 mode" ); NewLine;
 
-  if (1) {
+  for (int i = 1; i < 3; i++) {
     // CreateThread
     // Registers 3-8 are passed to the code as arguments (r1-r6)
     // FIXME: compatible with aapcs?
@@ -3389,10 +3389,10 @@ static void user_mode_code( int core_number )
 
     register uint32_t request asm ( "r0" ) = 0; // Create Thread
     register void *code asm ( "r1" ) = user_thread;
-    register uint32_t stack_top asm ( "r2" ) = 0x9000 - 0x100;
-    register uint32_t x asm ( "r3" ) = 400 + 560/2 + core_number * 560;
-    register uint32_t y asm ( "r4" ) = 900;
-    register bool clockwise asm ( "r5" ) = 0 != (1 & core_number);
+    register uint32_t stack_top asm ( "r2" ) = 0x9000 - 0x100 * i;
+    register uint32_t x asm ( "r3" ) = 400 + core_number * 560;
+    register uint32_t y asm ( "r4" ) = 400 + 560 * i;
+    register bool clockwise asm ( "r5" ) = 0 != (core_number & 1) ^ (1 & i);
     register uint32_t handle asm ( "r0" );
 
     asm volatile ( "svc %[swi]"

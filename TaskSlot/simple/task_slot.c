@@ -302,6 +302,7 @@ Task *Task_new( TaskSlot *slot )
   if (result == 0) for (;;) { asm ( "bkpt 33" ); } // FIXME: expand
 
   result->slot = slot;
+  result->next = 0;
 
   return result;
 }

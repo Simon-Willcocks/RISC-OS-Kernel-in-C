@@ -1617,7 +1617,6 @@ static bool do_OS_ConvertFileSize( svc_registers *regs ) { return Kernel_Error_U
 
 bool do_OS_ThreadOp( svc_registers *regs )
 {
-  Write0( "ThreadOp " ); WriteNum( regs->r[0] ); NewLine;
   if ((regs->spsr & 0x1f) != 0x10) {
     WriteNum( regs->spsr ); NewLine;
     static error_block error = { 0x999, "OS_ThreadOp only supported from usr mode, so far." };
@@ -1680,9 +1679,12 @@ bool do_OS_ThreadOp( svc_registers *regs )
       }
 
       // Replace the calling task with the new task
+
+      uint32_t starting_sp = regs->r[2];
       regs->lr = regs->r[1];
-      regs->spsr = 0x10; // Always start new tasks as usr mode?
-      asm volatile ( "msr sp_usr, %[sp]" : [sp] "=r" (regs->r[2]) );
+      // The new thread will start with the same psr as the parent
+
+      asm volatile ( "msr sp_usr, %[sp]" : : [sp] "r" (starting_sp) );
 
       regs->r[0] = (uint32_t) new_task;
       regs->r[1] = regs->r[3];
@@ -1703,8 +1705,22 @@ bool do_OS_ThreadOp( svc_registers *regs )
       // No interrupts yet, just yield to another thread
 
       Task *running = workspace.task_slot.running;
-      workspace.task_slot.running = running->next;
-      Task *resume = workspace.task_slot.running;
+      if (running == 0) { Write0( "Sleep, but running is zero" ); NewLine; asm( "wfi" ); }
+
+      Task *resume = running->next;
+      if (resume == 0) { Write0( "Sleep, but resume is zero" ); NewLine; asm( "wfi" ); }
+      workspace.task_slot.running = resume;
+
+      Task *last = running;
+      while (last->next != 0) {
+        last = last->next;
+      }
+
+      running->next = 0;
+      last->next = running;     // Fakey fakey, the task should be taken 
+                                // out of the list altogether and
+                                // re-activated when an interrupt occurs.
+
 
       // Save task context (integer only), including the usr stack pointer
       // The register values when the task is resumed
@@ -1741,7 +1757,7 @@ bool do_OS_ThreadOp( svc_registers *regs )
       // Replace the calling task with the next task in the queue
       regs->lr = resume->regs.pc;
       regs->spsr = resume->regs.psr;
-      asm volatile ( "msr sp_usr, %[sp]" : [sp] "=r" (resume->regs.sp) );
+      asm volatile ( "msr sp_usr, %[sp]" : : [sp] "r" (resume->regs.sp) );
 
       regs->r[0] = resume->regs.r[0];
       regs->r[1] = resume->regs.r[1];
@@ -1758,8 +1774,6 @@ bool do_OS_ThreadOp( svc_registers *regs )
       regs->r[12] = resume->regs.r[12];
 
       // FIXME: do something clever with floating point
-
-      Write0( "Task resuming" ); NewLine;
 
       return true;
     }
