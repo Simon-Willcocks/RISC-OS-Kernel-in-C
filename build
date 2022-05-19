@@ -38,6 +38,13 @@ if [ "$MMU" = "" ]; then
     exit 1
   fi
 fi
+if [ "$INTS" = "" ]; then
+  INTS=$( echo Interrupts/* )
+  if [ ! -d "$INTS" ]; then
+    echo "Please define \$INTS, probably as one of "$INTS
+    exit 1
+  fi
+fi
 if [ "$BOOT" = "" ]; then
   BOOT=$( echo boot/* )
   if [ ! -d "$BOOT" ]; then
@@ -72,8 +79,9 @@ echo Building with RiscOS build $ROM
 
 function build_shared_module {
   MOD=$1 ; shift ; # All other parameters are passed to gcc
-  echo Building shared module $MOD
-  M=$( basename $MOD ) &&
+  M=$( dirname $MOD ) &&
+  if [ "$M" == "." ]; then M=$MOD ; fi
+  echo Building shared module $MOD \($M\) &&
 
   arm-linux-gnueabi-gcc-8 $MOD/*.c -Wall -o /tmp/module$$.elf -fpic \
         -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
@@ -120,6 +128,7 @@ arm-linux-gnueabi-gcc-8 -Wall -I . \
   $BOOT/*.c -I $BOOT \
   $TASK_SLOT/*.c -I $TASK_SLOT \
   $MMU/*.c -I $MMU \
+  $INTS/*.c -I $INTS \
   $MM/*.c -I $MM \
   Modules/*.o \
   -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static \
