@@ -305,7 +305,7 @@ static bool run_vector( svc_registers *regs, int vec )
 #ifdef DEBUG__SHOW_VECTORS_VERBOSE
   if (vec != 3 && workspace.kernel.vectors[3] != &do_nothing)
   {
-    Write0( "Vector " ); WriteNum( vec ); WriteNum( flags ); NewLine;
+    Write0( "Vector " ); WriteNum( vec ); asm ( "svc 0x120" ); WriteNum( flags ); NewLine;
   }
 #endif
   return (flags & VF) == 0;
