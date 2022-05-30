@@ -182,7 +182,7 @@ static bool do_OS_WriteN( svc_registers *regs )
 }
 
 
-static bool do_OS_Control( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_Control( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_Exit( svc_registers *regs )
 {
@@ -190,7 +190,7 @@ static bool do_OS_Exit( svc_registers *regs )
   return Kernel_Error_UnimplementedSWI( regs );
 }
 
-static bool do_OS_SetEnv( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SetEnv( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_IntOn( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
@@ -205,7 +205,7 @@ static bool do_OS_IntOff( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_CallBack( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_CallBack( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_EnterOS( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
@@ -220,12 +220,12 @@ static bool do_OS_LeaveOS( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_BreakPt( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_BreakPt( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_BreakCtrl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_UnusedSWI( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_UpdateMEMC( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_SetCallBack( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_BreakCtrl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_UnusedSWI( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_UpdateMEMC( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SetCallBack( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ReadUnsigned( svc_registers *regs )
 {
@@ -443,7 +443,7 @@ FC000000 64M        ROM
 
 #endif
 
-//static bool do_OS_BinaryToDecimal( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_BinaryToDecimal( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ReadEscapeState( svc_registers *regs )
 {
@@ -452,11 +452,11 @@ static bool do_OS_ReadEscapeState( svc_registers *regs )
   return true;
 }
 
-//static bool do_OS_EvaluateExpression( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-//static bool do_OS_ReadPalette( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_EvaluateExpression( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_ReadPalette( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_SWINumberToString( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_SWINumberFromString( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SWINumberToString( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SWINumberFromString( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ValidateAddress( svc_registers *regs )
 {
   // FIXME (not all memory checks are going to pass!)
@@ -513,7 +513,7 @@ static void run_ticker_events()
     }
     else {
       e->next = workspace.kernel.ticker_event_pool;
-      workspace.kernel.ticker_event_pool = e->next;
+      workspace.kernel.ticker_event_pool = e;
     }
   }
   asm ( "pop { r0-r12, pc }" );
@@ -569,9 +569,9 @@ static void __attribute__(( naked )) TickerV_handler()
 {
   // C will ensure the callee saved registers are preserved.
   // We don't care about the private word.
-  asm ( "push { "C_CLOBBERED" }" );
+  asm ( "push { "C_CLOBBERED", lr }" ); // Not intercepting vector, so storing return address
   C_TickerV_handler();
-  asm ( "pop { "C_CLOBBERED" }" );
+  asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
 static bool insert_into_timer_queue( uint32_t code, uint32_t private, uint32_t timeout, uint32_t reload )
@@ -638,7 +638,7 @@ static bool do_OS_RemoveTickerEvent( svc_registers *regs )
 
 
 
-static bool do_OS_InstallKeyHandler( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_InstallKeyHandler( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_CheckModeValid( svc_registers *regs )
 {
@@ -654,7 +654,19 @@ static bool do_OS_CheckModeValid( svc_registers *regs )
 }
 
 
-static bool do_OS_ClaimScreenMemory( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ClaimScreenMemory( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool do_OS_MSTime( svc_registers *regs )
+{
+  uint32_t lo;
+  uint32_t hi;
+  uint64_t time;
+  asm ( "mrrc p15, 0, %[lo], %[hi], c14" : [lo] "=r" (lo), [hi] "=r" (hi) );
+  time = (((uint64_t) hi) << 32) | lo;
+  regs->r[0] = lo >> 10; // FIXME: Inaccurate, but doesn't need __aeabi_uldivmod
+  // Optimiser wants a function for uint64_t / uint32_t : __aeabi_uldivmod
+  return true;
+}
 
 static bool do_OS_ReadMonotonicTime( svc_registers *regs )
 {
@@ -668,7 +680,7 @@ static bool do_OS_ReadMonotonicTime( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_SubstituteArgs( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SubstituteArgs( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_PrettyPrint( svc_registers *regs )
 {
@@ -700,8 +712,8 @@ static bool do_OS_PrettyPrint( svc_registers *regs )
   return result;
 }
 
-static bool do_OS_WriteEnv( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ReadArgs( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_WriteEnv( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadArgs( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadRAMFsLimits( svc_registers *regs )
 {
   regs->r[0] = 5;
@@ -714,11 +726,49 @@ static bool do_OS_ReadRAMFsLimits( svc_registers *regs )
   }
 }
 
-static bool do_OS_ClaimDeviceVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ClaimDeviceVector( svc_registers *regs )
+{
+  uint32_t device = regs->r[0];
+  void (*code) = (void*) regs->r[1];
+  uint32_t r12 = regs->r[2];
 
-static bool do_OS_ReleaseDeviceVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+  if (device == 8 || device == 13) {
+    // No expansion cards supported, whoever ports this to RiscPC (or wants to use this mechanism for USB?) can fix it.
+    return Kernel_Error_UnimplementedSWI( regs );
+  }
 
-static bool do_OS_ExitAndDie( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+  // FIXME workspace or shared?
+  if (device > number_of( workspace.interrupts.handlers )) {
+    // FIXME Proper error
+    return Kernel_Error_UnimplementedSWI( regs );
+  }
+
+  InterruptHandler *h = &workspace.interrupts.handlers[device];
+
+  error_block const *err = 0;
+  claim_lock( &workspace.interrupts.lock );
+  if (h->code != 0) {
+    static const error_block error = { 0x999, "Device already claimed" };
+    err = &error;
+  }
+  else {
+    h->code = code;
+    h->r12 = r12;
+    h->slot = workspace.task_slot.running->slot; // May be 0
+  }
+  release_lock( &workspace.interrupts.lock );
+
+  if (err != 0) {
+    regs->r[0] = (uint32_t) err;
+    return false;
+  }
+
+  return true;
+}
+
+static bool do_OS_ReleaseDeviceVector( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool do_OS_ExitAndDie( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadMemMapInfo( svc_registers *regs )
 {
   regs->r[0] = 4096;
@@ -726,8 +776,8 @@ static bool do_OS_ReadMemMapInfo( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_ReadMemMapEntries( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_SetMemMapEntries( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SetMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_AddCallBack( svc_registers *regs )
 {
@@ -746,30 +796,6 @@ static bool do_OS_AddCallBack( svc_registers *regs )
   workspace.kernel.transient_callbacks = callback;
   callback->code = regs->r[0];
   callback->private_word = regs->r[1];
-  return true;
-}
-
-extern vector default_SpriteV;
-extern vector default_ByteV;
-extern vector default_ChEnvV;
-extern vector default_CliV;
-extern vector do_nothing;
-
-static bool do_OS_ReadDefaultHandler( svc_registers *regs )
-{
-  vector *v = &do_nothing;
-  switch (regs->r[0]) {
-  case 0x05: v = &default_CliV; break;
-  case 0x06: v = &default_ByteV; break;
-  case 0x1e: v = &default_ChEnvV; break;
-  case 0x1f: v = &default_SpriteV; break;
-  default:
-    v = &do_nothing; break;
-  }
-
-  regs->r[1] = v->code;
-  regs->r[2] = v->private_word;
-  regs->r[3] = 0; // Only relevant for Error, CallBack, BreakPoint. These will probably have to be associated with Task Slots...?
   return true;
 }
 
@@ -893,8 +919,8 @@ static const uint32_t SysInfo[] = {
 
   [OSRSI6_DomainId]                                = (uint32_t) &workspace.vectors.zp.DomainId, // current Wimp task handle
   [OSRSI6_OSByteVars]                              = 0xbaad0000 | 71, // OS_Byte vars (previously available via OS_Byte &A6/VarStart)
-  [OSRSI6_FgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor, // Used by SpriteExtend
-  [OSRSI6_BgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.BgEcfOraEor, // Used by SpriteExtend
+  [OSRSI6_FgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws.FgEcfOraEor, // Used by SpriteExtend
+  [OSRSI6_BgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws.BgEcfOraEor, // Used by SpriteExtend
   [OSRSI6_DebuggerSpace]                           = 0xbaad0000 | 74,
   [OSRSI6_DebuggerSpace_Size]                      = 0xbaad0000 | 75,
   [OSRSI6_CannotReset]                             = 0xbaad0000 | 76,
@@ -904,8 +930,8 @@ static const uint32_t SysInfo[] = {
   [OSRSI6_CLibWord]                                = (uint32_t) &workspace.vectors.zp.CLibWord,
   [OSRSI6_FPEAnchor]                               = 0xbaad0000 | 81,
   [OSRSI6_ESC_Status]                              = 0xbaad0000 | 82,
-  [OSRSI6_ECFYOffset]                              = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.ECFYOffset, // Used by SpriteExtend
-  [OSRSI6_ECFShift]                                = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.ECFShift, // Used by SpriteExtend
+  [OSRSI6_ECFYOffset]                              = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws.ECFYOffset, // Used by SpriteExtend
+  [OSRSI6_ECFShift]                                = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws.ECFShift, // Used by SpriteExtend
   [OSRSI6_VecPtrTab]                               = 0xbaad0000 | 85,
   [OSRSI6_NVECTORS]                                = 0xbaad0000 | 86,
   [OSRSI6_CAMFormat]                               = 0xbaad0000 | 87, // 0 = 8 bytes per entry, 1 = 16 bytes per entry
@@ -965,12 +991,12 @@ static bool do_OS_ReadSysInfo( svc_registers *regs )
   return false;
 }
 
-static bool do_OS_Confirm( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_Confirm( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_CRC( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_CRC( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_PrintChar( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ChangeRedirection( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_PrintChar( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ChangeRedirection( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_RemoveCallBack( svc_registers *regs )
 {
   // This is not at all reentrant, and I'm not sure how you could make it so...
@@ -988,7 +1014,7 @@ static bool do_OS_RemoveCallBack( svc_registers *regs )
 }
 
 
-static bool do_OS_FindMemMapEntries( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_FindMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 typedef union {
   struct {
@@ -1015,18 +1041,18 @@ static bool do_OS_SetColour( svc_registers *regs )
   if (flags.read_colour) {
     if (flags.text_colour) {
       if (flags.background)
-        regs->r[1] = workspace.vectors.zp.VduDriverWorkSpace.ws.TextBgColour;
+        regs->r[1] = workspace.vectors.zp.vdu_drivers.ws.TextBgColour;
       else
-        regs->r[1] = workspace.vectors.zp.VduDriverWorkSpace.ws.TextFgColour;
+        regs->r[1] = workspace.vectors.zp.vdu_drivers.ws.TextFgColour;
     }
     else {
       uint32_t *pattern_data = (void*) regs->r[1];
       uint32_t *to_read;
 
       if (flags.background)
-        to_read = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgPattern[0];
+        to_read = &workspace.vectors.zp.vdu_drivers.ws.BgPattern[0];
       else
-        to_read = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgPattern[0];
+        to_read = &workspace.vectors.zp.vdu_drivers.ws.FgPattern[0];
 
       for (int i = 0; i < 8; i++) {
         pattern_data[i] = to_read[i];
@@ -1038,9 +1064,9 @@ static bool do_OS_SetColour( svc_registers *regs )
 
   if (flags.text_colour) {
     if (flags.background)
-      workspace.vectors.zp.VduDriverWorkSpace.ws.TextBgColour = regs->r[1];
+      workspace.vectors.zp.vdu_drivers.ws.TextBgColour = regs->r[1];
     else
-      workspace.vectors.zp.VduDriverWorkSpace.ws.TextFgColour = regs->r[1];
+      workspace.vectors.zp.vdu_drivers.ws.TextFgColour = regs->r[1];
 
     return true;
   }
@@ -1051,15 +1077,15 @@ static bool do_OS_SetColour( svc_registers *regs )
   uint32_t *pattern;
 
   if (flags.background) {
-    workspace.vectors.zp.VduDriverWorkSpace.ws.GPLBMD = flags.action | 0x60;
-    pattern = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgPattern[0];
-    ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgEcfOraEor;
+    workspace.vectors.zp.vdu_drivers.ws.GPLBMD = flags.action | 0x60;
+    pattern = &workspace.vectors.zp.vdu_drivers.ws.BgPattern[0];
+    ecf = &workspace.vectors.zp.vdu_drivers.ws.BgEcfOraEor;
     *vduvarloc[154 - 128] = regs->r[1];
   }
   else {
-    workspace.vectors.zp.VduDriverWorkSpace.ws.GPLFMD = flags.action | 0x60;
-    pattern = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgPattern[0];
-    ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor;
+    workspace.vectors.zp.vdu_drivers.ws.GPLFMD = flags.action | 0x60;
+    pattern = &workspace.vectors.zp.vdu_drivers.ws.FgPattern[0];
+    ecf = &workspace.vectors.zp.vdu_drivers.ws.FgEcfOraEor;
     *vduvarloc[153 - 128] = regs->r[1];
   }
 
@@ -1071,7 +1097,7 @@ static bool do_OS_SetColour( svc_registers *regs )
   }
   else {
     uint32_t colour = regs->r[1];
-    uint32_t log2bpp = workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPP;
+    uint32_t log2bpp = workspace.vectors.zp.vdu_drivers.ws.Log2BPP;
     uint32_t bits = 1 << log2bpp;
     uint32_t mask = (1 << bits) - 1;
     colour = colour & mask;
@@ -1099,12 +1125,13 @@ static bool do_OS_SetColour( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_Pointer( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_Pointer( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ScreenMode( svc_registers *regs )
 {
   Write0( __func__ ); WriteNum( regs->r[0] ); NewLine;
 
-  enum { SelectMode, CurrentModeSpecifier, EnumerateModes, SetMonitorType, ConfigureAcceleration, FlushScreenCache, ForceFlushCache }; // ...
+  enum { SelectMode, CurrentModeSpecifier, EnumerateModes, SetMonitorType, ConfigureAcceleration, FlushScreenCache, ForceFlushCache,
+  RegisterGraphicsVDriver = 64, StartGraphicsVDriver, StopGraphicsVDriver, DeregisterGraphicsVDriver, EnumerateGraphicsVDriver };
 
   switch (regs->r[0]) {
   case SelectMode: 
@@ -1125,17 +1152,23 @@ static bool do_OS_ScreenMode( svc_registers *regs )
     else {
       return Kernel_Error_UnimplementedSWI( regs );
     }
-  case FlushScreenCache: return true;
+  case FlushScreenCache: asm ( "svc 0xff" ); return true;
+
+  case RegisterGraphicsVDriver: regs->r[0] = 1; return true;
+  case StartGraphicsVDriver: return true;
+  case StopGraphicsVDriver: return Kernel_Error_UnimplementedSWI( regs );
+  case DeregisterGraphicsVDriver: return Kernel_Error_UnimplementedSWI( regs );
+  case EnumerateGraphicsVDriver: return Kernel_Error_UnimplementedSWI( regs );
   default: return Kernel_Error_UnimplementedSWI( regs );
   }
 }
 
-static bool do_OS_ClaimProcessorVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_Reset( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ClaimProcessorVector( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_Reset( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_MMUControl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_MMUControl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_ResyncTime( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ResyncTime( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_PlatformFeatures( svc_registers *regs )
 {
@@ -1155,18 +1188,25 @@ static bool do_OS_PlatformFeatures( svc_registers *regs )
   return false;
 }
 
-static bool do_OS_AMBControl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_AMBControl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_SpecialControl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_EnterUSR32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_EnterUSR26( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_VIDCDivider( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_NVMemory( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_Hardware( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_IICOp( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ReadLine32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_SubstituteArgs32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-// static bool do_OS_HeapSort32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SpecialControl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_EnterUSR32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_EnterUSR26( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_VIDCDivider( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_NVMemory( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool do_OS_Hardware( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+  WriteNum( regs->r[8] ); NewLine; // R8?!
+  return Kernel_Error_UnimplementedSWI( regs );
+}
+
+static bool do_OS_IICOp( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadLine32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SubstituteArgs32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+// static bool do_OS_HeapSort32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_SynchroniseCodeAreas( svc_registers *regs )
 {
@@ -1335,38 +1375,96 @@ static bool do_OS_ConvertInteger4( svc_registers *regs )
 }
 
 
-static bool do_OS_ConvertBinary1( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertBinary2( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertBinary3( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertBinary4( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertBinary1( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertBinary2( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertBinary3( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertBinary4( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_ConvertSpacedCardinal1( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedCardinal2( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedCardinal3( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedCardinal4( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedCardinal1( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedCardinal2( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedCardinal3( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedCardinal4( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_ConvertSpacedInteger1( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedInteger2( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedInteger3( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedInteger4( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedInteger1( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedInteger2( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedInteger3( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedInteger4( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_ConvertFixedNetStation( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertNetStation( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertFixedNetStation( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertNetStation( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+
+static int32_t GraphicsWindow_ec_Left()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return (ws->GWLCol << ws->XEigFactor) + ws->OrgX;
+}
+
+static int32_t GraphicsWindow_ec_Bottom()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return (ws->GWBRow << ws->YEigFactor) + ws->OrgY;
+}
+
+static int32_t GraphicsWindow_ec_Right()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return (ws->GWRCol << ws->XEigFactor) + ws->OrgX;
+}
+
+static int32_t GraphicsWindow_ec_Top()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return (ws->GWTRow << ws->YEigFactor) + ws->OrgY;
+}
+
+static int32_t GraphicsWindow_ic_Left()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return ws->GWLCol;
+}
+
+static int32_t GraphicsWindow_ic_Bottom()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return ws->GWBRow;
+}
+
+static int32_t GraphicsWindow_ic_Right()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return ws->GWRCol;
+}
+
+static int32_t GraphicsWindow_ic_Top()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return ws->GWTRow;
+}
 
 static bool CLG( svc_registers *regs )
 {
-  // Move bottom left
-  register uint32_t code asm( "r0" ) = 4;
-  register uint32_t x asm( "r1" ) = 0;
-  register uint32_t y asm( "r2" ) = 0;
-  asm ( "svc 0x45" : : "r" (code), "r" (x), "r" (y) : "lr" );
+  // Was using Plot, but this is not allowed to affect the graphics cursor.
+  // Ugly, ignores many aspects of colour management FIXME.
+  // Good enough for only_one_mode
 
-  // Fill rectangle top right. FIXME don't just try to draw over a random-sized screen!
-  code = 96 + 7;
-  x = 1920 * 4;
-  y = 1080 * 4; 
-  asm ( "svc 0x45" : : "r" (code), "r" (x), "r" (y) : "lr" );
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+
+  int32_t x = GraphicsWindow_ic_Left();
+  int32_t y = GraphicsWindow_ic_Top();
+
+  uint32_t bg_colour = ws->BgPattern[0];
+  uint32_t left = ws->ScreenStart + (ws->YWindLimit - y) * ws->LineLength + (x << 2);
+
+  int32_t rows = GraphicsWindow_ic_Top() - GraphicsWindow_ic_Bottom();
+
+  for (; y > GraphicsWindow_ic_Bottom(); y--) {
+    uint32_t *p = (uint32_t*) left;
+    left += ws->LineLength;
+    for (int xx = x; xx < GraphicsWindow_ic_Right(); xx++) {
+      *p++ = bg_colour;
+    }
+  }
 
   return true;
 }
@@ -1400,6 +1498,14 @@ static bool VDU23( svc_registers *regs )
   }
   NewLine;
 
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+
+  switch (params[0]) {
+  case 16: ws->CursorFlags = (ws->CursorFlags & 0xffffff00) | ((ws->CursorFlags & params[2])^params[3]); break;
+  case 32 ... 255: break; // Should redefine character. Wimp does 131, 132, 136-139
+  default: break; // Do nothing
+  }
+
   return true;
 }
 
@@ -1419,10 +1525,11 @@ static bool DefineGraphicsWindow( svc_registers *regs )
   int32_t r = int16_at( &params[4] );
   int32_t t = int16_at( &params[6] );
 
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = l;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = b;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol = r;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow = t;
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  ws->GWLCol = l >> ws->XEigFactor;
+  ws->GWBRow = b >> ws->YEigFactor;
+  ws->GWRCol = r >> ws->XEigFactor;
+  ws->GWTRow = t >> ws->YEigFactor;
 
   Write0( __func__ ); WriteS( " " ); WriteNum( l ); WriteS( ", " ); WriteNum( b ); WriteS( ", " ); WriteNum( r ); WriteS( ", " ); WriteNum( t ); NewLine;
 
@@ -1449,10 +1556,16 @@ static bool Plot( svc_registers *regs )
 static bool RestoreDefaultWindows( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = 0;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = 0;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol = 1920;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow = 1080;
+  workspace.vectors.zp.vdu_drivers.ws.GWLCol = 0;
+  workspace.vectors.zp.vdu_drivers.ws.GWBRow = 0;
+  workspace.vectors.zp.vdu_drivers.ws.GWRCol = only_one_mode.xres * 2; // os_units FIXME
+  workspace.vectors.zp.vdu_drivers.ws.GWTRow = only_one_mode.yres * 2; // os_units FIXME
+  return true;
+}
+
+static bool Bell()
+{
+  Write0( __func__ ); NewLine;
   return true;
 }
 
@@ -1464,10 +1577,12 @@ static bool do_OS_VduCommand( svc_registers *regs )
 
   switch (regs->r[0]) {
   case 0: asm ( "bkpt 1" ); break; // do nothing, surely shouldn't be called
+  case 1: WriteNum( regs->lr ); asm ( "bkpt 1" ); break; // Send next character to printer if enabled, ignore next char otherwise
   case 2: asm ( "bkpt 1" ); break; // "enable printer"
   case 3: break; // do nothing, "disable printer"
-  case 4: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= ~(1 << 30); return true;
-  case 5: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= (1 << 30); return true;
+  case 4: workspace.vectors.zp.vdu_drivers.ws.CursorFlags |= ~(1 << 30); return true;
+  case 5: workspace.vectors.zp.vdu_drivers.ws.CursorFlags |= (1 << 30); return true;
+  case 7: return Bell();
   case 16: return CLG( regs );
   case 17: return SetTextColour( regs );
   case 19: return SetPalette( regs );
@@ -1478,7 +1593,7 @@ static bool do_OS_VduCommand( svc_registers *regs )
   case 26: return RestoreDefaultWindows( regs );
   default:
     {
-      static error_block error = { 0x111, "Unimplemented VDU code" };
+      static error_block error = { 0x111, "Unimplemented VDU code..." };
       Write0( error.desc ); WriteNum( regs->r[0] ); NewLine;
       regs->r[0] = (uint32_t) &error;
       return false;
@@ -1613,418 +1728,7 @@ static bool do_OS_FlushCache( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_ConvertFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-
-bool do_OS_ThreadOp( svc_registers *regs )
-{
-  if ((regs->spsr & 0x1f) != 0x10) {
-    WriteNum( regs->spsr ); NewLine;
-    static error_block error = { 0x999, "OS_ThreadOp only supported from usr mode, so far." };
-    regs->r[0] = (uint32_t) &error;
-    return false;
-  }
-
-  enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, SetInterruptHandler };
-  // Start a new thread
-  // Exit a thread (last one out turns out the lights for the slot)
-  // Wait until woken
-  // Sleep (microseconds)
-  // Wake thread (setting registers?)
-  // Get the handle of the current thread
-  // Set interrupt handler (not strictly thread related)
-  switch (regs->r[0]) {
-  case Start:
-    {
-      Task *new_task = Task_new( workspace.task_slot.running->slot );
-      Write0( "Task allocated " ); WriteNum( new_task ); NewLine;
-
-      new_task->slot = workspace.task_slot.running->slot;
-
-      Task *running = workspace.task_slot.running;
-      new_task->next = running;
-      workspace.task_slot.running = new_task;
-
-      // Save task context (integer only), including the usr stack pointer
-      // The register values when the creating task is resumed
-      running->regs.r[0] = (uint32_t) new_task;
-      running->regs.r[1] = regs->r[1];
-      running->regs.r[2] = regs->r[2];
-      running->regs.r[3] = regs->r[3];
-      running->regs.r[4] = regs->r[4];
-      running->regs.r[5] = regs->r[5];
-      running->regs.r[6] = regs->r[6];
-      running->regs.r[7] = regs->r[7];
-      running->regs.r[8] = regs->r[8];
-      running->regs.r[9] = regs->r[9];
-      running->regs.r[10] = regs->r[10];
-      running->regs.r[11] = regs->r[11];
-      running->regs.r[12] = regs->r[12];
-      running->regs.pc = regs->lr;
-      running->regs.psr = regs->spsr;
-
-      switch (regs->spsr & 0x1f) {
-      case 0x10:
-        {
-        asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (running->regs.sp) );
-        }
-        break;
-      default:
-        // FIXME
-        {
-          WriteNum( regs->spsr ); NewLine;
-          static error_block error = { 0x999, "Don't create threads from privileged modes?" };
-          regs->r[0] = (uint32_t) &error;
-        }
-        return false;
-      }
-
-      // Replace the calling task with the new task
-
-      uint32_t starting_sp = regs->r[2];
-      regs->lr = regs->r[1];
-      // The new thread will start with the same psr as the parent
-
-      asm volatile ( "msr sp_usr, %[sp]" : : [sp] "r" (starting_sp) );
-
-      regs->r[0] = (uint32_t) new_task;
-      regs->r[1] = regs->r[3];
-      regs->r[2] = regs->r[4];
-      regs->r[3] = regs->r[5];
-      regs->r[4] = regs->r[6];
-      regs->r[5] = regs->r[7];
-      regs->r[6] = regs->r[8];
-
-      // FIXME: do something clever with floating point
-
-      Write0( "Task created" ); NewLine;
-
-      return true;
-    }
-  case Sleep:
-    {
-      // No interrupts yet, just yield to another thread
-
-      Task *running = workspace.task_slot.running;
-      if (running == 0) { Write0( "Sleep, but running is zero" ); NewLine; asm( "wfi" ); }
-
-      Task *resume = running->next;
-      if (resume == 0) { Write0( "Sleep, but resume is zero" ); NewLine; asm( "wfi" ); }
-      workspace.task_slot.running = resume;
-
-      Task *last = running;
-      while (last->next != 0) {
-        last = last->next;
-      }
-
-      running->next = 0;
-      last->next = running;     // Fakey fakey, the task should be taken 
-                                // out of the list altogether and
-                                // re-activated when an interrupt occurs.
-
-
-      // Save task context (integer only), including the usr stack pointer
-      // The register values when the task is resumed
-      running->regs.r[0] = regs->r[0];
-      running->regs.r[1] = regs->r[1];
-      running->regs.r[2] = regs->r[2];
-      running->regs.r[3] = regs->r[3];
-      running->regs.r[4] = regs->r[4];
-      running->regs.r[5] = regs->r[5];
-      running->regs.r[6] = regs->r[6];
-      running->regs.r[7] = regs->r[7];
-      running->regs.r[8] = regs->r[8];
-      running->regs.r[9] = regs->r[9];
-      running->regs.r[10] = regs->r[10];
-      running->regs.r[11] = regs->r[11];
-      running->regs.r[12] = regs->r[12];
-      running->regs.pc = regs->lr;
-      running->regs.psr = regs->spsr;
-
-      switch (regs->spsr & 0x1f) {
-      case 0x10:
-        {
-          asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (running->regs.sp) );
-        }
-        break;
-      default:
-        // FIXME
-        {
-          asm ( "bkpt 1" );
-        }
-        return false;
-      }
-
-      // Replace the calling task with the next task in the queue
-      regs->lr = resume->regs.pc;
-      regs->spsr = resume->regs.psr;
-      asm volatile ( "msr sp_usr, %[sp]" : : [sp] "r" (resume->regs.sp) );
-
-      regs->r[0] = resume->regs.r[0];
-      regs->r[1] = resume->regs.r[1];
-      regs->r[2] = resume->regs.r[2];
-      regs->r[3] = resume->regs.r[3];
-      regs->r[4] = resume->regs.r[4];
-      regs->r[5] = resume->regs.r[5];
-      regs->r[6] = resume->regs.r[6];
-      regs->r[7] = resume->regs.r[7];
-      regs->r[8] = resume->regs.r[8];
-      regs->r[9] = resume->regs.r[9];
-      regs->r[10] = resume->regs.r[10];
-      regs->r[11] = resume->regs.r[11];
-      regs->r[12] = resume->regs.r[12];
-
-      // FIXME: do something clever with floating point
-
-      return true;
-    }
-  default: return Kernel_Error_UnimplementedSWI( regs );
-  }
-}
-
-struct os_pipe {
-  os_pipe *next;
-  Task *sender;
-  Task *receiver;
-  uint32_t physical;
-  uint32_t allocated_mem;
-  uint32_t virtual_receiver;
-  uint32_t virtual_sender;
-  uint32_t max_block_size;
-  uint32_t max_data;
-  uint32_t write_index;
-  uint32_t read_index;
-};
-
-static bool PipeCreate( svc_registers *regs )
-{
-  uint32_t max_block_size = regs->r[2];
-  uint32_t max_data = regs->r[3];
-  uint32_t allocated_mem = regs->r[4];
-
-  if (max_block_size == 0 || max_block_size > max_data) {
-    // FIXME
-    return Kernel_Error_UnimplementedSWI( regs );
-  }
-
-  if (max_data != 0) {
-    // FIXME
-    return Kernel_Error_UnimplementedSWI( regs );
-  }
-
-  os_pipe *pipe = rma_allocate( sizeof( os_pipe ), regs );
-
-  if (pipe == 0) {
-    asm ( "bkpt 1" );
-  }
-
-  // At the moment, the running task is the only one that knows about it.
-  // If it goes away, the resource should be cleaned up.
-  pipe->sender = pipe->receiver = workspace.task_slot.running;
-
-  pipe->max_block_size = max_block_size;
-  pipe->max_data = max_data;
-  pipe->allocated_mem = allocated_mem;
-  pipe->physical = Kernel_allocate_pages( 4096, 4096 );
-
-  // The following will be updated on the first calls to WaitForSpace and WaitForData, respectively.
-  pipe->virtual_sender = -1;
-  pipe->virtual_receiver = -1;
-
-  pipe->write_index = allocated_mem & 0xfff;
-  pipe->read_index = allocated_mem & 0xfff;
-
-  claim_lock( &shared.kernel.pipes_lock );
-  pipe->next = shared.kernel.pipes;
-  shared.kernel.pipes = pipe;
-  release_lock( &shared.kernel.pipes_lock );
-
-  regs->r[1] = (uint32_t) pipe;
-
-  return true;
-}
-
-static bool PipeWaitForSpace( svc_registers *regs )
-{
-  return true;
-}
-
-static bool PipeSpaceFilled( svc_registers *regs )
-{
-  return true;
-}
-
-static bool PipePassingOver( svc_registers *regs )
-{
-  os_pipe *pipe = (void*) regs->r[1];
-
-  pipe->virtual_sender = -1;
-
-  return true;
-}
-
-static bool PipeNoMoreData( svc_registers *regs )
-{
-  return true;
-}
-
-static bool PipeWaitForData( svc_registers *regs )
-{
-  return true;
-}
-
-static bool PipeDataFreed( svc_registers *regs )
-{
-  return true;
-}
-
-static bool PipePassingOff( svc_registers *regs )
-{
-  os_pipe *pipe = (void*) regs->r[1];
-
-  pipe->virtual_receiver = -1;
-
-  return true;
-}
-
-static bool PipeNotListening( svc_registers *regs )
-{
-  return true;
-}
-
-
-bool do_OS_PipeOp( svc_registers *regs )
-{
-  enum { Create, WaitForSpace, SpaceFilled, PassingOver, NoMoreData, WaitForData, DataFreed, PassingOff, NotListening };
-  /*
-    OS_PipeOp
-    (SWI &fa)
-    Entry 	
-    R0 	Reason code
-    All other registers dependent on reason code
-
-    Exit
-    R0 	Preserved
-    All other registers dependent on reason code
-
-    Use
-
-    The purpose of this call is to transfer data between tasks, pausing the calling thread 
-    while it waits for data or space to write to.
-
-    Notes
-
-    The action performed depends on the reason code value in R0.
-    R1 is used to hold the handle for the pipe (On exit from Create, on entry to all other actions)
-
-    Reason Codes
-        # 	Hex # 	Action
-        0 	&00 	Create a pipe and return a handle
-        1 	&01 	Pause the thread until sufficient space is available for writing
-        2 	&02 	Indicate to the receiver that more data is available
-        3 	&03 	Indicate to the receiver that no more data will be written to the pipe
-        4 	&04 	Pause the thread until sufficient data is available for reading
-        5       &05     Indicate to the transmitter that some data has been consumed
-        6       &06     Indicate to the transmitter that the receiver is no longer interested in receiving data
-
-    OS_PipeOp 0
-    (SWI &fa)
-
-    Entry 	
-    R0 	0
-    R2  Maximum block size (the most that Transmitter or Receiver may request at a time)
-    R3  Maximum data amount (the total amount of data to be transferred through this pipe)
-                0 indicates the amount is unknown at creation
-    R4  Allocated memory (0 for the kernel to allocate memory)
-                Virtual memory address of where the transferred data will be stored.
-                Ignored if R3 is 0.
-
-    Exit
-    R0 	Preserved
-    R1 	Pipe handle
-    R2  Preserved
-    R3  Preserved
-    R4  Preserved
-
-    Use
-
-        Create a pipe to be shared between two threads, one Transmitter and one Receiver.
-
-    Notes
-        
-
-
-
-    PassingOver - about to ask another task to send its data to this pipe
-    PassingOff - about to ask another task to handle the data from this pipe
-  */
-
-/* Create a pipe, pass it to another thread to read or write, while you do the other.
-
-   Create:
-     max_block_size - neither reader nor writer may request a larger contiguous block than this
-     max_data       - The maximum amount that can be transferred (typically the size of a file)
-                    - if 0, undefined.
-     allocated_mem  - memory to use for the pipe (if 0, allocate memory internally)
-                    - useful for transferring chunks of data between programs.
-                    - e.g. JPEG_Decode( source pipe, destination pipe )
-                    - The other end of the pipe will have access to full pages of memory,
-                      the first area of memory returned to it will be offset by the least
-                      significant bits of the allocated_mem pointer.
-                    - Providing a non-page aligned block of memory for a file system to
-                      write to will result in copying overhead (possibly excepting if it's
-                      sector-size aligned).
-
-   The definition of the calls that return the address of the next available memory (to
-   write or read) allows for the OS to map the memory in different places as and if needed.
-
-
-
-   Read thread (example):
-     repeat
-       <available,location> = WaitForData( size ) -- may block
-       while available >= size then
-         process available (or size) bytes at location
-         <available,location> = FreeSpace( available (or size) )
-       endif
-     until location == 0
-
-   Write thread (example):
-     repeat
-       <available,location> = WaitForSpace( size ) -- may block
-       if location != 0 then
-         Write up to available bytes of data to location
-         <available,location> = SpaceUsed( amount_written (or less) )
-       endif
-     until location == 0
-
-   If the reader is no longer interested, it should call NotListening.
-   From that point on, the writer thread will be released if blocked,
-   and always receive <0,0> from WaitForSpace and SpaceUsed.
-
-   If the writer has no more data, it should call NoMoreData.
-   The reader thread will be released, and WaitForData will always return
-   immediately, possibly with available < the requested size.
-   Once all available data is freed, the read SWIs will return <0,0>.
-
-   Once NotListening and NoMoreData have both been called for a pipe, its
-   resources will be released.
-
-*/
-  switch (regs->r[0]) {
-  case Create: return PipeCreate( regs );
-  case WaitForSpace: return PipeWaitForSpace( regs );
-  case PassingOver: return PipePassingOver( regs );
-  case SpaceFilled: return PipeSpaceFilled( regs );
-  case NoMoreData: return PipeNoMoreData( regs );
-  case WaitForData: return PipeWaitForData( regs );
-  case DataFreed: return PipeDataFreed( regs );
-  case PassingOff: return PipePassingOver( regs );
-  case NotListening: return PipeNotListening( regs );
-  default:
-    asm( "bkpt 1" );
-  }
-  return false;
-}
+static bool do_OS_ConvertFileSize( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 bool do_OS_Heap( svc_registers *regs )
 {
@@ -2241,6 +1945,7 @@ static swifn os_swis[256] = {
   [OS_ConvertNetStation] =  do_OS_ConvertNetStation,
   [OS_ConvertFixedFileSize] =  do_OS_ConvertFixedFileSize,
 
+  [OS_MSTime] = do_OS_MSTime,
   [OS_ThreadOp] = do_OS_ThreadOp,
   [OS_PipeOp] = do_OS_PipeOp,
 
@@ -2568,8 +2273,9 @@ goto retry;
     }
   }
 
-  if (0 == (regs->spsr & 0x1f)) {
+  if (0x10 == (regs->spsr & 0x1f)) {
     run_transient_callbacks();
+    swi_returning_to_usr_mode( regs );
   }
 
   asm ( "pop { r0-r12 }"

@@ -37,6 +37,7 @@ typedef struct shared_workspace shared_workspace;
 #include "mmu.h"
 #include "memory_manager.h"
 #include "task_slot.h"
+#include "interrupts.h"
 
 typedef struct callback callback;
 
@@ -78,6 +79,8 @@ struct Kernel_workspace {
   module *module_list_tail;
   uint32_t DomainId;
   vector *vectors[64];   // https://www.riscosopen.org/wiki/documentation/show/Software%20Vector%20Numbers
+
+  Task *irq_task;
 
   // 0 -> disabled
   // There is no associated code, it will be listening for EventV.
@@ -146,6 +149,7 @@ extern struct core_workspace {
       uint32_t svc;
       uint32_t prefetch;
       uint32_t data;
+      uint32_t unused_vector;
       uint32_t irq;
       uint32_t fiq[2]; // Shrunk, because legacy zero page starts lower than I thought.
 
@@ -155,6 +159,7 @@ extern struct core_workspace {
       void (*svc_vec)();
       void (*prefetch_vec)();
       void (*data_vec)();
+      uint32_t unused;
       void (*irq_vec)();
     };
     LegacyZeroPage zp;
@@ -162,6 +167,7 @@ extern struct core_workspace {
 
   uint32_t core_number;
   struct MMU_workspace mmu;
+  struct Interrupts_workspace interrupts;
   struct VDU_workspace vdu;
   struct Kernel_workspace kernel;
   struct Memory_manager_workspace memory;
@@ -170,6 +176,7 @@ extern struct core_workspace {
 
 extern struct shared_workspace {
   struct MMU_shared_workspace mmu;
+  struct Interrupts_shared_workspace interrupts;
   struct Kernel_shared_workspace kernel;
   struct Memory_manager_shared_workspace memory;
   struct TaskSlot_shared_workspace task_slot;

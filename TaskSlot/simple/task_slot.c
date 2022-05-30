@@ -39,11 +39,13 @@ struct handler {
 
 struct TaskSlot {
   bool allocated;
+  uint32_t lock;
   physical_memory_block blocks[10];
   handler handlers[17];
   char const *command;
   uint64_t start_time;
   Task task;
+  Task *waiting;       // 0 or more tasks waiting for locks
 };
 
 extern TaskSlot task_slots[];
@@ -72,20 +74,6 @@ extern Task tasks[];
 
 void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
 {
-  if (regs[0] > 16) {
-    asm( "bkpt 1" );
-  }
-
-#if 0
-  // Called for 14, from DeviceFS initialisation
-  // Do I need DeviceFS yet?
-  if (workspace.task_slot == 0 || workspace.task_slot.running == 0) {
-    regs[1] = 0;
-    regs[2] = 0;
-    regs[3] = 0;
-    return true;
-  }
-#endif
   assert( workspace.task_slot.running != 0 );
 
   Task *running = workspace.task_slot.running;
@@ -93,6 +81,10 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
   assert( running->slot != 0 );
 
   TaskSlot *slot = running->slot;
+
+  if (regs[0] > number_of( slot->handlers )) {
+    asm( "bkpt 1" );
+  }
 
   handler *h = &slot->handlers[regs[0]];
   handler old = *h;
@@ -113,12 +105,14 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
 
 void __attribute__(( naked )) default_os_changeenvironment()
 {
+  asm ( "push { "C_CLOBBERED" }" );     // Intercepting
   register uint32_t *regs;
-  asm ( "push { r0-r3 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+
+  asm ( "mov %[regs], sp" : [regs] "=r" (regs) );
 
   do_ChangeEnvironment( regs );
 
-  asm ( "pop { r0-r3, pc }" );
+  asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
 static inline bool is_in_tasks( uint32_t va )
@@ -232,7 +226,9 @@ TaskSlot *TaskSlot_new( char const *command_line )
   // FIXME: make this a linked list of free objects
   for (int i = 0; i < 4096/sizeof( TaskSlot ) && result == 0; i++) {
     if (!task_slots[i].allocated) {
+#ifdef DEBUG__WATCH_TASK_SLOTS
 WriteS( "Allocated TaskSlot " ); WriteNum( i ); NewLine;
+#endif
       result = &task_slots[i];
       result->allocated = true;
     }
@@ -273,6 +269,8 @@ WriteS( "Allocated TaskSlot " ); WriteNum( i ); NewLine;
   strcpy( copy, command_line );
   result->command = copy;
   result->start_time = 0; // cs since Jan 1st 1900 TODO
+  result->lock = 0;
+  result->waiting = 0;
 
 #ifdef DEBUG__WATCH_TASK_SLOTS
   Write0( "TaskSlot_new " ); WriteNum( (uint32_t) result ); NewLine;
@@ -369,3 +367,788 @@ void __attribute__(( noinline )) do_FSControl( uint32_t *regs )
     WriteNum( regs[0] ); NewLine; asm ( "bkpt 1" );
   }
 }
+
+void swi_returning_to_usr_mode( svc_registers *regs )
+{
+  if (workspace.kernel.irq_task->next != 0) {
+    Write0( "Wibble" ); NewLine; for (;;) {}
+  }
+}
+
+static void __attribute__(( noinline )) c_default_ticker()
+{
+  // Interrupts disabled, core-specific
+  if (workspace.task_slot.sleeping != 0) {
+#ifdef DEBUG__SHOW_TASK_SWITCHES
+// Slow down the clock a lot if you want this output!
+char *st = "Asleep: ";
+Task *asleep = workspace.task_slot.sleeping;
+while (asleep != 0) {
+Write0( st ); st = ", ";
+WriteNum( asleep ); Write0( "(" ); WriteNum( asleep->regs.r[1] ); Write0( ")" );
+asleep = asleep->next;
+}
+NewLine;
+#endif
+    if (0 == --workspace.task_slot.sleeping->regs.r[1]) {
+      // FIXME: Choice to make: newly woken more important than running
+      // task, or put at the head of the tail of tasks or the tail of the tail?
+      // Going for more important, so that resource-hogs get pre-empted.
+
+      // Since this is called from an interrupt, the running task's context has 
+      // already been stored and the task stored in running will be resumed.
+      // BUT! The running task might be in a SWI
+      // Solution(?): queue them after the irq_task and wait for the SWI to complete
+      // (or call OS_LeaveOS?)
+
+      Task **p = &workspace.kernel.irq_task->next;
+      while ((*p) != 0) { p = &(*p)->next; } // In case any other tasks still waiting...
+
+      Task *still_sleeping = workspace.task_slot.sleeping;
+      Task *last_resume = workspace.task_slot.sleeping;
+
+      while (still_sleeping != 0 && still_sleeping->regs.r[1] == 0) {
+        last_resume = still_sleeping;
+        still_sleeping = still_sleeping->next;
+      }
+
+      if (workspace.task_slot.sleeping->regs.r[1] == 0) {
+        // Some (maybe all) have woken...
+        last_resume->next = 0;
+        // Add to end of irq_task list
+        *p = workspace.task_slot.sleeping;
+        // Remove only them from sleeping list
+        workspace.task_slot.sleeping = still_sleeping;
+      }
+    }
+  }
+}
+
+void __attribute__(( naked )) default_ticker()
+{
+  asm ( "push { "C_CLOBBERED" }" ); // Intend to intercept the vector
+  c_default_ticker();
+  asm ( "pop { "C_CLOBBERED", pc }" );
+}
+
+// FIXME make the following static, as soon as they work!
+void __attribute__(( noinline )) save_and_resume( Task *running, Task *resume, svc_registers *regs )
+{
+  workspace.task_slot.running = resume;
+
+  // Save task context (integer only), including the usr stack pointer and link register
+  // The register values when the task is resumed
+  for (int i = 0; i < 13; i++) {
+    running->regs.r[i] = regs->r[i];
+  }
+
+  running->regs.pc = regs->lr;
+  running->regs.psr = regs->spsr;
+  asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (running->regs.banked_sp) );
+  asm volatile ( "mrs %[lr], lr_usr" : [lr] "=r" (running->regs.banked_lr) );
+
+  // Replace the calling task with the next task in the queue
+  regs->lr = resume->regs.pc;
+  regs->spsr = resume->regs.psr;
+  asm volatile ( "msr sp_usr, %[sp]" : : [sp] "r" (resume->regs.banked_sp) );
+  asm volatile ( "msr lr_usr, %[lr]" : : [lr] "r" (resume->regs.banked_lr) );
+
+  for (int i = 0; i < 13; i++) {
+    regs->r[i] = resume->regs.r[i];
+  }
+
+  // FIXME: do something clever with floating point
+}
+
+/* Lock states: 
+ *   Idle: 0
+ *   Owned: Bits 31-1 contain task id, bit 0 set if tasks want the lock
+ * Once owned, the lock value will only be changed by:
+ *      a waiting task setting bit 0, or
+ *      the owning task releasing the lock
+ * In the latter case, the new state will either be idle, or the id of
+ * a newly released waiting thread, with bit 0 set according to whether
+ * there are tasks queued waiting.
+ *
+ * If there are none queued, but the lock is wanted by another task,
+ * that task will be waiting in a call to Claim, which will set the
+ * bit before the task is blocked. Either the releasing task will see
+ * the set bit (and call Release) or the Claim write will fail and
+ * re-try with an idle lock.
+ */
+
+typedef union {
+  Task *raw;
+  struct {
+    uint32_t wanted:1;
+    uint32_t task:31;
+  };
+} TaskLock;
+
+bool __attribute__(( noinline )) Claim( svc_registers *regs )
+{
+  // TODO check valid address for task (and return error)
+  uint32_t *lock = (void *) regs->r[1];
+  regs->r[0] = 0; // Default boolean result - not already owner. Only returns when claimed.
+
+  uint32_t failed;
+
+  Task *running = workspace.task_slot.running;
+  Task *next = running->next;
+  TaskSlot *slot = running->slot;
+
+  TaskLock code = { .raw = running };
+  assert ( !code.wanted );
+
+  claim_lock( &running->slot->lock );
+  // Despite this lock, we will still be competing for the lock word with
+  // tasks that haven't claimed the lock yet or one waiting to release it.
+
+  TaskLock latest_read;
+
+  do {
+    asm volatile ( "ldrex %[value], [%[lock]]"
+                   : [value] "=&r" (latest_read.raw)
+                   : [lock] "r" (lock) );
+
+    if (code.task == latest_read.task) {
+      // No need for a clrex: "An exception return clears the local monitor. As
+      // a result, performing a CLREX instruction as part of a context switch 
+      // is not required in most situations." ARM DDI 0487C.a E2-3051
+
+      regs->r[0] = 1; // Already own it!
+      goto noerror;
+    }
+
+    if (latest_read.raw == 0) {
+      asm volatile ( "strex %[failed], %[value], [%[lock]]"
+                     : [failed] "=&r" (failed)
+                     , [lock] "+r" (lock)
+                     : [value] "r" (code.raw) );
+// Note: as part of testing, I put debug output between the LDREX and the STREX.
+// That was a mistake, since returning from an exception does a CLREX
+    }
+    else {
+      // Another task owns it, add to blocked list for task slot, block...
+
+      save_and_resume( running, next, regs );
+
+      // Find last pointer in list (may be head pointer)
+      // FIXME have a pointer to the last pointer in the list?
+      // The list will only be as long as the number of tasks
+      // in the slot.
+      Task **p = &slot->waiting;
+      while ((*p) != 0) p = &(*p)->next;
+
+      *p = running;
+      running->next = 0;
+
+      workspace.task_slot.running = next;
+      // There's always a next, idle tasks don't sleep.
+
+      goto noerror;
+    }
+  } while (failed);
+
+noerror:
+  release_lock( &running->slot->lock );
+  return true;
+
+errorreturn:
+  release_lock( &running->slot->lock );
+  return false;
+}
+
+bool __attribute__(( noinline )) Release( svc_registers *regs )
+{
+  static error_block not_owner = { 0x999, "Don't try to release locks you don't own!" };
+
+  // TODO check valid address for task
+  uint32_t lock = (void *) regs->r[1];
+
+  uint32_t failed;
+
+  Task *running = workspace.task_slot.running;
+  Task *next = running->next;
+  TaskSlot *slot = running->slot;
+
+  TaskLock code = { .raw = running };
+  assert ( !code.wanted );
+
+  claim_lock( &running->slot->lock );
+  // Despite this lock, we will still be competing for the lock word with
+  // tasks that haven't claimed the lock yet or one waiting to release it.
+
+  TaskLock latest_read;
+
+  do {
+    asm volatile ( "ldrex %[value], [%[lock]]"
+                   : [value] "=&r" (latest_read.raw)
+                   : [lock] "r" (lock) );
+    if (latest_read.task == code.task) {
+      // Owner of lock, good.
+      Task *waiting = 0;
+
+      TaskLock new_code = { .raw = 0 };
+
+      if (latest_read.wanted) {
+        Task **p = &slot->waiting;
+        while ((*p) == 0 && ((*p)->regs.r[1] != lock)) p = &(*p)->next;
+
+        waiting = *p;
+
+        *p = waiting->next;
+
+        // Ready to go, next time the running task blocks (e.g. by trying to gain this lock again)
+        waiting->next = running->next;
+        running->next = waiting;
+
+        while ((*p) == 0 && ((*p)->regs.r[1] != lock)) p = &(*p)->next;
+
+        new_code.raw = (uint32_t) waiting;
+
+        if (*p != 0) {
+          new_code.wanted = 1;
+        }
+      }
+
+      // Write Idle or the new owner (with or without wanted bit)
+      do {
+        asm volatile ( "strex %[failed], %[value], [%[lock]]"
+                       : [failed] "=&r" (failed)
+                       , [lock] "+r" (lock)
+                       : [value] "r" (new_code.raw) );
+        if (failed) {
+          new_code.wanted = 1;
+          asm volatile ( "ldrex %[value], [%[lock]]"
+                   : [value] "=&r" (latest_read.raw)
+                   : [lock] "r" (lock) );
+
+          if (latest_read.task != code.task || latest_read.wanted == 0) {
+            asm ( "bkpt 1" ); // Someone's broken the contract
+          }
+        }
+        // The only reason the store would fail is that a task has
+        // updated the lock, and this is the owning task.
+      } while (failed);
+
+      goto noerror;
+    }
+    else {
+      WriteNum( latest_read.raw ); NewLine;
+      WriteNum( (uint32_t) running ); NewLine;
+
+      regs->r[0] = (uint32_t) &not_owner;
+      goto errorreturn;
+    }
+  } while (failed);
+
+noerror:
+  release_lock( &running->slot->lock );
+  return true;
+
+errorreturn:
+  release_lock( &running->slot->lock );
+  return false;
+}
+
+bool __attribute__(( optimize( "O4" ) )) do_OS_ThreadOp( svc_registers *regs )
+{
+  if ((regs->spsr & 0x1f) != 0x10) {
+    WriteNum( regs->spsr ); NewLine;
+    static error_block error = { 0x999, "OS_ThreadOp only supported from usr mode, so far." };
+    regs->r[0] = (uint32_t) &error;
+    return false;
+  }
+
+  enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, LockClaim, LockRelease };
+
+  // Start a new thread
+  // Exit a thread (last one out turns out the lights for the slot)
+  // Wait until woken
+  // Sleep (microseconds)
+  // Wake thread (setting registers?)
+  // Get the handle of the current thread
+  // Set interrupt handler (not strictly thread related)
+  switch (regs->r[0]) {
+  case Start:
+    {
+      Task *new_task = Task_new( workspace.task_slot.running->slot );
+      Write0( "Task allocated " ); WriteNum( (uint32_t) new_task ); NewLine;
+
+      assert( new_task->slot == workspace.task_slot.running->slot );
+
+      Task *running = workspace.task_slot.running;
+      new_task->next = running;
+      workspace.task_slot.running = new_task;
+
+      // Save task context (integer only), including the usr stack pointer
+      // The register values when the creating task is resumed
+      running->regs.r[0] = (uint32_t) new_task;
+      running->regs.r[1] = regs->r[1];
+      running->regs.r[2] = regs->r[2];
+      running->regs.r[3] = regs->r[3];
+      running->regs.r[4] = regs->r[4];
+      running->regs.r[5] = regs->r[5];
+      running->regs.r[6] = regs->r[6];
+      running->regs.r[7] = regs->r[7];
+      running->regs.r[8] = regs->r[8];
+      running->regs.r[9] = regs->r[9];
+      running->regs.r[10] = regs->r[10];
+      running->regs.r[11] = regs->r[11];
+      running->regs.r[12] = regs->r[12];
+      running->regs.pc = regs->lr;
+      running->regs.psr = regs->spsr;
+
+      asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (running->regs.banked_sp) );
+      asm volatile ( "mrs %[lr], lr_usr" : [lr] "=r" (running->regs.banked_lr) );
+
+      // Replace the calling task with the new task
+
+      uint32_t starting_sp = regs->r[2];
+      regs->lr = regs->r[1];
+      // The new thread will start with the same psr as the parent
+
+      asm volatile ( "msr sp_usr, %[sp]" : : [sp] "r" (starting_sp) );
+      asm volatile ( "msr lr_usr, %[lr]" : : [lr] "r" (0) ); // FIXME: Code that does OS_Exit?
+
+      regs->r[0] = (uint32_t) new_task;
+      regs->r[1] = regs->r[3];
+      regs->r[2] = regs->r[4];
+      regs->r[3] = regs->r[5];
+      regs->r[4] = regs->r[6];
+      regs->r[5] = regs->r[7];
+      regs->r[6] = regs->r[8];
+
+      // FIXME: do something clever with floating point
+
+      Write0( "Task created" ); NewLine;
+
+      return true;
+    }
+  case Sleep:
+    {
+      Task *running = workspace.task_slot.running;
+      if (running == 0) { Write0( "Sleep, but running is zero" ); NewLine; asm( "wfi" ); }
+
+      Task *resume = running->next;
+      if (resume == 0 && regs->r[1] != 0) { Write0( "Sleep, but resume is zero" ); NewLine; asm ( "bkpt 1" ); }
+
+#ifdef DEBUG__SHOW_TASK_SWITCHES
+Write0( "Sleeping " ); WriteNum( running ); Write0( ", waking " ); WriteNum( resume ); NewLine;
+#endif
+
+      if (regs->r[1] == 0) {
+        if (resume == 0) return true; // Nothing to do, only one thread running
+
+        // Yield
+        Task *last = running;
+        while (last->next != 0) {
+          last = last->next;
+        }
+        last->next = running;
+        running->next = 0;
+      }
+      else {
+        Task **sleeper = &workspace.task_slot.sleeping;
+
+        // Subtract the times of the tasks that will be woken before this one
+        while (*sleeper != 0 && regs->r[1] >= (*sleeper)->regs.r[1]) {
+          regs->r[1] -= (*sleeper)->regs.r[1];
+          sleeper = &(*sleeper)->next;
+        }
+
+        // Subtract the remaining time for this task from the next to be woken (if any)
+        if (0 != *sleeper)
+          (*sleeper)->regs.r[1] -= regs->r[1];
+
+        running->next = (*sleeper);
+        *sleeper = running;
+      }
+
+      save_and_resume( running, resume, regs );
+
+      return true;
+    }
+  case LockClaim:
+    {
+      return Claim( regs );
+    }
+  case LockRelease:
+    {
+      return Release( regs );
+    }
+  default: return Kernel_Error_UnimplementedSWI( regs );
+  }
+}
+
+struct os_pipe {
+  os_pipe *next;
+  Task *sender;
+  Task *receiver;
+  uint32_t physical;
+  uint32_t allocated_mem;
+  uint32_t virtual_receiver;
+  uint32_t virtual_sender;
+  uint32_t max_block_size;
+  uint32_t max_data;
+  uint32_t write_index;
+  uint32_t read_index;
+};
+
+static bool PipeCreate( svc_registers *regs )
+{
+  uint32_t max_block_size = regs->r[2];
+  uint32_t max_data = regs->r[3];
+  uint32_t allocated_mem = regs->r[4];
+
+  if (max_block_size == 0 || max_block_size > max_data) {
+    // FIXME
+    return Kernel_Error_UnimplementedSWI( regs );
+  }
+
+  if (max_data != 0) {
+    // FIXME
+    return Kernel_Error_UnimplementedSWI( regs );
+  }
+
+  os_pipe *pipe = rma_allocate( sizeof( os_pipe ), regs );
+
+  if (pipe == 0) {
+    asm ( "bkpt 1" );
+  }
+
+  // At the moment, the running task is the only one that knows about it.
+  // If it goes away, the resource should be cleaned up.
+  pipe->sender = pipe->receiver = workspace.task_slot.running;
+
+  pipe->max_block_size = max_block_size;
+  pipe->max_data = max_data;
+  pipe->allocated_mem = allocated_mem;
+  pipe->physical = Kernel_allocate_pages( 4096, 4096 );
+
+  // The following will be updated on the first calls to WaitForSpace and WaitForData, respectively.
+  pipe->virtual_sender = -1;
+  pipe->virtual_receiver = -1;
+
+  pipe->write_index = allocated_mem & 0xfff;
+  pipe->read_index = allocated_mem & 0xfff;
+
+  claim_lock( &shared.kernel.pipes_lock );
+  pipe->next = shared.kernel.pipes;
+  shared.kernel.pipes = pipe;
+  release_lock( &shared.kernel.pipes_lock );
+
+  regs->r[1] = (uint32_t) pipe;
+
+  return true;
+}
+
+static bool PipeWaitForSpace( svc_registers *regs )
+{
+  return true;
+}
+
+static bool PipeSpaceFilled( svc_registers *regs )
+{
+  return true;
+}
+
+static bool PipePassingOver( svc_registers *regs )
+{
+  os_pipe *pipe = (void*) regs->r[1];
+
+  pipe->virtual_sender = -1;
+
+  return true;
+}
+
+static bool PipeUnreadData( svc_registers *regs )
+{
+  os_pipe *pipe = (void*) regs->r[1];
+
+  // TODO
+
+  return true;
+}
+
+static bool PipeNoMoreData( svc_registers *regs )
+{
+  return true;
+}
+
+static bool PipeWaitForData( svc_registers *regs )
+{
+  return true;
+}
+
+static bool PipeDataFreed( svc_registers *regs )
+{
+  return true;
+}
+
+static bool PipePassingOff( svc_registers *regs )
+{
+  os_pipe *pipe = (void*) regs->r[1];
+
+  pipe->virtual_receiver = regs->r[2];
+
+  // TODO Unmap from virtual memory (if new receiver not in same slot)
+
+  return true;
+}
+
+static bool PipeNotListening( svc_registers *regs )
+{
+  return true;
+}
+
+
+bool do_OS_PipeOp( svc_registers *regs )
+{
+  enum { Create,
+         WaitForSpace,  // Block task until N bytes may be written
+         SpaceFilled,   // I've filled this many bytes
+         PassingOver,   // Another task is going to take over filling this pipe
+         UnreadData,    // Useful, in case data can be dropped or consolidated (e.g. mouse movements)
+         NoMoreData,    // I'm done filling the pipe
+         WaitForData,   // Block task until N bytes may be read
+         DataFreed,     // I don't need the first N bytes written any more
+         PassingOff,    // Another task is going to take over listening at this pipe
+         NotListening   // I don't want any more data, thanks
+         };
+  /*
+    OS_PipeOp
+    (SWI &fa)
+    Entry 	
+    R0 	Reason code
+    All other registers dependent on reason code
+
+    Exit
+    R0 	Preserved
+    All other registers dependent on reason code
+
+    Use
+
+    The purpose of this call is to transfer data between tasks, pausing the calling thread 
+    while it waits for data or space to write to.
+
+    Notes
+
+    The action performed depends on the reason code value in R0.
+    R1 is used to hold the handle for the pipe (On exit from Create, on entry to all other actions)
+
+    Reason Codes
+        # 	Hex # 	Action
+        0 	&00 	Create a pipe and return a handle
+        1 	&01 	Pause the thread until sufficient space is available for writing
+        2 	&02 	Indicate to the receiver that more data is available
+        3 	&03 	Indicate to the receiver that no more data will be written to the pipe
+        4 	&04 	Pause the thread until sufficient data is available for reading
+        5       &05     Indicate to the transmitter that some data has been consumed
+        6       &06     Indicate to the transmitter that the receiver is no longer interested in receiving data
+
+    OS_PipeOp 0
+    (SWI &fa)
+
+    Entry 	
+    R0 	0
+    R2  Maximum block size (the most that Transmitter or Receiver may request at a time)
+    R3  Maximum data amount (the total amount of data to be transferred through this pipe)
+                0 indicates the amount is unknown at creation
+    R4  Allocated memory (0 for the kernel to allocate memory)
+                Virtual memory address of where the transferred data will be stored.
+                Ignored if R3 is 0.
+
+    Exit
+    R0 	Preserved
+    R1 	Pipe handle
+    R2  Preserved
+    R3  Preserved
+    R4  Preserved
+
+    Use
+
+        Create a pipe to be shared between two threads, one Transmitter and one Receiver.
+
+    Notes
+        
+
+
+
+    PassingOver - about to ask another task to send its data to this pipe (r2 = -1 or new task)
+    PassingOff - about to ask another task to handle the data from this pipe (r2 = -1 or new task)
+  */
+
+/* Create a pipe, pass it to another thread to read or write, while you do the other.
+
+   Create:
+     max_block_size - neither reader nor writer may request a larger contiguous block than this
+     max_data       - The maximum amount that can be transferred (typically the size of a file)
+                    - if 0, undefined.
+     allocated_mem  - memory to use for the pipe (if 0, allocate memory internally)
+                    - useful for transferring chunks of data between programs.
+                    - e.g. JPEG_Decode( source pipe, destination pipe )
+                    - The other end of the pipe will have access to full pages of memory,
+                      the first area of memory returned to it will be offset by the least
+                      significant bits of the allocated_mem pointer.
+                    - Providing a non-page aligned block of memory for a file system to
+                      write to will result in copying overhead (possibly excepting if it's
+                      sector-size aligned).
+
+   The definition of the calls that return the address of the next available memory (to
+   write or read) allows for the OS to map the memory in different places as and if needed.
+
+
+
+   Read thread (example):
+     repeat
+       <available,location> = WaitForData( size ) -- may block
+       while available >= size then
+         process available (or size) bytes at location
+         <available,location> = FreeSpace( available (or size) )
+       endif
+     until location == 0
+
+   Write thread (example):
+     repeat
+       <available,location> = WaitForSpace( size ) -- may block
+       if location != 0 then
+         Write up to available bytes of data to location
+         <available,location> = SpaceUsed( amount_written (or less) )
+       endif
+     until location == 0
+
+   If the reader is no longer interested, it should call NotListening.
+   From that point on, the writer thread will be released if blocked,
+   and always receive <0,0> from WaitForSpace and SpaceUsed.
+
+   If the writer has no more data, it should call NoMoreData.
+   The reader thread will be released, and WaitForData will always return
+   immediately, possibly with available < the requested size.
+   Once all available data is freed, the read SWIs will return <0,0>.
+
+   Once NotListening and NoMoreData have both been called for a pipe, its
+   resources will be released.
+
+*/
+  switch (regs->r[0]) {
+  case Create: return PipeCreate( regs );
+  case WaitForSpace: return PipeWaitForSpace( regs );
+  case PassingOver: return PipePassingOver( regs );
+  case UnreadData: return PipeUnreadData( regs );
+  case SpaceFilled: return PipeSpaceFilled( regs );
+  case NoMoreData: return PipeNoMoreData( regs );
+  case WaitForData: return PipeWaitForData( regs );
+  case DataFreed: return PipeDataFreed( regs );
+  case PassingOff: return PipePassingOff( regs );
+  case NotListening: return PipeNotListening( regs );
+  default:
+    asm( "bkpt 1" );
+  }
+  return false;
+}
+
+// Default action of IrqV is not to disable the interrupt, it's to throw a wobbly.
+// The HAL must ensure that IrqV never gets this far!
+
+void default_irq()
+{
+  asm ( "bkpt 1" );
+}
+
+void __attribute__(( naked, noreturn )) Kernel_default_irq()
+{
+  asm volatile (
+        "  sub lr, lr, #4"
+      "\n  srsdb sp!, #0x12 // Store return address and SPSR (IRQ mode)" );
+
+  {
+    assert( 0 == (void*) &((Task*) 0)->regs );
+
+    // Need to be careful with this, that the compiler doesn't insert any code to
+    // set up lr using another register.
+    register Task **running asm ( "lr" ) = &workspace.task_slot.running;
+
+    asm volatile (
+          "  ldr lr, [lr]"
+        "\n  stm lr!, {r0-r12}"
+        "\n  pop { r2, r3 } // Resume address, SPSR"
+        "\n  ands r4, r3, #0x0f // Never from Aarch64!"
+        "\n  mrseq r0, sp_usr"
+        "\n  mrseq r1, lr_usr"
+        "\n  mrsne r0, sp_svc"
+        "\n  mrsne r1, lr_svc"
+        "\n  stm lr, {r0-r3}"
+        : 
+        : "r" (running) );
+  }
+
+  // We're going to deal with the interrupt(s) now, with interrupts disabled,
+  // generally resuming a task that will take care of anything time-consuming
+  // wrt the device. Resuming tasks from the irq_task means putting them in
+  // the queue *after* the irq_task, so that they get run as soon as all the
+  // interrupt routines have completed.
+
+  if (0 != (workspace.task_slot.running->regs.psr & 0xf)
+   && 3 != (workspace.task_slot.running->regs.psr & 0xf)) {
+    // We don't enable interrupts while dealing with undefined instructions or
+    // aborts, do we?
+    asm ( "bkpt 1" );
+  }
+
+  workspace.kernel.irq_task->next = workspace.task_slot.running;
+  workspace.task_slot.running = workspace.kernel.irq_task;
+
+  // It is expected that the HAL will have claimed this vector and will return
+  // the number of the device the interrupt is for.
+  register vector *v asm( "r10" ) = workspace.kernel.vectors[2]; // IrqV - resurrected!
+  register uint32_t device asm( "r0" ); // Device ID returned by HAL
+
+  asm volatile (
+      "\n  adr r0, intercepted  // Interception address, to go onto stack"
+      "\n  push { r0 }"
+      "\n  mov r0, #0"
+      "\n0:"
+      "\n  ldr r14, [%[v], %[code]]"
+      "\n  ldr r12, [%[v], %[private]]"
+      "\n  blx r14"
+      "\n  ldr %[v], [%[v], %[next]]"
+      "\n  b 0b"
+      "\nintercepted:"
+      : "=r" (device)
+
+      : [v] "r" (v)
+
+      , [next] "i" ((char*) &((vector*) 0)->next)
+      , [private] "i" ((char*) &((vector*) 0)->private_word)
+      , [code] "i" ((char*) &((vector*) 0)->code) );
+
+  assert( workspace.task_slot.running == workspace.kernel.irq_task );
+
+  workspace.task_slot.running = workspace.kernel.irq_task->next;
+  workspace.kernel.irq_task->next = 0;
+
+  {
+    register Task **running asm ( "lr" ) = &workspace.task_slot.running;
+
+    asm volatile (
+          "  ldr r0, [lr]"
+        "\n  add lr, r0, %[sp]"
+        "\n  ldm lr!, {r1, r2} // Load sp, banked lr, point lr at pc/psr"
+        "\n  ldr r3, [lr, #4] // PSR"
+        "\n  ands r3, r3, #0x0f // Never from Aarch64! (Don't need original value.)"
+        "\n  msreq sp_usr, r1"
+        "\n  msreq lr_usr, r2"
+        "\n  msrne sp_svc, r1"
+        "\n  msrne lr_svc, r2"
+        "\n  ldm r0, {r0-r12}"
+        "\n  rfeia lr // Restore execution and SPSR"
+        : 
+        : "r" (running)
+        , [sp] "i" ((char*)&((integer_registers*)0)->banked_sp) );
+  }
+
+  __builtin_unreachable();
+}
+

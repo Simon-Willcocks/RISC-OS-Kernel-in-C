@@ -68,11 +68,41 @@ struct workspace {
 
   uint32_t *gpio;
   uint32_t *uart;
+  struct {
+    uint32_t       control;
+    uint32_t       res1;
+    uint32_t       timer_prescaler;
+    uint32_t       GPU_interrupts_routing;
+    uint32_t       Performance_Monitor_Interrupts_routing_set;
+    uint32_t       Performance_Monitor_Interrupts_routing_clear;
+    uint32_t       res2;
+    uint32_t       Core_timer_access_LS_32_bits; // Access first when reading/writing 64 bits.
+    uint32_t       Core_timer_access_MS_32_bits;
+    uint32_t       Local_Interrupt_routing0;
+    uint32_t       Local_Interrupts_routing1;
+    uint32_t       Axi_outstanding_counters;
+    uint32_t       Axi_outstanding_IRQ;
+    uint32_t       Local_timer_control_and_status;
+    uint32_t       Local_timer_write_flags;
+    uint32_t       res3;
+    uint32_t       Core_timers_Interrupt_control[4];
+    uint32_t       Core_Mailboxes_Interrupt_control[4];
+    uint32_t       Core_IRQ_Source[4];
+    uint32_t       Core_FIQ_Source[4];
+    struct {
+      uint32_t       Mailbox[4]; // Write only!
+    } Core_write_set[4];
+    struct {
+      uint32_t       Mailbox[4]; // Read/write
+    } Core_write_clear[4];
+  } *qa7;
 
   void *mailbox_request;
   uint32_t fb_physical_address;
   uint32_t *frame_buffer;
   uint32_t graphics_driver_id;
+  uint32_t ticks_per_interval;
+
   struct core_workspace {
     struct workspace *shared;
     uint8_t queued;
@@ -502,7 +532,7 @@ void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace 
     workspace->queued++;
   }
   else if (c < ' ') {
-    // VDU codes?
+    // VDU codes.
     workspace->queue[0] = c;
     workspace->queued = 1;
   }
@@ -558,7 +588,7 @@ static void __attribute__(( noinline )) C_MouseV_handler( uint32_t *regs, struct
   regs[3] = 0;          // Time
 }
 
-static void __attribute__(( naked )) MouseV_handler( char c )
+static void __attribute__(( naked )) MouseV_handler()
 {
   uint32_t *regs;
   asm ( "push { r0, r1, r2, r3, r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
@@ -568,6 +598,8 @@ static void __attribute__(( naked )) MouseV_handler( char c )
   asm ( "bvc 0f\n  bkpt #2\n0:" );
   asm ( "pop { r0, r1, r2, r3, r12, pc }" );
 }
+
+static void __attribute__(( naked )) IrqV_handler();
 
 typedef enum { HANDLER_PASS_ON, HANDLER_INTERCEPTED, HANDLER_FAILED } handled;
 
@@ -876,6 +908,129 @@ static void __attribute__(( naked )) start_display()
     "\n  pop { r0-r4, r12, pc }" );
 }
 
+static uint64_t timer_now()
+{
+  uint32_t hi, lo;
+
+  asm volatile ( "mrrc p15, 0, %[lo], %[hi], c14" : [hi] "=r" (hi), [lo] "=r" (lo) : : "memory"  );
+
+  uint64_t now;
+  now = hi;
+  now = now << 32;
+  now = now | lo;
+
+  return now;
+}
+
+static uint32_t timer_interrupt_time()
+{
+  uint32_t hi, lo;
+
+  asm volatile ( "mrrc p15, 2, %[lo], %[hi], c14" : [hi] "=r" (hi), [lo] "=r" (lo)  );
+
+  uint64_t now;
+  now = hi;
+  now = now << 32;
+  now = now | lo;
+
+  return now;
+}
+
+static void timer_interrupt_at( uint64_t then )
+{
+  asm volatile ( "mcrr p15, 2, %[lo], %[hi], c14" : : [hi] "r" (then >> 32), [lo] "r" (0xffffffff & then) : "memory" );
+}
+
+static int32_t timer_value()
+{
+  int32_t result;
+  asm volatile ( "mrc p15, 0, %[t], c14, c2, 0" : [t] "=r" (result) );
+  return result;
+}
+
+static void timer_set_countdown( int32_t timer )
+{
+  asm volatile ( "mcr p15, 0, %[t], c14, c2, 0" : : [t] "r" (timer) );
+}
+
+void __attribute__(( naked )) ticky()
+{
+  //WriteS( "Tick " );
+}
+
+static bool timer_interrupt_active()
+{
+  uint32_t bits;
+  asm volatile ( "mrc p15, 0, %[config], c14, c2, 1" : [config] "=r" (bits) );
+  return (bits & 4) != 0;
+}
+
+static void __attribute__(( noinline )) do_timer_tick( struct core_workspace *ws  )
+{
+  uint32_t ticks_per_interval = ws->shared->ticks_per_interval;
+  do {
+    // This is officially a signed value, but any value greater than
+    // ticks_per_interval is out of range.
+    uint32_t timer = timer_value();
+    uint32_t missed_ticks = 0;
+
+    while (timer > ticks_per_interval) {
+      timer += ticks_per_interval;
+      missed_ticks++;
+    }
+    // TODO: Report missed ticks?
+
+    timer_set_countdown( timer );
+
+    register uint32_t vector asm( "r9" ) = 0x1c;
+    asm volatile ( "svc %[swi]" : : [swi] "i" (0x34), "r" (vector) : "lr" );
+  } while (timer_interrupt_active());
+
+  //asm volatile ( "adrl r0, ticky\n  svc %[swi]" : : [swi] "i" (0x54) : "r0", "lr" );
+}
+
+#define C_CLOBBERED "r0-r3,r12"
+
+void __attribute__(( naked )) timer_tick()
+{
+  register struct core_workspace *ws asm ( "r12" );
+
+  asm ( "push { "C_CLOBBERED", lr }" : "=r" (ws) );
+
+  do_timer_tick( ws );
+
+  asm ( "pop { "C_CLOBBERED", pc }" );
+}
+
+static void __attribute__(( noinline )) C_IrqV_handler( struct core_workspace *workspace )
+{
+  // This is where we will use the hardware to identify which devices have tried to
+  // interrupt the processor.
+
+  // This call goes direct, avoiding the claimed devices
+  do_timer_tick( workspace );
+}
+
+static void __attribute__(( naked )) IrqV_handler()
+{
+  // IrqV contains no information in the registers on entry, except r12
+  asm ( "push { r0, r1, r2, r3, r12 }" );
+  register struct core_workspace *workspace asm( "r12" );
+  C_IrqV_handler( workspace );
+  // Intercepting call (pops pc from the stack)
+  asm ( "pop { r0, r1, r2, r3, r12, pc }" );
+}
+
+static inline void memory_write_barrier()
+{
+  asm ( "dsb sy" );
+}
+
+static inline void memory_read_barrier()
+{
+  asm ( "dsb sy" );
+}
+
 void init( uint32_t this_core, uint32_t number_of_cores )
 {
   struct workspace **private;
@@ -897,6 +1052,7 @@ void init( uint32_t this_core, uint32_t number_of_cores )
 
   workspace->gpio = map_device_page( 0x3f200000 );
   workspace->uart = map_device_page( 0x3f201000 );
+  workspace->qa7 = map_device_page( 0x40000000 );
 
   if (first_entry) {
     uint32_t *gpio = workspace->gpio;
@@ -919,13 +1075,11 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   }
 
   {
-    void *handler = MouseV_handler;
-    register uint32_t vector asm( "r0" ) = 3;
+    void *handler = IrqV_handler;
+    register uint32_t vector asm( "r0" ) = 2;
     register void *routine asm( "r1" ) = handler;
     register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
     asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
-
-    WriteS( "HAL obtained MouseV\\n\\r" );
   }
 
   {
@@ -936,6 +1090,70 @@ void init( uint32_t this_core, uint32_t number_of_cores )
     asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
 
     WriteS( "HAL obtained WrchV\\n\\r" );
+  }
+
+  {
+    void *handler = MouseV_handler;
+    register uint32_t vector asm( "r0" ) = 0x1a;
+    register void *routine asm( "r1" ) = handler;
+    register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
+    asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
+
+    WriteS( "HAL obtained MouseV\\n\\r" );
+  }
+
+  if (first_entry) {
+    memory_write_barrier(); // About to write to QA7
+    workspace->qa7->GPU_interrupts_routing = this_core;
+    workspace->qa7->Core_IRQ_Source[this_core] = 0xffd;
+  }
+  else {
+    workspace->qa7->Core_IRQ_Source[this_core] = 0xd;
+  }
+
+  // The interrupt that's triggered by the generic ARM timer
+  workspace->qa7->Core_timers_Interrupt_control[this_core] = 1; // nCNTPSIRQ IRQ control
+
+  {
+    register uint32_t dev asm ( "r0" ) = 1; // Generic Timer
+    //register void (*code) asm ( "r1" ) = timer_tick; Doesn't use ADR
+    register struct core_workspace *r12 asm ( "r2" ) = &workspace->core_specific[this_core];
+
+    asm volatile ( "adr r1, timer_tick\n  svc %[swi]" : : [swi] "i" (0x4b), "r" (dev), "r" (r12) : "r1" );
+  }
+#define QEMU
+  {
+    // Establish 1ms timer, using generic timer
+
+    Write0( "Default timer prescaler " ); WriteNum( workspace->qa7->timer_prescaler ); NewLine;
+
+    workspace->qa7->timer_prescaler = 0x06AAAAAB;
+
+    Write0( "Timer prescaler " ); WriteNum( workspace->qa7->timer_prescaler ); NewLine;
+
+#ifdef QEMU
+    const uint32_t clock_frequency = 62500000;
+#else
+    const uint32_t clock_frequency = 1000000; // Pi3 with default prescaler - 1MHz (checked manually over 60s)
+#endif
+    asm volatile ( "mcr p15, 0, %[bits], c14, c0, 0" : : [bits] "r" (clock_frequency) );
+
+    // No event stream, EL0 accesses not trapped to undefined
+    asm volatile ( "mcr p15, 0, %[config], c14, c1, 0" : : [config] "r" (0x303) );
+    // Enable timer and interrupts from it
+    asm volatile ( "mcr p15, 0, %[config], c14, c2, 1" : : [config] "r" (1) );
+
+    if (first_entry) {
+      workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
+#ifdef QEMU
+      workspace->ticks_per_interval = clock_frequency / 5; // Slower, for testing in QEMU
+#endif
+      Write0( "Timer ticks per interval: " ); WriteNum( workspace->ticks_per_interval ); NewLine;
+    }
+
+    timer_set_countdown( workspace->ticks_per_interval );
+
+    Write0( "Wating for interrupts" ); NewLine;
   }
 
   if (first_entry) {

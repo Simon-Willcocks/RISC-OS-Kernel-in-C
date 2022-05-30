@@ -478,7 +478,7 @@ bool do_OS_ReadDynamicArea( svc_registers *regs )
     // Special case, PRM 5a-43
     TaskSlot *slot = workspace.task_slot.running->slot;
     regs->r[0] = 0x8000;
-    regs->r[1] = TaskSlot_Himem( slot );
+    regs->r[1] = slot == 0 ? 0x8000 : TaskSlot_Himem( slot );
     if (0 != regs->r[1]) regs->r[1] = regs->r[1] - 0x8000;
     regs->r[2] = 0x1fff8000;
 
@@ -923,9 +923,3 @@ void __attribute__(( naked, noreturn )) Kernel_default_reset()
   BSOD( 3, Red );
 }
 
-void __attribute__(( naked, noreturn )) Kernel_default_irq() 
-{
-  // When providing proper implementation, ensure the called routine is __attribute__(( noinline ))
-  // noinline attribute is required so that stack space is allocated for any local variables.
-  BSOD( 4, Blue );
-}

@@ -76,7 +76,7 @@ char const swi_names[] = { "Speed"
 
 bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI_regs *regs )
 {
-  print( "Handling Portable SWI" );
+  print( "Handling Portable SWI " );
 
   switch (regs->number) {
   case 5: // Portable_ReadFeatures

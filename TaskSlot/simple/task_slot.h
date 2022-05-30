@@ -45,6 +45,7 @@ struct TaskSlot_workspace {
   Task *running;        // The task that is running on this core
   Task *runnable;       // The tasks that may only run on this core
   bool memory_mapped;   // Have the shared.task_slot.tasks_memory and shared.task_slot.slots_memory been mapped into this core's MMU?
+  Task *sleeping;       // 0 or more sleeping tasks
 };
 
 struct TaskSlot_shared_workspace {
