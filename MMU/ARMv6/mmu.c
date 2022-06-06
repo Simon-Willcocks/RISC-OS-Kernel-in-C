@@ -467,5 +467,8 @@ void MMU_switch_to( TaskSlot *slot )
   asm ( "mcr p15, 0, %[asid], c13, c0, 1" : : [asid] "r" (TaskSlot_asid( slot )) );
   // FIXME: clear out L2TTs, or disable walks until one is needed, then clear them
   release_lock( &shared.mmu.lock );
+
+  // This appears to be necessary. Perhaps it should be in MMU_switch_to.
+  clean_cache_to_PoC();
 }
 

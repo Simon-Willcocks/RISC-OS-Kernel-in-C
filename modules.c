@@ -3033,11 +3033,6 @@ void Boot()
   uint32_t const initial_slot_size = 4 << 10;  // 4k
   physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( initial_slot_size, 4096 ), .size = initial_slot_size };
   TaskSlot_add( slot, block );
-
-  MMU_switch_to( slot );
-
-  // This appears to be necessary. Perhaps it should be in MMU_switch_to.
-  clean_cache_to_PoC();
   }
 
   asm volatile ( "svc %[swi]" : : [swi] "i" (OS_LeaveOS) : "lr" );

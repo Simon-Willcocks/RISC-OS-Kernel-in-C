@@ -22,7 +22,6 @@
 
 // Initial version, using arrays rather than linked lists or similar.
 // A TaskSlot is essentially a user process, with blocks of RAM located at 0x8000
-// This can be extended to implement threads. TODO
 // Since the filing system in RO is aggressively attuned to a single processor
 // model, running a single program at a time, other than Wimp tasks, each TaskSlot will
 // need to store its idea of the filing system context (CSD, etc.) TODO rewrite that!
@@ -499,6 +498,10 @@ void __attribute__(( noinline )) save_and_resume( Task *running, Task *resume, s
   }
 
   // FIXME: do something clever with floating point
+
+  if (resume->slot != running->slot) {
+    MMU_switch_to( resume->slot );
+  }
 }
 
 /* Lock states: 
