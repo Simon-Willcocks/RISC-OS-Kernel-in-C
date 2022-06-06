@@ -1268,24 +1268,6 @@ bool do_OS_RelinkApplication( svc_registers *regs )
   return Kernel_Error_UnknownSWI( regs );
 }
 
-bool do_OS_GetEnv( svc_registers *regs )
-{
-  Task *task = workspace.task_slot.running;
-
-  if (task->slot != 0) {
-    regs->r[0] = (uint32_t) TaskSlot_Command( task->slot );
-    regs->r[1] = TaskSlot_Himem( task->slot );
-    regs->r[2] = (uint32_t) TaskSlot_Time( task->slot );
-  }
-  else {
-    regs->r[0] = (uint32_t) "ModuleTask";
-    regs->r[1] = 0x8000;
-    regs->r[2] = 0;
-  }
-
-  return true;
-}
-
 static inline void show_module_commands( module_header *header )
 {
   const char *cmd = (void*) (header->offset_to_help_and_command_keyword_table + (uint32_t) header);
@@ -2968,10 +2950,14 @@ void Boot()
 {
   setup_OS_vectors();
 
-  Task *task = Task_new( 0 );
+  TaskSlot *slot = TaskSlot_new( "System" );
+
+  Task *task = Task_new( slot );
+  assert (task->slot == slot);
+
   workspace.task_slot.running = task;
 
-  workspace.kernel.irq_task = Task_new( 0 );
+  workspace.kernel.irq_task = Task_new( slot );
 
   allocate_legacy_scratch_space();
 
@@ -3024,14 +3010,15 @@ void Boot()
     do_OS_ServiceCall( &regs );
   }
 
+  Write0( "System slot: " ); WriteNum( slot ); NewLine;
+
   NewLine; Write0( "All modules initialised, starting USR mode code" ); NewLine;
 
+  for (int i = 0; i < workspace.core_number << 27; i++) { asm volatile ( "" ); }
+
   { // Environment for boot sequence
-  TaskSlot *slot = TaskSlot_new( "System" );
-  Write0( "Slot: " ); WriteNum( (uint32_t) slot ); NewLine;
+  TaskSlot *slot = TaskSlot_new( "BootSystem" );
   Task *task = Task_new( slot );
-  Write0( "Task: " ); WriteNum( (uint32_t) task ); Write0( ", slot: " ); WriteNum( (uint32_t) task->slot ); NewLine;
-  assert (task->slot == slot);
 
   // Initial state
   task->regs.r[0] = workspace.core_number;
@@ -3042,7 +3029,8 @@ void Boot()
   workspace.task_slot.running->next = task;
 
   // This will be replaced with code to load an application at 0x8000 and run it...
-  uint32_t const initial_slot_size = 64 << 10;  // 64k
+  //uint32_t const initial_slot_size = 64 << 10;  // 64k
+  uint32_t const initial_slot_size = 4 << 10;  // 4k
   physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( initial_slot_size, 4096 ), .size = initial_slot_size };
   TaskSlot_add( slot, block );
 
@@ -3051,8 +3039,6 @@ void Boot()
   // This appears to be necessary. Perhaps it should be in MMU_switch_to.
   clean_cache_to_PoC();
   }
-
-  // asm ( "mov sp, %[stack]" : : [stack] "r" (sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack) );
 
   asm volatile ( "svc %[swi]" : : [swi] "i" (OS_LeaveOS) : "lr" );
   asm volatile ( "svc %[swi]" : : [swi] "i" (OS_IntOn) : "lr" );
@@ -3167,12 +3153,12 @@ static void dump_zero_page()
     }
   }
 }
-#endif
 
 static uint32_t *core_lock()
 {
   return (uint32_t *) 0x8000; // core-local lock
 }
+#endif
 
 static bool claim_core_lock(  )
 {
@@ -3250,7 +3236,7 @@ static void release_core_lock()
 #endif
 }
 
-static void __attribute__(( noreturn )) spin( uint32_t code, uint32_t x, uint32_t y, bool clockwise )
+static void __attribute__(( noreturn, noinline )) spin( uint32_t code, uint32_t x, uint32_t y, bool clockwise )
 {
   register uint32_t now asm( "r0" );
   asm ( "svc %[swi]" : "=r" (now) : [swi] "i" (OS_MSTime) );
@@ -3645,6 +3631,374 @@ void user_thread( uint32_t thread, uint32_t x, uint32_t y, bool clockwise )
   spin( thread, x, y, clockwise );
 }
 
+enum { Create,
+       WaitForSpace,  // Block task until N bytes may be written
+       SpaceFilled,   // I've filled this many bytes
+       PassingOver,   // Another task is going to take over filling this pipe
+       UnreadData,    // Useful, in case data can be dropped or consolidated (e.g. mouse movements)
+       NoMoreData,    // I'm done filling the pipe
+       WaitForData,   // Block task until N bytes may be read
+       DataConsumed,  // I don't need the first N bytes written any more
+       PassingOff,    // Another task is going to take over listening at this pipe
+       NotListening   // I don't want any more data, thanks
+       };
+
+typedef struct {
+  error_block *error;
+  void *location;
+  uint32_t available; 
+} PipeSpace;
+
+static uint32_t PipeOp_CreateForTransfer( uint32_t max_block )
+{
+  register uint32_t code asm ( "r0" ) = Create;
+  register uint32_t max_block_size asm ( "r2" ) = max_block;
+  register uint32_t max_data asm ( "r3" ) = 0; // Unlimited
+  register uint32_t allocated_mem asm ( "r4" ) = 0; // OS allocated
+
+  register uint32_t pipe asm ( "r1" );
+
+  asm volatile ( "svc %[swi]" 
+             "\n  movvs r1, #0"
+        : "=r" (pipe)
+        : [swi] "i" (OS_PipeOp)
+        , "r" (code)
+        , "r" (max_block_size)
+        , "r" (max_data)
+        , "r" (allocated_mem)
+        );
+
+  return pipe;
+}
+
+static inline PipeSpace PipeOp_WaitForSpace( uint32_t write_pipe, uint32_t bytes )
+{
+  // IN
+  register uint32_t code asm ( "r0" ) = WaitForSpace;
+  register uint32_t pipe asm ( "r1" ) = write_pipe;
+  register uint32_t amount asm ( "r2" ) = bytes;
+
+  // OUT
+  register error_block *error asm ( "r0" );
+  register uint32_t available asm ( "r2" );
+  register void *location asm ( "r3" );
+
+  // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
+  asm volatile (
+        "svc %[swi]"
+    "\n  movvc r0, #0"
+
+        : "=r" (error)
+        , "=r" (available)
+        , "=r" (location)
+        : [swi] "i" (OS_PipeOp)
+        , "r" (code)
+        , "r" (pipe)
+        , "r" (amount)
+        );
+
+  PipeSpace result = { .error = error, .location = location, .available = available };
+
+  return result;
+}
+
+static inline PipeSpace PipeOp_SpaceFilled( uint32_t write_pipe, uint32_t bytes )
+{
+  // IN
+  // In this case, bytes represents the number of bytes that the caller has written and
+  // is making available to the reader.
+  // The returned information is the same as from WaitForSpace and indicates the remaining
+  // space after the filled bytes have been accepted. The virtual address of the remaining
+  // data may not be the same as the address of the byte after the last accepted byte.
+  register uint32_t code asm ( "r0" ) = SpaceFilled;
+  register uint32_t pipe asm ( "r1" ) = write_pipe;
+  register uint32_t amount asm ( "r2" ) = bytes;
+
+  // OUT
+  register error_block *error asm ( "r0" );
+  register uint32_t available asm ( "r2" );
+  register void *location asm ( "r3" );
+
+  // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
+  asm volatile (
+        "svc %[swi]"
+    "\n  movvc r0, #0"
+
+        : "=r" (error)
+        , "=r" (available)
+        , "=r" (location)
+        : [swi] "i" (OS_PipeOp)
+        , "r" (code)
+        , "r" (pipe)
+        , "r" (amount)
+        );
+
+  PipeSpace result = { .error = error, .location = location, .available = available };
+
+  return result;
+}
+
+static inline PipeSpace PipeOp_WaitForData( uint32_t read_pipe, uint32_t bytes )
+{
+  // IN
+  register uint32_t code asm ( "r0" ) = WaitForData;
+  register uint32_t pipe asm ( "r1" ) = read_pipe;
+  register uint32_t amount asm ( "r2" ) = bytes;
+
+  // OUT
+  register error_block *error asm ( "r0" );
+  register uint32_t available asm ( "r2" );
+  register void *location asm ( "r3" );
+
+  // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
+  asm volatile (
+        "svc %[swi]"
+    "\n  movvc r0, #0"
+
+        : "=r" (error)
+        , "=r" (available)
+        , "=r" (location)
+        : [swi] "i" (OS_PipeOp)
+        , "r" (code)
+        , "r" (pipe)
+        , "r" (amount)
+        );
+
+  PipeSpace result = { .error = error, .location = location, .available = available };
+
+  return result;
+}
+
+static inline PipeSpace PipeOp_DataConsumed( uint32_t read_pipe, uint32_t bytes )
+{
+  // IN
+  // In this case, the bytes are the number of bytes no longer of interest.
+  // The returned information is the same as from WaitForData and indicates the remaining
+  // data after the consumed bytes have been removed. The virtual address of the remaining
+  // data may not be the same as the address of the byte after the last consumed byte.
+  register uint32_t code asm ( "r0" ) = DataConsumed;
+  register uint32_t pipe asm ( "r1" ) = read_pipe;
+  register uint32_t amount asm ( "r2" ) = bytes;
+
+  // OUT
+  register error_block *error asm ( "r0" );
+  register uint32_t available asm ( "r2" );
+  register void *location asm ( "r3" );
+
+  // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
+  asm volatile (
+        "svc %[swi]"
+    "\n  movvc r0, #0"
+
+        : "=r" (error)
+        , "=r" (available)
+        , "=r" (location)
+        : [swi] "i" (OS_PipeOp)
+        , "r" (code)
+        , "r" (pipe)
+        , "r" (amount)
+        );
+
+  PipeSpace result = { .error = error, .location = location, .available = available };
+
+  return result;
+}
+
+static inline error_block *PipeOp_PassingOff( uint32_t read_pipe, uint32_t new_receiver )
+{
+  // IN
+  register uint32_t code asm ( "r0" ) = PassingOff;
+  register uint32_t pipe asm ( "r1" ) = read_pipe;
+  register uint32_t task asm ( "r2" ) = new_receiver;
+
+  // OUT
+  register error_block *error asm ( "r0" );
+
+  // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
+  asm volatile (
+        "svc %[swi]"
+    "\n  movvc r0, #0"
+
+        : "=r" (error)
+        : [swi] "i" (OS_PipeOp)
+        , "r" (code)
+        , "r" (pipe)
+        , "r" (task)
+        );
+
+  return error;
+}
+
+static inline error_block *PipeOp_PassingOver( uint32_t write_pipe, uint32_t new_sender )
+{
+  // IN
+  register uint32_t code asm ( "r0" ) = PassingOver;
+  register uint32_t pipe asm ( "r1" ) = write_pipe;
+  register uint32_t task asm ( "r2" ) = new_sender;
+
+  // OUT
+  register error_block *error asm ( "r0" );
+
+  // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
+  asm volatile (
+        "svc %[swi]"
+    "\n  movvc r0, #0"
+
+        : "=r" (error)
+        : [swi] "i" (OS_PipeOp)
+        , "r" (code)
+        , "r" (pipe)
+        , "r" (task)
+        );
+
+  return error;
+}
+
+void producer_thread( uint32_t thread, uint32_t pipe )
+{
+  Write0( "Producer task running" ); NewLine;
+  WriteNum( pipe ); NewLine;
+
+  PipeSpace space;
+
+  int n = 125; // Sort-of semi random number of bytes to write in one go
+  char c = 'A';
+  uint32_t total = 0;
+
+  // This is an inefficient use of the PipeOp SWIs.
+  // After the initial PipeOp_WaitForSpace, the code could
+  // loop until it has filled all the available data before
+  // calling PipeOp_SpaceFilled and then PipeOp_WaitForSpace
+  // again.
+  for (;;) {
+    if (--n == 73) n = 125;
+    space = PipeOp_WaitForSpace( pipe, n );
+    if (space.error != 0) {
+      asm ( "bkpt 1" );
+    }
+    else {
+      char *p = space.location;
+      // Write to the pipe
+      for (int i = 0; i < n; i++) {
+        p[i] = c;
+        if (c == 'Z') c = 'A'; else c++;
+      }
+
+      PipeOp_SpaceFilled( pipe, n );
+      total += n;
+      //WriteNum( total ); NewLine;
+    }
+  }
+}
+
+void consumer_thread( uint32_t thread, uint32_t pipe )
+{
+  Write0( "Consumer task running" ); NewLine;
+  WriteNum( pipe ); NewLine;
+
+  uint32_t total = 0;
+
+  PipeSpace data;
+
+  // Read 26 characters at a time, check they're A-Z
+  uint8_t top_byte = 0;
+
+  for (;;) {
+    data = PipeOp_WaitForData( pipe, 26 );
+    if (data.error != 0) {
+      asm ( "bkpt 1" );
+    }
+
+    // This loop is one example.
+    // Alternatives would be
+    //  1. not to loop here and leave it to PipeOp_WaitForData
+    //     to update the data variable.
+    //  2. Not to call PipeOp_DataConsumed inside the loop,
+    //     remembering how many bytes have been processed, then
+    //     call it when there are no more whole blocks to process
+    //
+    // 1. Calls both SWIs for each block.
+    // 2. Is the most efficient, but slightly more error-prone,
+    //    and the sender may be blocked waiting for that space.
+    while (data.available >= 26) {
+      char volatile *p = data.location;
+      for (int i = 0; i < 26; i++) {
+        char c = p[i];
+        if (c != 'A' + i) {
+          Write0( "Expected " ); register nc asm ( "r0" ) = 'A'+i; asm volatile ( "swi 0" : : "r" (nc) );
+          Write0( " read " ); nc = c; asm ( "swi 0" : : "r" (nc) );
+          Write0( " instead " ); asm volatile ( "swi 0xff" ); nc = p[i]; asm volatile ( "swi 0" : : "r" (nc) );
+          Write0( " at " ); WriteNum( (uint32_t) p+i ); NewLine;
+          WriteNum( total ); NewLine;
+          if (p[i] == c)
+            asm volatile ( "bkpt 1" );
+        }
+      }
+      // asm ( "svc 256 + 'T'" );
+      total += 26;
+      if (top_byte != (total >> 24)) {
+        WriteNum( total ); NewLine;
+        top_byte = (total >> 24);
+      }
+      data = PipeOp_DataConsumed( pipe, 26 );
+    }
+  }
+}
+
+static uint32_t create_producer_thread( uint32_t pipe )
+{
+  // CreateThread
+  // Registers 3-8 are passed to the code as arguments (r1-r6)
+  // FIXME: compatible with aapcs?
+  // Argument 1 is the handle for the thread
+
+  uint32_t stack = 0x9000 - 0x100 * 8;
+
+  register uint32_t request asm ( "r0" ) = 0; // Create Thread
+  register void *code asm ( "r1" ) = producer_thread;
+  register uint32_t stack_top asm ( "r2" ) = stack;
+  register uint32_t write_pipe asm ( "r3" ) = pipe;
+
+  register uint32_t handle asm ( "r0" );
+
+  asm volatile ( "svc %[swi]"
+      : "=r" (handle) 
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (code)
+      , "r" (stack_top)
+      , "r" (write_pipe) );
+
+  return handle;
+}
+
+static uint32_t create_consumer_thread( uint32_t pipe )
+{
+  // CreateThread
+  // Registers 3-8 are passed to the code as arguments (r1-r6)
+  // FIXME: compatible with aapcs?
+  // Argument 1 is the handle for the thread
+
+  uint32_t stack = 0x9000 - 0x100 * 9;
+
+  register uint32_t request asm ( "r0" ) = 0; // Create Thread
+  register void *code asm ( "r1" ) = consumer_thread;
+  register uint32_t stack_top asm ( "r2" ) = stack;
+  register uint32_t read_pipe asm ( "r3" ) = pipe;
+
+  register uint32_t handle asm ( "r0" );
+
+  asm volatile ( "svc %[swi]"
+      : "=r" (handle) 
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (code)
+      , "r" (stack_top)
+      , "r" (read_pipe) );
+
+  return handle;
+}
+
 static void user_mode_code( int core_number )
 {
   Write0( "In USR32 mode" ); NewLine;
@@ -3653,42 +4007,31 @@ static void user_mode_code( int core_number )
 
   //OSCLI( "Modules" );
   if (core_number == 0) {
-    OSCLI( "Desktop Resources:$.Apps.!Alarm" );
+    // OSCLI( "Desktop Resources:$.Apps.!Alarm" );
   }
 
-  for (int i = 0; i < 3; i++) {
-    // CreateThread
-    // Registers 3-8 are passed to the code as arguments (r1-r6)
-    // FIXME: compatible with aapcs?
-    // Argument 1 is the handle for the thread
-    // Write0( "Creating task " ); WriteNum( core_number ); Write0( " " ); WriteNum( i ); NewLine;
-    asm ( "isb" );
+  uint32_t pipe = PipeOp_CreateForTransfer( 4096 ); // N.B. Currently the only size supported!
 
-    const distance = 560;
-    int32_t xx = 400 + core_number * distance;
-    int32_t yy = 400 + i * distance;
-    bool direction = (1 & core_number) != (1 & i);
-    // Write0( "Params: " ); WriteNum( xx ); Write0( " " ); WriteNum( yy ); Write0( " " ); WriteNum( direction ); NewLine;
-
-    uint32_t stack = 0x9000 - 0x100 * i;
-
-    register uint32_t request asm ( "r0" ) = 0; // Create Thread
-    register void *code asm ( "r1" ) = user_thread;
-    register uint32_t stack_top asm ( "r2" ) = stack;
-    register uint32_t x asm ( "r3" ) = xx;
-    register uint32_t y asm ( "r4" ) = yy;
-    register bool clockwise asm ( "r5" ) = direction ? 1 : 0;
-    register uint32_t handle asm ( "r0" );
-
-    asm volatile ( "svc %[swi]"
-        : "=r" (handle) 
-        : [swi] "i" (OS_ThreadOp)
-        , "r" (request)
-        , "r" (code)
-        , "r" (stack_top)
-        , "r" (x), "r" (y), "r" (clockwise) );
-
+  if (pipe == 0) {
+    asm ( "bkpt 1" );
   }
+
+  PipeSpace data;
+
+  // Block forever
+  // data = PipeOp_WaitForData( pipe, 26 );
+
+  // Initially, the creating task is the sender and receiver associated with a
+  // pipe. It must give up that association when handing off the pipe to another
+  // task. The replacement owner may either be 0 or another task handle.
+  // Since a started thread may begin to execute before its handle is returned
+  // to the creator, we have to detatch from the pipe before we create the tasks
+  // that may use them. Doing that one at a time means that at least one of the
+  // three tasks is associated with the pipe at all times.
+  PipeOp_PassingOver( pipe, 0 );
+  create_producer_thread( pipe );
+  PipeOp_PassingOff( pipe, 0 );
+  create_consumer_thread( pipe );
 
   for (int i = 0;;i++) {
     Sleep( 60000 ); // 1 minute

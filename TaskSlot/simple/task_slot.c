@@ -30,6 +30,7 @@
 // parent TaskSlot.
 
 typedef struct handler handler;
+typedef struct os_pipe os_pipe;
 
 struct handler {
   uint32_t code;
@@ -50,6 +51,54 @@ struct TaskSlot {
 
 extern TaskSlot task_slots[];
 extern Task tasks[];
+
+static inline TaskSlot *slot_from_handle( uint32_t handle )
+{
+  return (TaskSlot *) handle;
+}
+
+static inline uint32_t handle_from_slot( TaskSlot *slot )
+{
+  return (uint32_t) slot;
+}
+
+static inline Task *task_from_handle( uint32_t handle )
+{
+  return (Task *) handle;
+}
+
+static inline uint32_t handle_from_task( Task *task )
+{
+  return (uint32_t) task;
+}
+
+static inline os_pipe *pipe_from_handle( uint32_t handle )
+{
+  return (os_pipe *) handle;
+}
+
+static inline uint32_t handle_from_pipe( os_pipe *pipe )
+{
+  return (uint32_t) pipe;
+}
+
+bool do_OS_GetEnv( svc_registers *regs )
+{
+  Task *task = workspace.task_slot.running;
+
+  if (task->slot != 0) {
+    regs->r[0] = (uint32_t) TaskSlot_Command( task->slot );
+    regs->r[1] = TaskSlot_Himem( task->slot );
+    regs->r[2] = (uint32_t) TaskSlot_Time( task->slot );
+  }
+  else {
+    regs->r[0] = (uint32_t) "ModuleTask";
+    regs->r[1] = 0x8000;
+    regs->r[2] = 0;
+  }
+
+  return true;
+}
 
 /* Handlers. Per slot, or per thread, I wonder? I'll go for per slot, to start with (matches with the idea of
    cleaning up the handlers on exit).
@@ -127,49 +176,41 @@ static inline bool is_in_task_slots( uint32_t va )
   return va >= (uint32_t) task_slots && va < 4096 + (uint32_t) task_slots;
 }
 
+physical_memory_block Pipe_physical_address( TaskSlot *slot, uint32_t va );
+
 physical_memory_block Kernel_physical_address( uint32_t va )
 {
-#ifdef GOTITDONE
-  // FIXME : More than a couple of slots or tasks!
-  // FIXME : access privileges (in res)
-  if (is_in_tasks( va )) {
-    physical_memory_block block = { .virtual_base = ((uint32_t) tasks) >> 12,
-                                    .physical_base = shared.task_slot.tasks_memory >> 12,
-                                    .size = 1 };
-    return block;
-  }
-
-  if (is_in_task_slots( va )) {
-    physical_memory_block block = { .virtual_base = ((uint32_t) task_slots) >> 12,
-                                    .physical_base = shared.task_slot.slots_memory >> 12,
-                                    .size = 1 };
-    return block;
-  }
-#endif
-
   assert( workspace.task_slot.running != 0 );
 
   Task *running = workspace.task_slot.running;
 
-  assert( running->slot != 0 );
+  assert( running->next != 0 );
+
+  physical_memory_block result = { 0, 0, 0 }; // Fail
 
   TaskSlot *slot = running->slot;
+
+  claim_lock( &slot->lock );
 
 WriteS( "Searching slot " ); WriteNum( (uint32_t) slot ); WriteS( " for address " ); WriteNum( va ); NewLine;
   if (slot != 0) {
     for (int i = 0; i < number_of( slot->blocks ) && slot->blocks[i].size != 0 && slot->blocks[i].virtual_base <= va; i++) {
 WriteS( "Block: " ); WriteNum( slot->blocks[i].virtual_base ); WriteS( ", " ); WriteNum( slot->blocks[i].size ); NewLine;
       if (slot->blocks[i].virtual_base <= va && slot->blocks[i].virtual_base + slot->blocks[i].size > va) {
-        return slot->blocks[i];
+        result = slot->blocks[i];
+        goto found;
       }
     }
   }
-  else WriteS( "No current slot" );
+  else
+    WriteS( "No current slot" );
 
-WriteS( "No memory found" ); NewLine;
-asm ( "bkpt 44" );
-  physical_memory_block fail = { 0, 0, 0 };
-  return fail;
+  result = Pipe_physical_address( slot, va );
+
+found:
+  release_lock( &slot->lock );
+
+  return result;
 }
 
 static void free_task( Task *task )
@@ -192,13 +233,11 @@ static void allocate_taskslot_memory()
     shared.task_slot.tasks_memory = Kernel_allocate_pages( 4096, 4096 );
   }
 
-  // No lazy address decoding for the kernel, yet
+  // No lazy address decoding for the kernel
 
-  if (!workspace.task_slot.memory_mapped) {
-    MMU_map_shared_at( (void*) &tasks, shared.task_slot.slots_memory, 4096 );
-    MMU_map_shared_at( (void*) &task_slots, shared.task_slot.tasks_memory, 4096 );
-    workspace.task_slot.memory_mapped = true;
-  }
+  MMU_map_shared_at( (void*) &tasks, shared.task_slot.slots_memory, 4096 );
+  MMU_map_shared_at( (void*) &task_slots, shared.task_slot.tasks_memory, 4096 );
+  workspace.task_slot.memory_mapped = true;
 
   if (first_core) {
     WriteS( "Initialising tasks and task slots" );
@@ -227,10 +266,12 @@ TaskSlot *TaskSlot_new( char const *command_line )
   for (int i = 0; i < 4096/sizeof( TaskSlot ) && result == 0; i++) {
     if (!task_slots[i].allocated) {
 #ifdef DEBUG__WATCH_TASK_SLOTS
-WriteS( "Allocated TaskSlot " ); WriteNum( i ); NewLine;
+WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
 #endif
       result = &task_slots[i];
       result->allocated = true;
+      asm ( "dsb" );
+      flush_location( &result->allocated );
     }
   }
 
@@ -485,8 +526,10 @@ typedef union {
   };
 } TaskLock;
 
-bool __attribute__(( noinline )) Claim( svc_registers *regs )
+static error_block * __attribute__(( noinline )) Claim( svc_registers *regs )
 {
+  error_block *error = 0;
+
   // TODO check valid address for task (and return error)
   uint32_t *lock = (void *) regs->r[1];
   regs->r[0] = 0; // Default boolean result - not already owner. Only returns when claimed.
@@ -500,7 +543,6 @@ bool __attribute__(( noinline )) Claim( svc_registers *regs )
   TaskLock code = { .raw = running };
   assert ( !code.wanted );
 
-  claim_lock( &running->slot->lock );
   // Despite this lock, we will still be competing for the lock word with
   // tasks that haven't claimed the lock yet or one waiting to release it.
 
@@ -517,7 +559,7 @@ bool __attribute__(( noinline )) Claim( svc_registers *regs )
       // is not required in most situations." ARM DDI 0487C.a E2-3051
 
       regs->r[0] = 1; // Already own it!
-      goto noerror;
+      return 0;
     }
 
     if (latest_read.raw == 0) {
@@ -546,40 +588,35 @@ bool __attribute__(( noinline )) Claim( svc_registers *regs )
       workspace.task_slot.running = next;
       // There's always a next, idle tasks don't sleep.
 
-      goto noerror;
+      return 0;
     }
   } while (failed);
 
-noerror:
-  release_lock( &running->slot->lock );
-  return true;
-
-errorreturn:
-  release_lock( &running->slot->lock );
-  return false;
+  return error;
 }
 
-bool __attribute__(( noinline )) Release( svc_registers *regs )
+static error_block * __attribute__(( noinline )) Release( svc_registers *regs )
 {
+  error_block *error = 0;
+
   static error_block not_owner = { 0x999, "Don't try to release locks you don't own!" };
 
   // TODO check valid address for task
-  uint32_t lock = (void *) regs->r[1];
-
-  uint32_t failed;
+  uint32_t *lock = (void *) regs->r[1];
 
   Task *running = workspace.task_slot.running;
-  Task *next = running->next;
   TaskSlot *slot = running->slot;
 
   TaskLock code = { .raw = running };
   assert ( !code.wanted );
 
-  claim_lock( &running->slot->lock );
+  claim_lock( &slot->lock );
   // Despite this lock, we will still be competing for the lock word with
   // tasks that haven't claimed the lock yet or one waiting to release it.
 
   TaskLock latest_read;
+
+  uint32_t failed = false;
 
   do {
     asm volatile ( "ldrex %[value], [%[lock]]"
@@ -593,7 +630,7 @@ bool __attribute__(( noinline )) Release( svc_registers *regs )
 
       if (latest_read.wanted) {
         Task **p = &slot->waiting;
-        while ((*p) == 0 && ((*p)->regs.r[1] != lock)) p = &(*p)->next;
+        while ((*p) == 0 && ((uint32_t*) (*p)->regs.r[1] != lock)) p = &(*p)->next;
 
         waiting = *p;
 
@@ -603,9 +640,9 @@ bool __attribute__(( noinline )) Release( svc_registers *regs )
         waiting->next = running->next;
         running->next = waiting;
 
-        while ((*p) == 0 && ((*p)->regs.r[1] != lock)) p = &(*p)->next;
+        while ((*p) == 0 && ((uint32_t*) (*p)->regs.r[1] != lock)) p = &(*p)->next;
 
-        new_code.raw = (uint32_t) waiting;
+        new_code.raw = waiting;
 
         if (*p != 0) {
           new_code.wanted = 1;
@@ -632,28 +669,31 @@ bool __attribute__(( noinline )) Release( svc_registers *regs )
         // updated the lock, and this is the owning task.
       } while (failed);
 
-      goto noerror;
+      break;
     }
     else {
-      WriteNum( latest_read.raw ); NewLine;
+      WriteNum( (uint32_t) latest_read.raw ); NewLine;
       WriteNum( (uint32_t) running ); NewLine;
 
-      regs->r[0] = (uint32_t) &not_owner;
-      goto errorreturn;
+      error = &not_owner;
     }
   } while (failed);
 
-noerror:
-  release_lock( &running->slot->lock );
-  return true;
+  return error;
+}
 
-errorreturn:
-  release_lock( &running->slot->lock );
-  return false;
+void __attribute__(( naked )) task_exit()
+{
+  // TODO: Check if last task in slot, tidy up generally
+  asm ( "bkpt 2" );
 }
 
 bool __attribute__(( optimize( "O4" ) )) do_OS_ThreadOp( svc_registers *regs )
 {
+  enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, LockClaim, LockRelease };
+
+  error_block *error = 0;
+
   if ((regs->spsr & 0x1f) != 0x10) {
     WriteNum( regs->spsr ); NewLine;
     static error_block error = { 0x999, "OS_ThreadOp only supported from usr mode, so far." };
@@ -661,7 +701,22 @@ bool __attribute__(( optimize( "O4" ) )) do_OS_ThreadOp( svc_registers *regs )
     return false;
   }
 
-  enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, LockClaim, LockRelease };
+  Task *running = workspace.task_slot.running;
+  assert ( running != 0 );
+  Task *next = running->next;
+
+  if (next == 0 && regs->r[0] == Sleep && regs->r[1] == 0) {
+    return true; // Yield, but no other threads on this core.
+  }
+
+  assert ( next != 0 );
+  TaskSlot *slot = running->slot;
+
+  if (slot == 0) {
+    Write0( "No slot! " ); WriteNum( regs->r[0] ); NewLine;
+  }
+  assert ( slot != 0 );
+  claim_lock( &slot->lock );
 
   // Start a new thread
   // Exit a thread (last one out turns out the lights for the slot)
@@ -673,57 +728,34 @@ bool __attribute__(( optimize( "O4" ) )) do_OS_ThreadOp( svc_registers *regs )
   switch (regs->r[0]) {
   case Start:
     {
-      Task *new_task = Task_new( workspace.task_slot.running->slot );
-      Write0( "Task allocated " ); WriteNum( (uint32_t) new_task ); NewLine;
+      Task *new_task = Task_new( slot );
 
       assert( new_task->slot == workspace.task_slot.running->slot );
 
+      // The creating task gets to continue, although its code should
+      // not assume that the new task will wait for it to yield.
       Task *running = workspace.task_slot.running;
-      new_task->next = running;
-      workspace.task_slot.running = new_task;
+      new_task->next = running->next;
+      running->next = new_task;
 
-      // Save task context (integer only), including the usr stack pointer
-      // The register values when the creating task is resumed
-      running->regs.r[0] = (uint32_t) new_task;
-      running->regs.r[1] = regs->r[1];
-      running->regs.r[2] = regs->r[2];
-      running->regs.r[3] = regs->r[3];
-      running->regs.r[4] = regs->r[4];
-      running->regs.r[5] = regs->r[5];
-      running->regs.r[6] = regs->r[6];
-      running->regs.r[7] = regs->r[7];
-      running->regs.r[8] = regs->r[8];
-      running->regs.r[9] = regs->r[9];
-      running->regs.r[10] = regs->r[10];
-      running->regs.r[11] = regs->r[11];
-      running->regs.r[12] = regs->r[12];
-      running->regs.pc = regs->lr;
-      running->regs.psr = regs->spsr;
-
-      asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (running->regs.banked_sp) );
-      asm volatile ( "mrs %[lr], lr_usr" : [lr] "=r" (running->regs.banked_lr) );
-
-      // Replace the calling task with the new task
-
-      uint32_t starting_sp = regs->r[2];
-      regs->lr = regs->r[1];
       // The new thread will start with the same psr as the parent
 
-      asm volatile ( "msr sp_usr, %[sp]" : : [sp] "r" (starting_sp) );
-      asm volatile ( "msr lr_usr, %[lr]" : : [lr] "r" (0) ); // FIXME: Code that does OS_Exit?
+      asm volatile ( "mrs %[psr], spsr" : [psr] "=r" (new_task->regs.psr) );
 
-      regs->r[0] = (uint32_t) new_task;
-      regs->r[1] = regs->r[3];
-      regs->r[2] = regs->r[4];
-      regs->r[3] = regs->r[5];
-      regs->r[4] = regs->r[6];
-      regs->r[5] = regs->r[7];
-      regs->r[6] = regs->r[8];
+      new_task->regs.pc = regs->r[1];
+      new_task->regs.banked_lr = (uint32_t) task_exit;
+      new_task->regs.banked_sp = regs->r[2];
+      new_task->regs.r[0] = handle_from_task( new_task );
+      new_task->regs.r[1] = regs->r[3];
+      new_task->regs.r[2] = regs->r[4];
+      new_task->regs.r[3] = regs->r[5];
+      new_task->regs.r[4] = regs->r[6];
+      new_task->regs.r[5] = regs->r[7];
+      new_task->regs.r[6] = regs->r[8];
 
-      // FIXME: do something clever with floating point
-
-      Write0( "Task created" ); NewLine;
-
+#ifdef DEBUG__WATCH_TASK_SLOTS
+      Write0( "Task created, may or may not start immediately " ); WriteNum( new_task ); WriteNum( slot ); NewLine;
+#endif
       return true;
     }
   case Sleep:
@@ -772,29 +804,155 @@ Write0( "Sleeping " ); WriteNum( running ); Write0( ", waking " ); WriteNum( res
     }
   case LockClaim:
     {
-      return Claim( regs );
+      error = Claim( regs );
     }
   case LockRelease:
     {
-      return Release( regs );
+      error = Release( regs );
     }
-  default: return Kernel_Error_UnimplementedSWI( regs );
+  default:
+    {
+      static error_block unknown_code = { 0x888, "Unknown code" };
+      error = &unknown_code;
+    }
   }
+
+  release_lock( &slot->lock );
+
+  if (error != 0) { regs->r[0] = (uint32_t) error; }
+
+  return error == 0;
 }
+
+/* Initial implementation of pipes:
+ *  4KiB each
+ *  Located at top of bottom MiB
+ */
 
 struct os_pipe {
   os_pipe *next;
   Task *sender;
+  uint32_t sender_waiting_for; // Non-zero if blocked
+  uint32_t sender_va; // Zero if not allocated
   Task *receiver;
+  uint32_t receiver_waiting_for; // Non-zero if blocked
+  uint32_t receiver_va; // Zero if not allocated
+
   uint32_t physical;
   uint32_t allocated_mem;
-  uint32_t virtual_receiver;
-  uint32_t virtual_sender;
   uint32_t max_block_size;
   uint32_t max_data;
   uint32_t write_index;
   uint32_t read_index;
 };
+
+static bool in_range( uint32_t value, uint32_t base, uint32_t size )
+{
+  return (value >= base && value < (base + size));
+}
+
+static uint32_t local_sender_va( TaskSlot *slot, os_pipe *pipe )
+{
+#if 0
+Write0( "local_sender_va " ); WriteNum( pipe->sender );
+if (pipe->sender != 0) {
+  WriteNum( pipe->sender->slot ); WriteNum( slot );
+}
+NewLine;
+#endif
+  if (pipe->sender == 0 || pipe->sender->slot != slot) return 0;
+  return pipe->sender_va;
+}
+
+static uint32_t local_receiver_va( TaskSlot *slot, os_pipe *pipe )
+{
+  if (pipe->receiver == 0 || pipe->receiver->slot != slot) return 0;
+  return pipe->receiver_va;
+}
+
+physical_memory_block Pipe_physical_address( TaskSlot *slot, uint32_t va )
+{
+  // Slot is locked.
+  physical_memory_block result = { 0, 0, 0 }; // Fail
+
+  // FIXME This implementation is trivial and will break almost immediately!
+  // Allocates the pipe virtual memory at the top of the first MiB of memory.
+  // Only works with 4KiB pages, something smaller (and larger) might be useful.
+
+  // It will do for proof of concept, though.
+  // (I would recommend allocating virtual addresses in the top GiB, since
+  // all tasks using pipes will be aware they have a bit more than 64M to play
+  // with.)
+
+  // One list of pipes shared between all slots and cores. To be fixed? TODO
+
+  claim_lock( &shared.kernel.pipes_lock );
+
+  os_pipe *this_pipe = shared.kernel.pipes;
+
+  while (this_pipe != 0 && result.size == 0) {
+    uint32_t local_va;
+    local_va = local_sender_va( slot, this_pipe );
+    if (local_va != 0 && in_range( va, local_va, 2 * this_pipe->max_block_size)) {
+      result.size = this_pipe->max_block_size;
+      result.physical_base = this_pipe->physical;
+      result.virtual_base = local_va;
+      if (!in_range( va, local_va, this_pipe->max_block_size)) {
+        result.virtual_base += this_pipe->max_block_size;
+      }
+    }
+    local_va = local_receiver_va( slot, this_pipe );
+    if (local_va != 0 && in_range( va, local_va, 2 * this_pipe->max_block_size)) {
+      // TODO Map read-only
+      result.size = this_pipe->max_block_size;
+      result.physical_base = this_pipe->physical;
+      result.virtual_base = local_va;
+      if (!in_range( va, local_va, this_pipe->max_block_size)) {
+        result.virtual_base += this_pipe->max_block_size;
+      }
+    }
+    this_pipe = this_pipe->next;
+  }
+
+  release_lock( &shared.kernel.pipes_lock );
+
+#ifdef DEBUG__PIPEOP
+  Write0( __func__ ); 
+  Write0( " " ); WriteNum( result.virtual_base ); 
+  Write0( " " ); WriteNum( result.physical_base ); 
+  Write0( " " ); WriteNum( result.size );  NewLine;
+#endif
+
+  return result;
+}
+
+static bool PipeOp_NotYourPipe( svc_registers *regs )
+{
+  static error_block error = { 0x888, "Pipe not owned by this task" };
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
+
+static bool PipeOp_InvalidPipe( svc_registers *regs )
+{
+  static error_block error = { 0x888, "Invalid Pipe" };
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
+
+static bool PipeOp_CreationError( svc_registers *regs )
+{
+  static error_block error = { 0x888, "Pipe creation error" };
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
+
+static bool PipeOp_CreationProblem( svc_registers *regs )
+{
+  static error_block error = { 0x888, "Pipe creation problem" };
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
 
 static bool PipeCreate( svc_registers *regs )
 {
@@ -802,110 +960,366 @@ static bool PipeCreate( svc_registers *regs )
   uint32_t max_data = regs->r[3];
   uint32_t allocated_mem = regs->r[4];
 
-  if (max_block_size == 0 || max_block_size > max_data) {
+  if (max_data != 0) {
+    if (max_block_size > max_data) {
+      return PipeOp_CreationError( regs );
+    }
+
     // FIXME
     return Kernel_Error_UnimplementedSWI( regs );
   }
-
-  if (max_data != 0) {
-    // FIXME
-    return Kernel_Error_UnimplementedSWI( regs );
+  else if (max_block_size == 0) {
+    return PipeOp_CreationError( regs );
   }
 
   os_pipe *pipe = rma_allocate( sizeof( os_pipe ), regs );
 
   if (pipe == 0) {
-    asm ( "bkpt 1" );
+    return PipeOp_CreationProblem( regs );
   }
 
   // At the moment, the running task is the only one that knows about it.
   // If it goes away, the resource should be cleaned up.
   pipe->sender = pipe->receiver = workspace.task_slot.running;
+  pipe->sender_va = pipe->receiver_va = 0;
 
   pipe->max_block_size = max_block_size;
   pipe->max_data = max_data;
   pipe->allocated_mem = allocated_mem;
   pipe->physical = Kernel_allocate_pages( 4096, 4096 );
+  Write0( "Physical memory: " ); WriteNum( pipe->physical ); NewLine;
 
-  // The following will be updated on the first calls to WaitForSpace and WaitForData, respectively.
-  pipe->virtual_sender = -1;
-  pipe->virtual_receiver = -1;
+  // The following will be updated on the first blocking calls 
+  // to WaitForSpace and WaitForData, respectively.
+  pipe->sender_waiting_for = 0;
+  pipe->receiver_waiting_for = 0;
 
   pipe->write_index = allocated_mem & 0xfff;
   pipe->read_index = allocated_mem & 0xfff;
 
   claim_lock( &shared.kernel.pipes_lock );
+
   pipe->next = shared.kernel.pipes;
   shared.kernel.pipes = pipe;
+
   release_lock( &shared.kernel.pipes_lock );
 
-  regs->r[1] = (uint32_t) pipe;
+  regs->r[1] = handle_from_pipe( pipe );
 
   return true;
 }
 
-static bool PipeWaitForSpace( svc_registers *regs )
+extern uint32_t pipes_top;
+
+static uint32_t allocate_virtual_address( TaskSlot *slot, os_pipe *pipe )
 {
+  // Proof of concept locates pipes at the top of the first megabyte of virtual RAM
+  // This is, of course, ridiculous.
+  // Fix that in rool.script and data abort handler
+  // Doesn't cope with removing pipes FIXME
+
+  uint32_t va = (uint32_t) &pipes_top;
+
+  os_pipe *this_pipe = shared.kernel.pipes;
+
+  while (this_pipe != 0) {
+    uint32_t local_va;
+    local_va = local_sender_va( slot, this_pipe );
+    if (local_va != 0 && local_va < va) va = local_va;
+    local_va = local_receiver_va( slot, this_pipe );
+    if (local_va != 0 && local_va < va) va = local_va;
+    this_pipe = this_pipe->next;
+  }
+
+  Write0( "Allocated pipe VA " ); WriteNum( va - 2 * pipe->max_block_size ); NewLine;
+
+  return va - 2 * pipe->max_block_size;
+}
+
+static uint32_t data_in_pipe( os_pipe *pipe )
+{
+  return pipe->write_index - pipe->read_index;
+}
+
+static uint32_t space_in_pipe( os_pipe *pipe )
+{
+  return pipe->max_block_size - data_in_pipe( pipe );
+}
+
+static uint32_t read_location( os_pipe *pipe, TaskSlot *slot )
+{
+  return pipe->receiver_va + (pipe->read_index % pipe->max_block_size);
+}
+
+static uint32_t write_location( os_pipe *pipe, TaskSlot *slot )
+{
+  return pipe->sender_va + (pipe->write_index % pipe->max_block_size);
+}
+
+static bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
+{
+  uint32_t amount = regs->r[2];
+  // TODO validation
+
+  Task *running = workspace.task_slot.running;
+  Task *next = running->next;
+  TaskSlot *slot = running->slot;
+
+  if (pipe->sender != running) {
+    if (pipe->sender != 0) {
+      return PipeOp_NotYourPipe( regs );
+    }
+  }
+
+  claim_lock( &shared.kernel.pipes_lock );
+
+  if (pipe->sender == 0) {
+    pipe->sender = running;
+
+    pipe->sender_va = allocate_virtual_address( slot, pipe );
+  }
+
+  uint32_t available = space_in_pipe( pipe );
+
+  if (available >= amount) {
+    regs->r[2] = available;
+    regs->r[3] = write_location( pipe, slot );
+
+    release_lock( &shared.kernel.pipes_lock );
+
+#ifdef DEBUG__PIPEOP
+    Write0( "Space immediately available: " ); WriteNum( amount ); Write0( ", total: " ); WriteNum( space_in_pipe( pipe ) ); Write0( ", at " ); WriteNum( write_location( pipe, slot ) ); NewLine;
+#endif
+
+    return true;
+  }
+
+  pipe->sender_waiting_for = amount;
+
+  save_and_resume( running, next, regs );
+  running->next = 0;
+  workspace.task_slot.running = next;
+
+  release_lock( &shared.kernel.pipes_lock );
+
   return true;
 }
 
-static bool PipeSpaceFilled( svc_registers *regs )
+static bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
 {
+  uint32_t amount = regs->r[2];
+  // TODO validation
+
+  Task *running = workspace.task_slot.running;
+  TaskSlot *slot = running->slot;
+
+  if (pipe->sender != running) {
+    // No setting of sender, here, if the task hasn't already checked for
+    // space, how is it going to have written to the pipe?
+    return PipeOp_NotYourPipe( regs );
+  }
+
+  // TODO: Flush only that area, and only as far as necessary (are the two slots
+  // only single core and running on the same core?)
+asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME
+
+  claim_lock( &shared.kernel.pipes_lock );
+
+  uint32_t available = space_in_pipe( pipe );
+
+  if (available >= amount) {
+    pipe->write_index += amount;
+
+    regs->r[2] = available - amount;
+    regs->r[3] = write_location( pipe, slot );
+
+#ifdef DEBUG__PIPEOP
+    Write0( "Filled " ); WriteNum( amount ); Write0( ", remaining: " ); WriteNum( regs->r[2] ); Write0( ", at " ); WriteNum( regs->r[3] ); NewLine;
+#endif
+
+    if (pipe->receiver_waiting_for > 0
+     && pipe->receiver_waiting_for <= data_in_pipe( pipe )) {
+      Task *receiver = pipe->receiver;
+
+#ifdef DEBUG__PIPEOP
+      Write0( "Data finally available: " ); WriteNum( pipe->receiver_waiting_for ); Write0( ", remaining: " ); WriteNum( data_in_pipe( pipe ) ); Write0( ", at " ); WriteNum( read_location( pipe, slot ) ); NewLine;
+#endif
+
+asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME
+      pipe->receiver_waiting_for = 0;
+
+      receiver->regs.r[2] = data_in_pipe( pipe );
+      receiver->regs.r[3] = read_location( pipe, slot );
+
+      // "Returns" from SWI next time scheduled
+      receiver->next = running->next;
+      running->next = receiver;
+    }
+
+    release_lock( &shared.kernel.pipes_lock );
+
+    return true;
+  }
+
+  release_lock( &shared.kernel.pipes_lock );
+
   return true;
 }
 
-static bool PipePassingOver( svc_registers *regs )
+static bool PipePassingOver( svc_registers *regs, os_pipe *pipe )
 {
-  os_pipe *pipe = (void*) regs->r[1];
-
-  pipe->virtual_sender = -1;
+  pipe->sender = task_from_handle( regs->r[2] );
 
   return true;
 }
 
-static bool PipeUnreadData( svc_registers *regs )
+static bool PipeUnreadData( svc_registers *regs, os_pipe *pipe )
 {
-  os_pipe *pipe = (void*) regs->r[1];
-
-  // TODO
+  regs->r[2] = data_in_pipe( pipe );
 
   return true;
 }
 
-static bool PipeNoMoreData( svc_registers *regs )
+static bool PipeNoMoreData( svc_registers *regs, os_pipe *pipe )
 {
+  Write0( __func__ ); NewLine;
+  return Kernel_Error_UnimplementedSWI( regs );
+}
+
+static bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
+{
+  uint32_t amount = regs->r[2];
+  // TODO validation
+
+  Task *running = workspace.task_slot.running;
+  Task *next = running->next;
+  TaskSlot *slot = running->slot;
+
+  if (pipe->receiver != running) {
+    if (pipe->receiver != 0) {
+      asm ( "bkpt 1" );
+    }
+  }
+
+  claim_lock( &shared.kernel.pipes_lock );
+
+  if (pipe->receiver == 0) {
+    pipe->receiver = running;
+
+    pipe->receiver_va = allocate_virtual_address( slot, pipe );
+  }
+
+  uint32_t available = data_in_pipe( pipe );
+
+  if (available >= amount) {
+    regs->r[2] = available;
+    regs->r[3] = read_location( pipe, slot );
+
+asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME
+    release_lock( &shared.kernel.pipes_lock );
+
+#ifdef DEBUG__PIPEOP
+    Write0( "Data immediately available: " ); WriteNum( amount ); Write0( ", total: " ); WriteNum( data_in_pipe( pipe ) ); Write0( ", at " ); WriteNum( read_location( pipe, slot ) ); NewLine;
+#endif
+
+    return true;
+  }
+
+  pipe->receiver_waiting_for = amount;
+
+#ifdef DEBUG__PIPEOP
+  Write0( "Blocking receiver" ); NewLine;
+#endif
+  save_and_resume( running, next, regs );
+  running->next = 0;
+  workspace.task_slot.running = next;
+
+  release_lock( &shared.kernel.pipes_lock );
+
   return true;
 }
 
-static bool PipeWaitForData( svc_registers *regs )
+static bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
 {
+  uint32_t amount = regs->r[2];
+  // TODO validation
+
+  Task *running = workspace.task_slot.running;
+  TaskSlot *slot = running->slot;
+
+  if (pipe->receiver != running) {
+    // No setting of receiver, here, if the task hasn't already checked for
+    // data, how is it going to have read from the pipe?
+    return PipeOp_NotYourPipe( regs );
+  }
+
+  claim_lock( &shared.kernel.pipes_lock );
+
+  uint32_t available = data_in_pipe( pipe );
+
+  if (available >= amount) {
+    pipe->read_index += amount;
+
+    regs->r[2] = available - amount;
+    regs->r[3] = read_location( pipe, slot );
+
+#ifdef DEBUG__PIPEOP
+    Write0( "Consumed " ); WriteNum( amount ); Write0( ", remaining: " ); WriteNum( regs->r[2] ); Write0( ", at " ); WriteNum( regs->r[3] ); NewLine;
+#endif
+
+    if (pipe->sender_waiting_for > 0
+     && pipe->sender_waiting_for <= space_in_pipe( pipe )) {
+      Task *sender = pipe->sender;
+
+#ifdef DEBUG__PIPEOP
+      Write0( "Space finally available: " ); WriteNum( pipe->sender_waiting_for ); Write0( ", remaining: " ); WriteNum( space_in_pipe( pipe ) ); Write0( ", at " ); WriteNum( write_location( pipe, slot ) ); NewLine;
+#endif
+
+asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME
+      pipe->sender_waiting_for = 0;
+
+      sender->regs.r[2] = space_in_pipe( pipe );
+      sender->regs.r[3] = write_location( pipe, slot );
+
+      // "Returns" from SWI next time scheduled
+      sender->next = running->next;
+      running->next = sender;
+    }
+
+    release_lock( &shared.kernel.pipes_lock );
+
+    return true;
+  }
+  else {
+    asm ( "bkpt 1" ); // Consumed more than available?
+  }
+
+  release_lock( &shared.kernel.pipes_lock );
+
   return true;
 }
 
-static bool PipeDataFreed( svc_registers *regs )
+static bool PipePassingOff( svc_registers *regs, os_pipe *pipe )
 {
-  return true;
-}
-
-static bool PipePassingOff( svc_registers *regs )
-{
-  os_pipe *pipe = (void*) regs->r[1];
-
-  pipe->virtual_receiver = regs->r[2];
+  pipe->receiver = task_from_handle( regs->r[2] );
 
   // TODO Unmap from virtual memory (if new receiver not in same slot)
 
   return true;
 }
 
-static bool PipeNotListening( svc_registers *regs )
+static bool PipeNotListening( svc_registers *regs, os_pipe *pipe )
 {
-  return true;
+  Write0( __func__ ); NewLine;
+  return Kernel_Error_UnimplementedSWI( regs );
 }
 
 
 bool do_OS_PipeOp( svc_registers *regs )
 {
+#ifdef DEBUG__PIPEOP
+  Write0( __func__ ); Write0( " " ); WriteNum( regs->r[0] ); NewLine;
+#endif
   enum { Create,
          WaitForSpace,  // Block task until N bytes may be written
          SpaceFilled,   // I've filled this many bytes
@@ -913,7 +1327,7 @@ bool do_OS_PipeOp( svc_registers *regs )
          UnreadData,    // Useful, in case data can be dropped or consolidated (e.g. mouse movements)
          NoMoreData,    // I'm done filling the pipe
          WaitForData,   // Block task until N bytes may be read
-         DataFreed,     // I don't need the first N bytes written any more
+         DataConsumed,  // I don't need the first N bytes written any more
          PassingOff,    // Another task is going to take over listening at this pipe
          NotListening   // I don't want any more data, thanks
          };
@@ -976,8 +1390,8 @@ bool do_OS_PipeOp( svc_registers *regs )
 
 
 
-    PassingOver - about to ask another task to send its data to this pipe (r2 = -1 or new task)
-    PassingOff - about to ask another task to handle the data from this pipe (r2 = -1 or new task)
+    PassingOver - about to ask another task to send its data to this pipe (r2 = 0 or new task)
+    PassingOff - about to ask another task to handle the data from this pipe (r2 = 0 or new task)
   */
 
 /* Create a pipe, pass it to another thread to read or write, while you do the other.
@@ -1032,17 +1446,26 @@ bool do_OS_PipeOp( svc_registers *regs )
    resources will be released.
 
 */
+  os_pipe *pipe;
+
+  if (regs->r[0] != Create) {
+    pipe = pipe_from_handle( regs->r[1] );
+    if (pipe == 0) {
+      return PipeOp_InvalidPipe( regs );
+    }
+  }
+
   switch (regs->r[0]) {
   case Create: return PipeCreate( regs );
-  case WaitForSpace: return PipeWaitForSpace( regs );
-  case PassingOver: return PipePassingOver( regs );
-  case UnreadData: return PipeUnreadData( regs );
-  case SpaceFilled: return PipeSpaceFilled( regs );
-  case NoMoreData: return PipeNoMoreData( regs );
-  case WaitForData: return PipeWaitForData( regs );
-  case DataFreed: return PipeDataFreed( regs );
-  case PassingOff: return PipePassingOff( regs );
-  case NotListening: return PipeNotListening( regs );
+  case WaitForSpace: return PipeWaitForSpace( regs, pipe );
+  case PassingOver: return PipePassingOver( regs, pipe );
+  case UnreadData: return PipeUnreadData( regs, pipe );
+  case SpaceFilled: return PipeSpaceFilled( regs, pipe );
+  case NoMoreData: return PipeNoMoreData( regs, pipe );
+  case WaitForData: return PipeWaitForData( regs, pipe );
+  case DataConsumed: return PipeDataConsumed( regs, pipe );
+  case PassingOff: return PipePassingOff( regs, pipe );
+  case NotListening: return PipeNotListening( regs, pipe );
   default:
     asm( "bkpt 1" );
   }

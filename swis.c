@@ -30,11 +30,11 @@ bool Kernel_Error_UnknownSWI( svc_registers *regs )
 
 bool Kernel_Error_UnimplementedSWI( svc_registers *regs )
 {
+  asm ( "mov r10, lr\n  bkpt 77" );
   static error_block error = { 0x999, "Unimplemented SWI" };
   regs->r[0] = (uint32_t) &error;
 
   Write0( "Unimplemented SWI" ); NewLine;
-  asm ( "bkpt 77" );
   return false;
 }
 

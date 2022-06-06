@@ -99,7 +99,6 @@ bool do_OS_Release( svc_registers *regs );
 bool do_OS_AddToVector( svc_registers *regs );
 bool do_OS_DelinkApplication( svc_registers *regs );
 bool do_OS_RelinkApplication( svc_registers *regs );
-bool do_OS_GetEnv( svc_registers *regs );
 bool do_OS_ReadDefaultHandler( svc_registers *regs );
 
 // Vectored SWIs (do nothing but call the appropriate vectors)
@@ -131,6 +130,7 @@ bool do_OS_SerialOp( svc_registers *regs );
 void __attribute__(( naked )) default_os_changeenvironment();
 void __attribute__(( naked )) default_ticker();
 void __attribute__(( naked )) default_irq();
+bool do_OS_GetEnv( svc_registers *regs );
 bool do_OS_ThreadOp( svc_registers *regs );
 bool do_OS_PipeOp( svc_registers *regs ); // because it blocks tasks
 void swi_returning_to_usr_mode( svc_registers *regs );

@@ -94,8 +94,6 @@ struct Kernel_workspace {
   transient_callback *transient_callbacks_pool;
   ticker_event *ticker_queue;
   ticker_event *ticker_event_pool;
-
-  os_pipe *pipes_pool;
 };
 
 struct VDU_workspace {
