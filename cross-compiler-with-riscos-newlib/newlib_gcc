@@ -1,0 +1,152 @@
+MYOS=riscos
+
+SRC=$(pwd)/sources
+
+if [ ! -d libgloss ]; then
+(
+  echo $0 expects there to be a libgloss directory containing
+  echo a configure script and some source files that provide the system
+  echo call implementations for your platform:
+  echo
+  echo exit close environ execve fork fstat getpid isatty kill
+  echo link lseek open read stat times unlink wait write gettimeofday
+) >&2
+  exit 1
+fi
+
+GCC_VER=10.3.0
+MPFR_VER=4.1.0
+MPC_VER=1.2.1
+GMP_VER=6.2.1
+
+if [ ! -d $SRC ]; then
+  mkdir -P $SRC
+fi
+
+if [ ! -d gcc-$GCC_VER ] ; then
+  if [ ! -f $SRC/gcc-$GCC_VER.tar.xz ] ; then
+    wget -P $SRC https://ftp.gwdg.de/pub/misc/gcc/releases/gcc-$GCC_VER/gcc-$GCC_VER.tar.xz
+  fi
+  echo -n Extracting files from $SRC/gcc-$GCC_VER.tar.xz
+  tar xf $SRC/gcc-$GCC_VER.tar.xz 
+  echo ... done.
+fi
+
+if [ ! -d mpfr-$MPFR_VER ] ; then 
+  if [ ! -f $SRC/mpfr-$MPFR_VER.tar.xz ] ; then
+    wget -P $SRC https://www.mpfr.org/mpfr-current/mpfr-$MPFR_VER.tar.xz
+  fi
+  echo -n Extracting files from $$SRC/mpfr-$MPFR_VER.tar.xz
+  tar xf $SRC/mpfr-$MPFR_VER.tar.xz 
+  echo ... done.
+fi
+
+if [ ! -d mpc-MPC_VER ] ; then
+  if [ ! -f $SRC/mpc-$MPC_VER.tar.gz ] ; then
+    wget -P $SRC https://ftp.gnu.org/pub/gnu/mpc/mpc-$MPC_VER.tar.gz
+  fi
+  echo -n Extracting files from $SRC/mpc-MPC_VER.tar.gz
+  tar xf $SRC/mpc-MPC_VER.tar.gz
+  echo ... done.
+fi
+
+if [ ! -d gmp-$GMP_VER ] ; then
+  if [ ! -f $SRC/gmp-$GMP_VER.tar.xz ] ; then
+    wget -P $SRC https://gmplib.org/download/gmp/gmp-$GMP_VER.tar.xz
+  fi
+  echo -n Extracting files from $SRC/gmp-$GMP_VER.tar.xz
+  tar xf $SRC/gmp-$GMP_VER.tar.xz 
+  echo ... done.
+fi
+
+if [ ! -d newlib-cygwin-master ]; then
+  if [ ! -f $SRC/master.zip ] ; then
+    wget -P $SRC/ https://github.com/mirror/newlib-cygwin/archive/refs/heads/master.zip
+  fi
+  echo -n Extracting files from $SRC/master.zip
+  unzip $SRC/master.zip
+  echo ... done.
+fi
+
+cd gcc-$GCC_VER
+ln -s ../mpfr-$MPFR_VER mpfr
+ln -s ../gmp-$GMP_VER gmp
+ln -s ../mpc-MPC_VER mpc
+ln -s ../newlib-cygwin/newlib newlib
+ln -s ../libgloss libgloss
+
+echo Patching gcc-$GCC_VER
+patch -Np1 <<"EOF"
+diff -Naur --no-dereference gcc-10.3.0/libgcc/config/arm/$MYOS-crti.c gcc-10.3.0.changed/libgcc/config/arm/$MYOS-crti.c
+--- gcc-10.3.0/libgcc/config/arm/$MYOS-crti.c	1970-01-01 01:00:00.000000000 +0100
++++ gcc-10.3.0.changed/libgcc/config/arm/$MYOS-crti.c	2022-06-16 18:14:57.325412401 +0200
+@@ -0,0 +1,7 @@
++extern void __attribute__(( naked, noreturn )) _start();
++
++void __attribute__(( naked, noreturn, section( ".init" ) )) _init()
++{
++  _start();
++  __builtin_unreachable();
++}
+diff -Naur --no-dereference gcc-10.3.0/libgcc/config/arm/$MYOS-crtn.c gcc-10.3.0.changed/libgcc/config/arm/$MYOS-crtn.c
+--- gcc-10.3.0/libgcc/config/arm/$MYOS-crtn.c	1970-01-01 01:00:00.000000000 +0100
++++ gcc-10.3.0.changed/libgcc/config/arm/$MYOS-crtn.c	2022-06-16 18:14:53.221333721 +0200
+@@ -0,0 +1,6 @@
++
++void __attribute__(( naked, noreturn, section( ".fini" ) )) _fini()
++{
++  __builtin_unreachable();
++}
++
+diff -Naur --no-dereference gcc-10.3.0/libgcc/config/arm/t-$MYOS gcc-10.3.0.changed/libgcc/config/arm/t-$MYOS
+--- gcc-10.3.0/libgcc/config/arm/t-$MYOS	1970-01-01 01:00:00.000000000 +0100
++++ gcc-10.3.0.changed/libgcc/config/arm/t-$MYOS	2022-06-16 22:06:12.144342665 +0200
+@@ -0,0 +1,15 @@
++
++# Cannot use default rules due to having no stack on startup
++CUSTOM_CRTIN = yes
++
++# CRTSTUFF is executes constructors and destructors; it will need a stack
++# TODO Give it a stack!
++#CUSTOM_CRTSTUFF = yes
++#
++# There's no need to specify -o $@ because crt_compile puts in -MT crtX.o
++
++crti.o: $(srcdir)/config/arm/$MYOS-crti.c
++	$(crt_compile) -c $<
++
++crtn.o: $(srcdir)/config/arm/$MYOS-crtn.c
++	$(crt_compile) -c $<
+diff -Naur --no-dereference gcc-10.3.0/libgcc/config.host gcc-10.3.0.changed/libgcc/config.host
+--- gcc-10.3.0/libgcc/config.host	2021-04-08 13:56:29.805761640 +0200
++++ gcc-10.3.0.changed/libgcc/config.host	2022-06-16 17:59:02.722762934 +0200
+@@ -497,6 +497,20 @@
+ 	tmake_file="${tmake_file} arm/t-arm arm/t-elf t-fixedpoint-gnu-prefix"
+ 	tm_file="$tm_file arm/bpabi-lib.h"
+ 	case ${host} in
++        arm*-$MYOS-eabi*)
++	  # Do not want crt*.o files, newlib implementation will provide
++	  # _start in section .init
++	  # $MYOS crti, crtn files
++	  tmake_file="${tmake_file} arm/t-$MYOS"
++	  # unwind
++	  tmake_file="${tmake_file} arm/t-bpabi"
++	  # fast maths
++	  tmake_file="${tmake_file} t-crtfm"
++	  # These files will be installed. IDK if this variable is also used
++	  # to list the files to link. (Probably not, because the user code
++	  # goes in the middle somewhere.)
++	  extra_parts="crtbegin.o crtend.o crti.o crtn.o"
++	  ;;
+ 	arm*-*-eabi* | arm*-*-rtems*)
+ 	  tmake_file="${tmake_file} arm/t-bpabi t-crtfm"
+ 	  extra_parts="crtbegin.o crtend.o crti.o crtn.o"
+EOF
+
+cd ..
+
+mkdir build
+cd build
+THIS_MACHINE=$( ../gcc-$GCC_VER/config.guess )
+../gcc-$GCC_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-$MYOS-eabi --disable-libstdcxx --with-newlib --with-libgloss --without-libc --without-libm --prefix=$HOME/tools --without-headers --enable-initfini-array --disable-nls --disable-shared --disable-multilib --disable-decimal-float --disable-threads --disable-libatomic --disable-libgomp --disable-libquadmath --disable-libssp --disable-libvtv --disable-libstdcxx --enable-languages=c,c++
+make && make install

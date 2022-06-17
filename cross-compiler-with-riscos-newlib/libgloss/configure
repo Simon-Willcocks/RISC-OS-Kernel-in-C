@@ -1,0 +1,30 @@
+#/bin/bash -
+for i in $* ; do
+  echo ${i:0:25}
+  if [ "--srcdir=" = ${i:0:9} ]; then
+    srcdir=${i:9}
+  fi
+  if [ "--program-transform-name=" = ${i:0:25} ]; then
+    transform=${i:25}
+  fi
+  if [ "--prefix=" = ${i:0:9} ]; then
+    prefix=${i:9}
+  fi
+  if [ "--with-target-subdir=" = ${i:0:21} ]; then
+    target=${i:21}
+  fi
+done
+libdir=${prefix}/${target}/lib/
+( echo -n GCC= 
+  echo gcc | sed "${transform}"
+  echo SRCDIR=${srcdir} 
+  echo LIBDIR=${libdir} 
+  echo 
+
+  echo all:
+  echo -e \\t'${GCC} ${SRCDIR}/riscos.c -c -o libgloss.a -O4'
+  echo
+  echo install:
+  echo -e \\t'/usr/bin/install -c -m 644 libgloss.a ${LIBDIR}'
+  echo
+) > Makefile
