@@ -14,6 +14,7 @@ if [ ! -d libgloss ]; then
   exit 1
 fi
 
+BINUTILS_VER=2.38
 GCC_VER=10.3.0
 MPFR_VER=4.1.0
 MPC_VER=1.2.1
@@ -22,6 +23,31 @@ GMP_VER=6.2.1
 if [ ! -d $SRC ]; then
   mkdir -P $SRC
 fi
+
+if false ; then
+# Step 1, build binutils, independent of the target OS
+
+if [ ! -d binutils-$BINUTILS_VER ] ; then
+  if [ ! -f $SRC/binutils-$BINUTILS_VER.tar.xz ] ; then
+    wget -P $SRC https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VER.tar.xz
+  fi
+  echo -n Extracting files from $SRC/binutils-$BINUTILS_VER.tar.xz
+  tar xf $SRC/binutils-$BINUTILS_VER.tar.xz 
+  echo ... done.
+fi
+
+mkdir build-binutils
+cd build-binutils
+THIS_MACHINE=$( ../binutils-$BINUTILS_VER/config.guess )
+
+../binutils-$BINUTILS_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-$MYOS-eabi --prefix=$HOME/tools &&
+make && make install &&
+echo Binutils built OK
+cd ..
+
+fi
+
+# Step 2, build gcc and newlib
 
 if [ ! -d gcc-$GCC_VER ] ; then
   if [ ! -f $SRC/gcc-$GCC_VER.tar.xz ] ; then
@@ -41,12 +67,12 @@ if [ ! -d mpfr-$MPFR_VER ] ; then
   echo ... done.
 fi
 
-if [ ! -d mpc-MPC_VER ] ; then
+if [ ! -d mpc-$MPC_VER ] ; then
   if [ ! -f $SRC/mpc-$MPC_VER.tar.gz ] ; then
     wget -P $SRC https://ftp.gnu.org/pub/gnu/mpc/mpc-$MPC_VER.tar.gz
   fi
-  echo -n Extracting files from $SRC/mpc-MPC_VER.tar.gz
-  tar xf $SRC/mpc-MPC_VER.tar.gz
+  echo -n Extracting files from $SRC/mpc-$MPC_VER.tar.gz
+  tar xf $SRC/mpc-$MPC_VER.tar.gz
   echo ... done.
 fi
 
@@ -71,7 +97,7 @@ fi
 cd gcc-$GCC_VER
 ln -s ../mpfr-$MPFR_VER mpfr
 ln -s ../gmp-$GMP_VER gmp
-ln -s ../mpc-MPC_VER mpc
+ln -s ../mpc-$MPC_VER mpc
 ln -s ../newlib-cygwin/newlib newlib
 ln -s ../libgloss libgloss
 
@@ -145,8 +171,20 @@ EOF
 
 cd ..
 
-mkdir build
-cd build
-THIS_MACHINE=$( ../gcc-$GCC_VER/config.guess )
-../gcc-$GCC_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-$MYOS-eabi --disable-libstdcxx --with-newlib --with-libgloss --without-libc --without-libm --prefix=$HOME/tools --without-headers --enable-initfini-array --disable-nls --disable-shared --disable-multilib --disable-decimal-float --disable-threads --disable-libatomic --disable-libgomp --disable-libquadmath --disable-libssp --disable-libvtv --disable-libstdcxx --enable-languages=c,c++
-make && make install
+mkdir build-gcc
+cd build-gcc
+
+# A version of gcc that can be used to compile libgloss is needed before
+# building for newlib
+../gcc-$GCC_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-$MYOS-eabi --disable-libstdcxx --without-newlib --without-libgloss --without-libc --without-libm --prefix=$HOME/tools --without-headers --enable-initfini-array --disable-nls --disable-shared --disable-multilib --disable-decimal-float --disable-threads --disable-libatomic --disable-libgomp --disable-libquadmath --disable-libssp --disable-libvtv --disable-libstdcxx --enable-languages=c,c++ &&
+make && make install &&
+echo arm-$MYOS-eabi-gcc built OK without libgloss
+cd ..
+
+mkdir build-gcc2
+cd build-gcc2
+
+../gcc-$GCC_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-$MYOS-eabi --disable-libstdcxx --with-newlib --with-libgloss --without-libc --without-libm --prefix=$HOME/tools --without-headers --enable-initfini-array --disable-nls --disable-shared --disable-multilib --disable-decimal-float --disable-threads --disable-libatomic --disable-libgomp --disable-libquadmath --disable-libssp --disable-libvtv --disable-libstdcxx --enable-languages=c,c++ &&
+make && make install &&
+echo arm-$MYOS-eabi-gcc built OK with libgloss || echo Build failed
+cd ..
