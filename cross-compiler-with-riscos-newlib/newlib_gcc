@@ -1,6 +1,7 @@
 MYOS=riscos
 
-SRC=$(pwd)/sources
+ROOT=$(pwd)
+SRC=$ROOT/sources
 
 if [ ! -d libgloss ]; then
 (
@@ -24,7 +25,6 @@ if [ ! -d $SRC ]; then
   mkdir -P $SRC
 fi
 
-if false ; then
 # Step 1, build binutils, independent of the target OS
 
 if [ ! -d binutils-$BINUTILS_VER ] ; then
@@ -45,9 +45,9 @@ make && make install &&
 echo Binutils built OK
 cd ..
 
-fi
+# Step 2, build gcc that can complile libgloss
 
-# Step 2, build gcc and newlib
+rm -rf gcc-$GCC_VER
 
 if [ ! -d gcc-$GCC_VER ] ; then
   if [ ! -f $SRC/gcc-$GCC_VER.tar.xz ] ; then
@@ -95,11 +95,33 @@ if [ ! -d newlib-cygwin-master ]; then
 fi
 
 cd gcc-$GCC_VER
-ln -s ../mpfr-$MPFR_VER mpfr
-ln -s ../gmp-$GMP_VER gmp
-ln -s ../mpc-$MPC_VER mpc
-ln -s ../newlib-cygwin/newlib newlib
-ln -s ../libgloss libgloss
+ln -s $ROOT/mpfr-$MPFR_VER mpfr
+ln -s $ROOT/gmp-$GMP_VER gmp
+ln -s $ROOT/mpc-$MPC_VER mpc
+ln -s $ROOT/newlib-cygwin-master/newlib newlib
+cd ..
+
+mkdir build-gcc
+cd build-gcc
+
+# A version of gcc that can be used to compile libgloss is needed before
+# building for newlib
+../gcc-$GCC_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-$MYOS-eabi --disable-libstdcxx --with-newlib --without-libgloss --without-libc --without-libm --prefix=$HOME/tools --without-headers --enable-initfini-array --disable-nls --disable-shared --disable-multilib --disable-decimal-float --disable-threads --disable-libatomic --disable-libgomp --disable-libquadmath --disable-libssp --disable-libvtv --disable-libstdcxx --enable-languages=c,c++ &&
+make && make install &&
+echo arm-$MYOS-eabi-gcc built OK without libgloss
+cd ..
+
+~/tools/bin/arm-riscos-eabi-gcc --version || exit 1
+
+echo There should be a working arm-riscos-eabi-gcc at this point...
+echo Build newlib using it...
+
+PATH=$HOME/tools/bin/:$PATH
+
+# Step 3, Build gcc with newlib and libgloss (the OS-specific part of newlib)
+
+cd gcc-$GCC_VER
+ln -s $ROOT/libgloss libgloss
 
 echo Patching gcc-$GCC_VER
 patch -Np1 <<"EOF"
@@ -169,16 +191,6 @@ diff -Naur --no-dereference gcc-10.3.0/libgcc/config.host gcc-10.3.0.changed/lib
  	  extra_parts="crtbegin.o crtend.o crti.o crtn.o"
 EOF
 
-cd ..
-
-mkdir build-gcc
-cd build-gcc
-
-# A version of gcc that can be used to compile libgloss is needed before
-# building for newlib
-../gcc-$GCC_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-$MYOS-eabi --disable-libstdcxx --without-newlib --without-libgloss --without-libc --without-libm --prefix=$HOME/tools --without-headers --enable-initfini-array --disable-nls --disable-shared --disable-multilib --disable-decimal-float --disable-threads --disable-libatomic --disable-libgomp --disable-libquadmath --disable-libssp --disable-libvtv --disable-libstdcxx --enable-languages=c,c++ &&
-make && make install &&
-echo arm-$MYOS-eabi-gcc built OK without libgloss
 cd ..
 
 mkdir build-gcc2

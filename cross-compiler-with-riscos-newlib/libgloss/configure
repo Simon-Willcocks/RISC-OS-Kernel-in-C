@@ -10,6 +10,19 @@ for i in $* ; do
   if [ "--prefix=" = ${i:0:9} ]; then
     prefix=${i:9}
   fi
+  if [ "--without-libgloss" = ${i:0:18} ]; then
+    echo No libgloss this time >&2
+( echo 
+
+  echo all:
+  echo -e \\techo Not building libgloss
+  echo
+  echo install:
+  echo -e \\techo Not installing libgloss
+  echo
+) > Makefile
+    exit 0
+  fi
   if [ "--with-target-subdir=" = ${i:0:21} ]; then
     target=${i:21}
   fi
