@@ -43,6 +43,8 @@ void * sbrk (ptrdiff_t incr)
   return (void*) env.himem;
 }
 
+void __attribute__(( naked, noreturn, section (".init") )) _start();
+
 void __attribute__(( naked, noreturn, section (".init") )) _init()
 {
   // Initial stack starts at the top of the slot memory
