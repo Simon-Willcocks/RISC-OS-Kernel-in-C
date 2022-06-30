@@ -1,7 +1,6 @@
-MYOS=riscos
-
 ROOT=$(pwd)
 SRC=$ROOT/sources
+PREFIX=$HOME/tools
 
 if [ ! -d libgloss ]; then
 (
@@ -14,6 +13,18 @@ if [ ! -d libgloss ]; then
 ) >&2
   exit 1
 fi
+
+echo This script should build a gcc suitable for RISC OS
+echo
+echo It builds a gcc that's suitable for compiling your libgloss
+echo without any OS-specific code.
+echo
+echo Then it builds another using it that should allow you to
+echo compile executables to run on RISC OS.
+echo
+echo Initially, you'll have to make a binary from the elf file
+echo using arm-riscos-eabi-objcopy and filetype it. But an ELF
+echo loader should be easy to create using GNU tools.
 
 BINUTILS_VER=2.38
 GCC_VER=10.3.0
@@ -40,7 +51,7 @@ mkdir build-binutils
 cd build-binutils
 THIS_MACHINE=$( ../binutils-$BINUTILS_VER/config.guess )
 
-../binutils-$BINUTILS_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-$MYOS-eabi --prefix=$HOME/tools &&
+../binutils-$BINUTILS_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-riscos-eabi --prefix=$HOME/tools &&
 make && make install &&
 echo Binutils built OK
 cd ..
@@ -99,56 +110,17 @@ ln -s $ROOT/mpfr-$MPFR_VER mpfr
 ln -s $ROOT/gmp-$GMP_VER gmp
 ln -s $ROOT/mpc-$MPC_VER mpc
 ln -s $ROOT/newlib-cygwin-master/newlib newlib
-cd ..
-
-mkdir build-gcc
-cd build-gcc
-
-# A version of gcc that can be used to compile libgloss is needed before
-# building for newlib
-../gcc-$GCC_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-$MYOS-eabi --disable-libstdcxx --with-newlib --without-libgloss --without-libc --without-libm --prefix=$HOME/tools --without-headers --enable-initfini-array --disable-nls --disable-shared --disable-multilib --disable-decimal-float --disable-threads --disable-libatomic --disable-libgomp --disable-libquadmath --disable-libssp --disable-libvtv --disable-libstdcxx --enable-languages=c,c++ &&
-make && make install &&
-echo arm-$MYOS-eabi-gcc built OK without libgloss
-cd ..
-
-~/tools/bin/arm-riscos-eabi-gcc --version || exit 1
-
-echo There should be a working arm-riscos-eabi-gcc at this point...
-echo Build newlib using it...
-
-PATH=$HOME/tools/bin/:$PATH
-
-# Step 3, Build gcc with newlib and libgloss (the OS-specific part of newlib)
-
-cd gcc-$GCC_VER
 ln -s $ROOT/libgloss libgloss
+
+# Copy riscos-crti.c, riscos-crtn.c
+ln -s $ROOT/CRT/* libgcc/config/arm/
 
 echo Patching gcc-$GCC_VER
 patch -Np1 <<"EOF"
-diff -Naur --no-dereference gcc-10.3.0/libgcc/config/arm/$MYOS-crti.c gcc-10.3.0.changed/libgcc/config/arm/$MYOS-crti.c
---- gcc-10.3.0/libgcc/config/arm/$MYOS-crti.c	1970-01-01 01:00:00.000000000 +0100
-+++ gcc-10.3.0.changed/libgcc/config/arm/$MYOS-crti.c	2022-06-16 18:14:57.325412401 +0200
-@@ -0,0 +1,7 @@
-+extern void __attribute__(( naked, noreturn )) _start();
-+
-+void __attribute__(( naked, noreturn, section( ".init" ) )) _init()
-+{
-+  _start();
-+  __builtin_unreachable();
-+}
-diff -Naur --no-dereference gcc-10.3.0/libgcc/config/arm/$MYOS-crtn.c gcc-10.3.0.changed/libgcc/config/arm/$MYOS-crtn.c
---- gcc-10.3.0/libgcc/config/arm/$MYOS-crtn.c	1970-01-01 01:00:00.000000000 +0100
-+++ gcc-10.3.0.changed/libgcc/config/arm/$MYOS-crtn.c	2022-06-16 18:14:53.221333721 +0200
-@@ -0,0 +1,6 @@
-+
-+void __attribute__(( naked, noreturn, section( ".fini" ) )) _fini()
-+{
-+  __builtin_unreachable();
-+}
-+
-diff -Naur --no-dereference gcc-10.3.0/libgcc/config/arm/t-$MYOS gcc-10.3.0.changed/libgcc/config/arm/t-$MYOS
---- gcc-10.3.0/libgcc/config/arm/t-$MYOS	1970-01-01 01:00:00.000000000 +0100
-+++ gcc-10.3.0.changed/libgcc/config/arm/t-$MYOS	2022-06-16 22:06:12.144342665 +0200
+diff -Naur --no-dereference gcc-10.3.0/libgcc/config/arm/t-riscos gcc-10.3.0.changed/libgcc/config/arm/t-riscos
+diff -Nar -U 7 --no-dereference gcc-10.3.0/libgcc/config/arm/t-riscos gcc-10.3.0-changed/libgcc/config/arm/t-riscos
+--- gcc-10.3.0/libgcc/config/arm/t-riscos	1970-01-01 01:00:00.000000000 +0100
++++ gcc-10.3.0-changed/libgcc/config/arm/t-riscos	2022-06-30 07:15:37.246876004 +0200
 @@ -0,0 +1,15 @@
 +
 +# Cannot use default rules due to having no stack on startup
@@ -160,23 +132,27 @@ diff -Naur --no-dereference gcc-10.3.0/libgcc/config/arm/t-$MYOS gcc-10.3.0.chan
 +#
 +# There's no need to specify -o $@ because crt_compile puts in -MT crtX.o
 +
-+crti.o: $(srcdir)/config/arm/$MYOS-crti.c
++crti.o: $(srcdir)/config/arm/riscos-crti.c
 +	$(crt_compile) -c $<
 +
-+crtn.o: $(srcdir)/config/arm/$MYOS-crtn.c
++crtn.o: $(srcdir)/config/arm/riscos-crtn.c
 +	$(crt_compile) -c $<
-diff -Naur --no-dereference gcc-10.3.0/libgcc/config.host gcc-10.3.0.changed/libgcc/config.host
+diff -Nar -U 7 --no-dereference gcc-10.3.0/libgcc/config.host gcc-10.3.0-changed/libgcc/config.host
 --- gcc-10.3.0/libgcc/config.host	2021-04-08 13:56:29.805761640 +0200
-+++ gcc-10.3.0.changed/libgcc/config.host	2022-06-16 17:59:02.722762934 +0200
-@@ -497,6 +497,20 @@
++++ gcc-10.3.0-changed/libgcc/config.host	2022-06-30 07:15:37.250876009 +0200
+@@ -493,14 +493,28 @@
+ 	extra_parts="crtbegin.o crtend.o crti.o crtn.o"
+ 	unwind_header=config/arm/unwind-arm.h
+ 	;;
+ arm*-*-eabi* | arm*-*-symbianelf* | arm*-*-rtems*)
  	tmake_file="${tmake_file} arm/t-arm arm/t-elf t-fixedpoint-gnu-prefix"
  	tm_file="$tm_file arm/bpabi-lib.h"
  	case ${host} in
-+        arm*-$MYOS-eabi*)
++        arm*-riscos-eabi*)
 +	  # Do not want crt*.o files, newlib implementation will provide
 +	  # _start in section .init
-+	  # $MYOS crti, crtn files
-+	  tmake_file="${tmake_file} arm/t-$MYOS"
++	  # riscos crti, crtn files
++	  tmake_file="${tmake_file} arm/t-riscos"
 +	  # unwind
 +	  tmake_file="${tmake_file} arm/t-bpabi"
 +	  # fast maths
@@ -189,14 +165,18 @@ diff -Naur --no-dereference gcc-10.3.0/libgcc/config.host gcc-10.3.0.changed/lib
  	arm*-*-eabi* | arm*-*-rtems*)
  	  tmake_file="${tmake_file} arm/t-bpabi t-crtfm"
  	  extra_parts="crtbegin.o crtend.o crti.o crtn.o"
+ 	  ;;
+ 	arm*-*-symbianelf*)
+ 	  tmake_file="${tmake_file} arm/t-symbian t-slibgcc-nolc-override"
+ 	  tm_file="$tm_file arm/symbian-lib.h"
 EOF
 
 cd ..
 
-mkdir build-gcc2
-cd build-gcc2
+mkdir build-gcc
+cd build-gcc
 
-../gcc-$GCC_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-$MYOS-eabi --disable-libstdcxx --with-newlib --with-libgloss --without-libc --without-libm --prefix=$HOME/tools --without-headers --enable-initfini-array --disable-nls --disable-shared --disable-multilib --disable-decimal-float --disable-threads --disable-libatomic --disable-libgomp --disable-libquadmath --disable-libssp --disable-libvtv --disable-libstdcxx --enable-languages=c,c++ &&
+../gcc-$GCC_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-riscos-eabi --disable-libstdcxx --with-newlib --with-libgloss --without-libc --without-libm --prefix=$HOME/tools --without-headers --enable-initfini-array --disable-nls --disable-shared --disable-multilib --disable-decimal-float --disable-threads --disable-libatomic --disable-libgomp --disable-libquadmath --disable-libssp --disable-libvtv --disable-libstdcxx --enable-languages=c,c++ &&
 make && make install &&
-echo arm-$MYOS-eabi-gcc built OK with libgloss || echo Build failed
+echo arm-riscos-eabi-gcc built OK with libgloss || echo Build failed
 cd ..

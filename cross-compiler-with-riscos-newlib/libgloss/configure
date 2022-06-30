@@ -1,6 +1,16 @@
 #/bin/bash -
+
+# If this is intended for a major operating system, symbolic link libgloss
+# into gcc in the same way as newlib, and modify it somehow. This, however,
+# seems to do the job without having to understand the complexities of
+# autoconf/automake/m4, etc.
+
+# This script and the Makefile are passed CC from somewhere...
+echo $ENV
+env
+
 for i in $* ; do
-  echo ${i:0:25}
+  echo $i
   if [ "--srcdir=" = ${i:0:9} ]; then
     srcdir=${i:9}
   fi
@@ -10,32 +20,20 @@ for i in $* ; do
   if [ "--prefix=" = ${i:0:9} ]; then
     prefix=${i:9}
   fi
-  if [ "--without-libgloss" = ${i:0:18} ]; then
-    echo No libgloss this time >&2
-( echo 
-
-  echo all:
-  echo -e \\techo Not building libgloss
-  echo
-  echo install:
-  echo -e \\techo Not installing libgloss
-  echo
-) > Makefile
-    exit 0
-  fi
   if [ "--with-target-subdir=" = ${i:0:21} ]; then
     target=${i:21}
   fi
 done
+
 libdir=${prefix}/${target}/lib/
-( echo -n GCC= 
-  echo gcc | sed "${transform}"
+
+(
   echo SRCDIR=${srcdir} 
   echo LIBDIR=${libdir} 
   echo 
 
   echo all:
-  echo -e \\t'${GCC} ${SRCDIR}/riscos.c -c -o libgloss.a -O4'
+  echo -e \\t'${CC} ${SRCDIR}/riscos.c -c -o libgloss.a -O4'
   echo
   echo install:
   echo -e \\t'/usr/bin/install -c -m 644 libgloss.a ${LIBDIR}'
