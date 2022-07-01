@@ -43,36 +43,6 @@ void * sbrk (ptrdiff_t incr)
   return (void*) env.himem;
 }
 
-void __attribute__(( naked, noreturn, section (".init") )) _start();
-
-void __attribute__(( naked, noreturn, section (".init") )) _init()
-{
-  // Initial stack starts at the top of the slot memory
-  register char const *env asm ( "r0" );
-  register uint32_t himem asm ( "r1" );
-  register uint64_t *time asm ( "r2" );
-  asm volatile ( "svc 0x10" : "=r" (env)
-		            , "=r" (himem)
-			    , "=r" (time) );
-  asm volatile ( "mov sp, %[stacktop]" : 
-                            : [stacktop] "r" (himem) );
-  _start();
-  __builtin_unreachable();
-}
-
-// This will not compile without optimization; there's no stack for
-// the OS_GetEnv call, and it's a naked function. This is probably
-// obsolete, anyway.
-void __attribute__(( naked, noreturn, section (".init") )) _start()
-{
-  asm volatile ( "svc 256+'H'" );
-  RISCOS_Environment env = OS_GetEnv();
-
-  main();
-
-  asm volatile ( "svc 0x11" ); // OS_Exit
-}
-
 #define true  (0 == 0)
 #define false (0 != 0)
 #define assert( b ) while (!(b)) { }
@@ -96,7 +66,10 @@ int close(int file)
   assert( false );
 }
 
-char **environ; /* pointer to array of char * strings that define the current environment variables */
+/* pointer to array of char * strings that define the current environment variables */
+// Maybe store in the TaskSlot for access by all local threads?
+char **environ = { "arg0", 0 };
+
 int execve (const char *__path, char * const __argv[], char * const __envp[])
 {
   assert( false );

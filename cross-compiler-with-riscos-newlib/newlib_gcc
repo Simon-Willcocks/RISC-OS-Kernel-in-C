@@ -1,3 +1,32 @@
+#! /bin/bash
+
+# Copyright (c) 2022 Simon Willcocks
+
+echo This script should build a gcc suitable for RISC OS
+echo
+echo It builds a gcc that's suitable for compiling your libgloss
+echo without any OS-specific code.
+echo
+echo Then it builds another using it that should allow you to
+echo compile executables to run on RISC OS.
+echo
+echo Initially, you'll have to make a binary from the elf file
+echo using arm-riscos-eabi-objcopy and filetype it. But an ELF
+echo loader should be easy to create using GNU tools.
+echo
+echo There is no support for constructors or destructors.
+echo Or multi-threading, but that comes next.
+
+# These versions appear to work together.
+# Hopefully, newer versions will also work, as long as the patch
+# does.
+
+BINUTILS_VER=2.38
+GCC_VER=10.3.0
+MPFR_VER=4.1.0
+MPC_VER=1.2.1
+GMP_VER=6.2.1
+
 ROOT=$(pwd)
 SRC=$ROOT/sources
 PREFIX=$HOME/tools
@@ -13,24 +42,6 @@ if [ ! -d libgloss ]; then
 ) >&2
   exit 1
 fi
-
-echo This script should build a gcc suitable for RISC OS
-echo
-echo It builds a gcc that's suitable for compiling your libgloss
-echo without any OS-specific code.
-echo
-echo Then it builds another using it that should allow you to
-echo compile executables to run on RISC OS.
-echo
-echo Initially, you'll have to make a binary from the elf file
-echo using arm-riscos-eabi-objcopy and filetype it. But an ELF
-echo loader should be easy to create using GNU tools.
-
-BINUTILS_VER=2.38
-GCC_VER=10.3.0
-MPFR_VER=4.1.0
-MPC_VER=1.2.1
-GMP_VER=6.2.1
 
 if [ ! -d $SRC ]; then
   mkdir -P $SRC
@@ -56,18 +67,10 @@ make && make install &&
 echo Binutils built OK
 cd ..
 
-# Step 2, build gcc that can complile libgloss
+# Step 2, build gcc, newlib, and libgloss to provide the syscalls
 
-rm -rf gcc-$GCC_VER
-
-if [ ! -d gcc-$GCC_VER ] ; then
-  if [ ! -f $SRC/gcc-$GCC_VER.tar.xz ] ; then
-    wget -P $SRC https://ftp.gwdg.de/pub/misc/gcc/releases/gcc-$GCC_VER/gcc-$GCC_VER.tar.xz
-  fi
-  echo -n Extracting files from $SRC/gcc-$GCC_VER.tar.xz
-  tar xf $SRC/gcc-$GCC_VER.tar.xz 
-  echo ... done.
-fi
+# Extras needed to build gcc
+# TODO: What is ISL?
 
 if [ ! -d mpfr-$MPFR_VER ] ; then 
   if [ ! -f $SRC/mpfr-$MPFR_VER.tar.xz ] ; then
@@ -105,30 +108,40 @@ if [ ! -d newlib-cygwin-master ]; then
   echo ... done.
 fi
 
-cd gcc-$GCC_VER
-ln -s $ROOT/mpfr-$MPFR_VER mpfr
-ln -s $ROOT/gmp-$GMP_VER gmp
-ln -s $ROOT/mpc-$MPC_VER mpc
-ln -s $ROOT/newlib-cygwin-master/newlib newlib
-ln -s $ROOT/libgloss libgloss
+rm -rf gcc-$GCC_VER
 
-# Copy riscos-crti.c, riscos-crtn.c
-ln -s $ROOT/CRT/* libgcc/config/arm/
+if [ ! -d gcc-$GCC_VER ] ; then
+  if [ ! -f $SRC/gcc-$GCC_VER.tar.xz ] ; then
+    wget -P $SRC https://ftp.gwdg.de/pub/misc/gcc/releases/gcc-$GCC_VER/gcc-$GCC_VER.tar.xz
+  fi
+  echo -n Extracting files from $SRC/gcc-$GCC_VER.tar.xz
+  tar xf $SRC/gcc-$GCC_VER.tar.xz 
+  echo ... done.
 
-echo Patching gcc-$GCC_VER
-patch -Np1 <<"EOF"
+  cd gcc-$GCC_VER
+  ln -s $ROOT/mpfr-$MPFR_VER mpfr
+  ln -s $ROOT/gmp-$GMP_VER gmp
+  ln -s $ROOT/mpc-$MPC_VER mpc
+  ln -s $ROOT/newlib-cygwin-master/newlib newlib
+  ln -s $ROOT/libgloss libgloss
+
+  # Copy riscos-crt*.c
+  ln -s $ROOT/CRT/* libgcc/config/arm/
+
+  echo Patching gcc-$GCC_VER
+  patch -Np1 <<"EOF"
 diff -Naur --no-dereference gcc-10.3.0/libgcc/config/arm/t-riscos gcc-10.3.0.changed/libgcc/config/arm/t-riscos
 diff -Nar -U 7 --no-dereference gcc-10.3.0/libgcc/config/arm/t-riscos gcc-10.3.0-changed/libgcc/config/arm/t-riscos
 --- gcc-10.3.0/libgcc/config/arm/t-riscos	1970-01-01 01:00:00.000000000 +0100
 +++ gcc-10.3.0-changed/libgcc/config/arm/t-riscos	2022-06-30 07:15:37.246876004 +0200
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,21 @@
 +
 +# Cannot use default rules due to having no stack on startup
 +CUSTOM_CRTIN = yes
 +
 +# CRTSTUFF is executes constructors and destructors; it will need a stack
-+# TODO Give it a stack!
-+#CUSTOM_CRTSTUFF = yes
++# crti.c gives it a stack
++CUSTOM_CRTSTUFF = yes
 +#
 +# There's no need to specify -o $@ because crt_compile puts in -MT crtX.o
 +
@@ -136,6 +149,12 @@ diff -Nar -U 7 --no-dereference gcc-10.3.0/libgcc/config/arm/t-riscos gcc-10.3.0
 +	$(crt_compile) -c $<
 +
 +crtn.o: $(srcdir)/config/arm/riscos-crtn.c
++	$(crt_compile) -c $<
++
++crtbegin.o: $(srcdir)/config/arm/riscos-crtbegin.c
++	$(crt_compile) -c $<
++
++crtend.o: $(srcdir)/config/arm/riscos-crtend.c
 +	$(crt_compile) -c $<
 diff -Nar -U 7 --no-dereference gcc-10.3.0/libgcc/config.host gcc-10.3.0-changed/libgcc/config.host
 --- gcc-10.3.0/libgcc/config.host	2021-04-08 13:56:29.805761640 +0200
@@ -171,7 +190,10 @@ diff -Nar -U 7 --no-dereference gcc-10.3.0/libgcc/config.host gcc-10.3.0-changed
  	  tm_file="$tm_file arm/symbian-lib.h"
 EOF
 
-cd ..
+  cd ..
+
+  echo gcc directory modified
+fi
 
 mkdir build-gcc
 cd build-gcc

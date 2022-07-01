@@ -34,8 +34,10 @@ libdir=${prefix}/${target}/lib/
 
   echo all:
   echo -e \\t'${CC} ${SRCDIR}/riscos.c -c -o libgloss.a -O4'
+  echo -e \\t'${CC} ${SRCDIR}/crt0.c -c -o crt0.o -O4'
   echo
   echo install:
   echo -e \\t'/usr/bin/install -c -m 644 libgloss.a ${LIBDIR}'
+  echo -e \\t'/usr/bin/install -c -m 644 crt0.o ${LIBDIR}'
   echo
 ) > Makefile
