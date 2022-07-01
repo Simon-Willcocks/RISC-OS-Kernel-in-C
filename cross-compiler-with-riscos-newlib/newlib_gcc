@@ -106,6 +106,29 @@ if [ ! -d newlib-cygwin-master ]; then
   echo -n Extracting files from $SRC/master.zip
   unzip $SRC/master.zip
   echo ... done.
+  echo Patching newlib-cygwin-master
+  cd newlib-cygwin-master
+  patch -Np1 <<"EOF"
+diff -Nar -U 7 --no-dereference newlib-cygwin-master/newlib/configure.host newlib-cygwin-master-changed/newlib/configure.host
+--- newlib-cygwin-master/newlib/configure.host  2022-06-14 14:11:56.000000000 +0200
++++ newlib-cygwin-master-changed/newlib/configure.host  2022-07-01 09:40:15.866432939 +0200
+@@ -442,14 +442,15 @@
+        ;;
+   amdgcn*)
+        sys_dir=amdgcn
+        have_crt0="no"
+        ;;
+   arm*-*-*)
+        sys_dir=arm
++       have_crt0="no" # From riscos libgloss ("yes" seems to be default)
+        if [ "x${newlib_may_supply_syscalls}" = "xno" ] ; then
+          have_crt0="no"
+        fi
+        ;;
+   bfin-*-*)
+        sys_dir=
+        ;;
+EOF
 fi
 
 rm -rf gcc-$GCC_VER
