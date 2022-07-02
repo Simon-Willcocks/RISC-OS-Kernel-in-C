@@ -107,28 +107,6 @@ if [ ! -d newlib-cygwin-master ]; then
   unzip $SRC/master.zip
   echo ... done.
   echo Patching newlib-cygwin-master
-  cd newlib-cygwin-master
-  patch -Np1 <<"EOF"
-diff -Nar -U 7 --no-dereference newlib-cygwin-master/newlib/configure.host newlib-cygwin-master-changed/newlib/configure.host
---- newlib-cygwin-master/newlib/configure.host  2022-06-14 14:11:56.000000000 +0200
-+++ newlib-cygwin-master-changed/newlib/configure.host  2022-07-01 09:40:15.866432939 +0200
-@@ -442,14 +442,15 @@
-        ;;
-   amdgcn*)
-        sys_dir=amdgcn
-        have_crt0="no"
-        ;;
-   arm*-*-*)
-        sys_dir=arm
-+       have_crt0="no" # From riscos libgloss ("yes" seems to be default)
-        if [ "x${newlib_may_supply_syscalls}" = "xno" ] ; then
-          have_crt0="no"
-        fi
-        ;;
-   bfin-*-*)
-        sys_dir=
-        ;;
-EOF
 fi
 
 rm -rf gcc-$GCC_VER
@@ -221,7 +199,7 @@ fi
 mkdir build-gcc
 cd build-gcc
 
-../gcc-$GCC_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-riscos-eabi --disable-libstdcxx --with-newlib --with-libgloss --without-libc --without-libm --prefix=$HOME/tools --without-headers --enable-initfini-array --disable-nls --disable-shared --disable-multilib --disable-decimal-float --disable-threads --disable-libatomic --disable-libgomp --disable-libquadmath --disable-libssp --disable-libvtv --disable-libstdcxx --enable-languages=c,c++ &&
+../gcc-$GCC_VER/configure --build=$THIS_MACHINE --host=$THIS_MACHINE --target=arm-riscos-eabi --disable-libstdcxx --with-newlib --with-libgloss --without-libc --without-libm --prefix=$HOME/tools --without-headers --enable-initfini-array --disable-nls --disable-shared --disable-multilib --disable-decimal-float --disable-threads --disable-libatomic --disable-libgomp --disable-libquadmath --disable-libssp --disable-libvtv --disable-libstdcxx --enable-languages=c,c++ --disable-newlib-supplied-syscalls &&
 make && make install &&
 echo arm-riscos-eabi-gcc built OK with libgloss || echo Build failed
 cd ..

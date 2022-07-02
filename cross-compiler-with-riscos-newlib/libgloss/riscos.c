@@ -1,7 +1,43 @@
-#include <stddef.h>
+
+#include <_ansi.h>
 #include <sys/types.h>
-#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/fcntl.h>
 #include <stdio.h>
+#include <time.h>
+#include <sys/time.h>
+#include <sys/times.h>
+#include <errno.h>
+#include <reent.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/wait.h>
+
+/* Forward prototypes.  */
+int	_system		(const char *);
+int	_rename		(const char *, const char *);
+int	_isatty		(int);
+clock_t _times		(struct tms *);
+int	_gettimeofday	(struct timeval *, void *);
+void	_raise		(void);
+int	_unlink		(const char *);
+int	_link		(const char *, const char *);
+int	_stat		(const char *, struct stat *);
+int	_fstat		(int, struct stat *);
+void *	_sbrk		(ptrdiff_t);
+pid_t	_getpid		(void);
+int	_kill		(int, int);
+void	_exit		(int);
+int	_close		(int);
+int	_swiclose	(int);
+int	_open		(const char *, int, ...);
+int	_swiopen	(const char *, int);
+int	_write		(int, const void *, size_t);
+_off_t	_lseek		(int, _off_t, int);
+_off_t	_swilseek	(int, _off_t, int);
+int	_read		(int, void *, size_t);
+int	_swiread	(int, void *, size_t);
+void	initialise_monitor_handles (void);
 
 extern int main();
 extern void exit( int );
@@ -31,7 +67,7 @@ static void RISCOS_SetMemoryLimit( uint32_t new_limit )
   asm volatile ( "svc 0x40" : "=r" (same_code), "=r" (old_limit) : "r" (code), "r" (himem) : "r2", "r3" );
 }
 
-void * sbrk (ptrdiff_t incr)
+void * _sbrk (ptrdiff_t incr)
 {
   RISCOS_Environment env = OS_GetEnv();
 
@@ -47,105 +83,97 @@ void * sbrk (ptrdiff_t incr)
 #define false (0 != 0)
 #define assert( b ) while (!(b)) { }
 
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/fcntl.h>
-#include <sys/times.h>
-#include <sys/errno.h>
-#include <sys/time.h>
-#include <stdio.h>
-
-void exit( int result )
+void _exit( int result )
 {
   assert( false );
   __builtin_unreachable();
 }
 
-int close(int file)
+int _close(int file)
 {
   assert( false );
 }
 
 /* pointer to array of char * strings that define the current environment variables */
 // Maybe store in the TaskSlot for access by all local threads?
-char **environ = { "arg0", 0 };
+char *_environ[] = { 0 };
 
-int execve (const char *__path, char * const __argv[], char * const __envp[])
+int _execve (const char *__path, char * const __argv[], char * const __envp[])
 {
   assert( false );
 }
 
-int fork()
+int _fork()
 {
   assert( false );
 }
 
-int fstat(int file, struct stat *st)
+int _fstat(int file, struct stat *st)
 {
   assert( false );
 }
 
-int getpid()
+int _getpid()
 {
   assert( false );
 }
 
-int isatty(int file)
+int _isatty(int file)
 {
   assert( false );
 }
 
-int kill(int pid, int sig)
+int _kill(int pid, int sig)
 {
   assert( false );
 }
 
-int     link (const char *__path1, const char *__path2)
+int     _link (const char *__path1, const char *__path2)
 {
   assert( false );
 }
 
-off_t   lseek (int __fildes, off_t __offset, int __whence)
+off_t   _lseek (int __fildes, off_t __offset, int __whence)
 {
   assert( false );
 }
 
-int open(const char *name, int flags, ...)
+int _open(const char *name, int flags, ...)
 {
   assert( false );
 }
 
-_READ_WRITE_RETURN_TYPE read (int __fd, void *__buf, size_t __nbyte)
+ssize_t _read (int __fd, void *__buf, size_t __nbyte)
 {
   assert( false );
 }
 
-int stat(const char *file, struct stat *st)
+int _stat(const char *file, struct stat *st)
 {
   assert( false );
 }
 
-clock_t times(struct tms *buf)
+clock_t _times(struct tms *buf)
 {
   assert( false );
 }
 
-int unlink( const char *__path )
+int _unlink( const char *__path )
 {
   assert( false );
 }
 
-int wait(int *status)
+int _wait(int *status)
 {
   assert( false );
 }
 
-_READ_WRITE_RETURN_TYPE write (int __fd, const void *__buf, size_t __nbyte)
+ssize_t _write (int __fd, const void *__buf, size_t __nbyte)
 {
   assert( false );
 }
 
-int gettimeofday(struct timeval *__restrict p, void *__restrict z)
+int _gettimeofday(struct timeval *__restrict p, void *__restrict z)
 {
   assert( false );
 }
