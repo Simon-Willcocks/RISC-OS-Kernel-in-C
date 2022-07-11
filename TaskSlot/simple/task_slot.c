@@ -183,6 +183,27 @@ physical_memory_block Kernel_physical_address( uint32_t va )
 
   Task *running = workspace.task_slot.running;
 
+  if (running->next == 0) {
+    claim_lock( &shared.mmu.lock );
+
+    for (int i = 0; i < 4096/sizeof( Task ); i++) {
+      if (0 == (tasks[i].regs.pc & 1)) {
+        NewLine;
+        Write0( "Task: " ); 
+        WriteNum( i );
+        asm ( "svc 0x120" );
+        WriteNum( tasks[i].regs.pc );
+        asm ( "svc 0x120" );
+        WriteNum( tasks[i].next );
+        if (running == &tasks[i]) {
+          asm ( "svc 0x120" );
+          asm ( "svc 0x12a" );
+        }
+      }
+    }
+
+    release_lock( &shared.mmu.lock );
+  }
   assert( running->next != 0 );
 
   physical_memory_block result = { 0, 0, 0 }; // Fail
@@ -1576,5 +1597,125 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
   }
 
   __builtin_unreachable();
+}
+
+// File operations
+
+// Legacy code will call these SWIs, this code will translate them to PipeOp
+// and calls to the legacy FileCore/FileSwitch fileing systems (using CallAVector)
+// Only one task thread will access the legacy filing systems at a time.
+
+//static void run_vector( svc_registers *regs, int vec ) FIXME make static again
+void run_vector( svc_registers *regs, int vec )
+{
+  register int vector asm( "r9" ) = vec;
+  error_block *error;
+
+  asm volatile ( "ldm %[regs], { r0-r8 }"
+             "\n  svc 0x20034"
+             "\n  stm %[regs], {r0-r8}"
+             "\n  movvs %[error], r0"
+             "\n  movvc %[error], #0" // r9 gets used for the output register by gcc
+      : [error] "=r" (error)
+      : [regs]"r" (regs), "r" (vector)
+      : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "lr" );
+  if (error != 0) {
+    regs->spsr |= VF;
+  }
+}
+
+bool delegate_operation( svc_registers *regs, int operation )
+{
+  bool reclaimed = claim_lock( &shared.task_slot.filesystem_lock );
+
+  Task *running = workspace.task_slot.running;
+
+  if (shared.task_slot.filesystem_owner == 0) {
+    shared.task_slot.filesystem_owner = running;
+  }
+  else {
+    Task *next = running->next;
+
+    // Remove task from running queue
+    save_and_resume( running, next, regs );
+
+    running->next = 0;
+
+    if (0 == shared.task_slot.filesystem_blocked_tail)
+      shared.task_slot.filesystem_blocked_tail = &shared.task_slot.filesystem_blocked_head;
+
+    *shared.task_slot.filesystem_blocked_tail = running;
+    shared.task_slot.filesystem_blocked_tail = &running->next;
+    running->block_op = operation;
+  }
+
+  // Handle recursion properly
+  if (!reclaimed) release_lock( &shared.task_slot.filesystem_lock );
+
+  // Now the current thread is the filesystem owner, or blocked
+
+  if (running == shared.task_slot.filesystem_owner) {
+    run_vector( regs, operation );
+
+    reclaimed = claim_lock( &shared.task_slot.filesystem_lock );
+    while (shared.task_slot.filesystem_blocked_head != 0) {
+      shared.task_slot.filesystem_owner = shared.task_slot.filesystem_blocked_head;
+      shared.task_slot.filesystem_blocked_head = shared.task_slot.filesystem_blocked_head->next;
+      if (!reclaimed) release_lock( &shared.task_slot.filesystem_lock );
+
+      save_and_resume( running, shared.task_slot.filesystem_owner, regs );
+      run_vector( regs, shared.task_slot.filesystem_owner->block_op );
+
+      reclaimed = claim_lock( &shared.task_slot.filesystem_lock );
+    }
+    // Nothing left in the list
+    shared.task_slot.filesystem_owner = 0;
+    shared.task_slot.filesystem_blocked_tail = &shared.task_slot.filesystem_blocked_head;
+    if (!reclaimed) release_lock( &shared.task_slot.filesystem_lock );
+  }
+
+  return 0 == (regs->spsr & VF); // Result of the last operation, in the current thread
+}
+
+// FIXME: Return false if V flag set on exit from vector?
+
+bool do_OS_File( svc_registers *regs )
+{
+  return delegate_operation( regs, 8 );
+}
+
+bool do_OS_Args( svc_registers *regs )
+{
+  return delegate_operation( regs, 9 );
+}
+
+bool do_OS_BGet( svc_registers *regs )
+{
+  return delegate_operation( regs, 10 );
+}
+
+bool do_OS_BPut( svc_registers *regs )
+{
+  return delegate_operation( regs, 11 );
+}
+
+bool do_OS_GBPB( svc_registers *regs )
+{
+  return delegate_operation( regs, 12 );
+}
+
+bool do_OS_Find( svc_registers *regs )
+{
+  return delegate_operation( regs, 13 );
+}
+
+bool do_OS_ReadLine( svc_registers *regs )
+{
+  return delegate_operation( regs, 14 );
+}
+
+bool do_OS_FSControl( svc_registers *regs )
+{
+  return delegate_operation( regs, 15 );
 }
 

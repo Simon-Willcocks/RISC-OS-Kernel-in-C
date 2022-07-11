@@ -14,6 +14,7 @@
  */
 
 #include "inkernel.h"
+#include "include/pipeop.h"
 
 static void Sleep( uint32_t microseconds )
 {
@@ -2069,83 +2070,6 @@ WriteFunc;
   return run_vector( regs, 7 );
 }
 
-bool do_OS_File( svc_registers *regs )
-{
-#ifdef DEBUG__SHOW_FILES
-do { Write0( __func__ ); NewLine; for (int i = 0; i < 13; i++) { WriteNum( regs->r[i] ); asm volatile ( "svc 0x100+' '" ); } WriteNum( regs->lr ); asm volatile ( "svc 0x100+' '" ); WriteNum( regs->spsr ); NewLine; } while (false);
-uint32_t code = regs->r[0];
-switch (code) {
-  case 5:
-  case 13:
-  case 15:
-  case 17: Write0( "Catalogue info for: " ); Write0( regs->r[1] ); NewLine; break;
-  default: break;
-}
-#endif
-  bool result = run_vector( regs, 8 );
-#ifdef DEBUG__SHOW_FILES
-Write0( "OS_File vector returned" ); NewLine;
-for (int i = 0; i < 6; i++) { WriteNum( regs->r[i] ); asm volatile ( "svc 0x100+' '" ); }
-NewLine;
-#endif
-  return result;
-}
-
-bool do_OS_Args( svc_registers *regs )
-{
-WriteFunc;
-  return run_vector( regs, 9 );
-}
-
-bool do_OS_BGet( svc_registers *regs )
-{
-  return run_vector( regs, 10 );
-}
-
-bool do_OS_BPut( svc_registers *regs )
-{
-  return run_vector( regs, 11 );
-}
-
-bool do_OS_GBPB( svc_registers *regs )
-{
-WriteFunc;
-  return run_vector( regs, 12 );
-}
-
-bool do_OS_Find( svc_registers *regs )
-{
-#ifdef DEBUG__SHOW_FILES
-uint32_t code = regs->r[0];
-WriteFunc;
-switch (code) {
-case 0: Write0( "Close file " ); WriteNum( regs->r[1] ); NewLine; break;
-case 0x40 ... 0x7f: Write0( "Open existing file for reading " ); WriteNum( regs->r[0] ); Write0( " " ); Write0( regs->r[1] ); NewLine; break;
-case 0x80 ... 0xbf: Write0( "Create new file " ); WriteNum( regs->r[0] ); Write0( " " ); Write0( regs->r[1] ); NewLine; break;
-case 0xc0 ... 0xff: Write0( "Open existing file for writing " ); WriteNum( regs->r[0] ); Write0( " " ); Write0( regs->r[1] ); NewLine; break;
-}
-#endif
-  bool result = run_vector( regs, 13 );
-#ifdef DEBUG__SHOW_FILES
-switch (code) {
-case 0x40 ... 0x7f: Write0( "Opened for reading, handle " ); WriteNum( regs->r[0] ); NewLine; break;
-}
-#endif
-  return result;
-}
-
-bool do_OS_ReadLine( svc_registers *regs )
-{
-WriteFunc;
-  return run_vector( regs, 14 );
-}
-
-bool do_OS_FSControl( svc_registers *regs )
-{
-WriteFunc;
-  return run_vector( regs, 15 );
-}
-
 bool do_OS_GenerateEvent( svc_registers *regs )
 {
 WriteFunc;
@@ -3626,229 +3550,6 @@ void user_thread( uint32_t thread, uint32_t x, uint32_t y, bool clockwise )
   spin( thread, x, y, clockwise );
 }
 
-enum { Create,
-       WaitForSpace,  // Block task until N bytes may be written
-       SpaceFilled,   // I've filled this many bytes
-       PassingOver,   // Another task is going to take over filling this pipe
-       UnreadData,    // Useful, in case data can be dropped or consolidated (e.g. mouse movements)
-       NoMoreData,    // I'm done filling the pipe
-       WaitForData,   // Block task until N bytes may be read
-       DataConsumed,  // I don't need the first N bytes written any more
-       PassingOff,    // Another task is going to take over listening at this pipe
-       NotListening   // I don't want any more data, thanks
-       };
-
-typedef struct {
-  error_block *error;
-  void *location;
-  uint32_t available; 
-} PipeSpace;
-
-static uint32_t PipeOp_CreateForTransfer( uint32_t max_block )
-{
-  register uint32_t code asm ( "r0" ) = Create;
-  register uint32_t max_block_size asm ( "r2" ) = max_block;
-  register uint32_t max_data asm ( "r3" ) = 0; // Unlimited
-  register uint32_t allocated_mem asm ( "r4" ) = 0; // OS allocated
-
-  register uint32_t pipe asm ( "r1" );
-
-  asm volatile ( "svc %[swi]" 
-             "\n  movvs r1, #0"
-        : "=r" (pipe)
-        : [swi] "i" (OS_PipeOp)
-        , "r" (code)
-        , "r" (max_block_size)
-        , "r" (max_data)
-        , "r" (allocated_mem)
-        );
-
-  return pipe;
-}
-
-static inline PipeSpace PipeOp_WaitForSpace( uint32_t write_pipe, uint32_t bytes )
-{
-  // IN
-  register uint32_t code asm ( "r0" ) = WaitForSpace;
-  register uint32_t pipe asm ( "r1" ) = write_pipe;
-  register uint32_t amount asm ( "r2" ) = bytes;
-
-  // OUT
-  register error_block *error asm ( "r0" );
-  register uint32_t available asm ( "r2" );
-  register void *location asm ( "r3" );
-
-  // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
-  asm volatile (
-        "svc %[swi]"
-    "\n  movvc r0, #0"
-
-        : "=r" (error)
-        , "=r" (available)
-        , "=r" (location)
-        : [swi] "i" (OS_PipeOp)
-        , "r" (code)
-        , "r" (pipe)
-        , "r" (amount)
-        );
-
-  PipeSpace result = { .error = error, .location = location, .available = available };
-
-  return result;
-}
-
-static inline PipeSpace PipeOp_SpaceFilled( uint32_t write_pipe, uint32_t bytes )
-{
-  // IN
-  // In this case, bytes represents the number of bytes that the caller has written and
-  // is making available to the reader.
-  // The returned information is the same as from WaitForSpace and indicates the remaining
-  // space after the filled bytes have been accepted. The virtual address of the remaining
-  // data may not be the same as the address of the byte after the last accepted byte.
-  register uint32_t code asm ( "r0" ) = SpaceFilled;
-  register uint32_t pipe asm ( "r1" ) = write_pipe;
-  register uint32_t amount asm ( "r2" ) = bytes;
-
-  // OUT
-  register error_block *error asm ( "r0" );
-  register uint32_t available asm ( "r2" );
-  register void *location asm ( "r3" );
-
-  // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
-  asm volatile (
-        "svc %[swi]"
-    "\n  movvc r0, #0"
-
-        : "=r" (error)
-        , "=r" (available)
-        , "=r" (location)
-        : [swi] "i" (OS_PipeOp)
-        , "r" (code)
-        , "r" (pipe)
-        , "r" (amount)
-        );
-
-  PipeSpace result = { .error = error, .location = location, .available = available };
-
-  return result;
-}
-
-static inline PipeSpace PipeOp_WaitForData( uint32_t read_pipe, uint32_t bytes )
-{
-  // IN
-  register uint32_t code asm ( "r0" ) = WaitForData;
-  register uint32_t pipe asm ( "r1" ) = read_pipe;
-  register uint32_t amount asm ( "r2" ) = bytes;
-
-  // OUT
-  register error_block *error asm ( "r0" );
-  register uint32_t available asm ( "r2" );
-  register void *location asm ( "r3" );
-
-  // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
-  asm volatile (
-        "svc %[swi]"
-    "\n  movvc r0, #0"
-
-        : "=r" (error)
-        , "=r" (available)
-        , "=r" (location)
-        : [swi] "i" (OS_PipeOp)
-        , "r" (code)
-        , "r" (pipe)
-        , "r" (amount)
-        );
-
-  PipeSpace result = { .error = error, .location = location, .available = available };
-
-  return result;
-}
-
-static inline PipeSpace PipeOp_DataConsumed( uint32_t read_pipe, uint32_t bytes )
-{
-  // IN
-  // In this case, the bytes are the number of bytes no longer of interest.
-  // The returned information is the same as from WaitForData and indicates the remaining
-  // data after the consumed bytes have been removed. The virtual address of the remaining
-  // data may not be the same as the address of the byte after the last consumed byte.
-  register uint32_t code asm ( "r0" ) = DataConsumed;
-  register uint32_t pipe asm ( "r1" ) = read_pipe;
-  register uint32_t amount asm ( "r2" ) = bytes;
-
-  // OUT
-  register error_block *error asm ( "r0" );
-  register uint32_t available asm ( "r2" );
-  register void *location asm ( "r3" );
-
-  // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
-  asm volatile (
-        "svc %[swi]"
-    "\n  movvc r0, #0"
-
-        : "=r" (error)
-        , "=r" (available)
-        , "=r" (location)
-        : [swi] "i" (OS_PipeOp)
-        , "r" (code)
-        , "r" (pipe)
-        , "r" (amount)
-        );
-
-  PipeSpace result = { .error = error, .location = location, .available = available };
-
-  return result;
-}
-
-static inline error_block *PipeOp_PassingOff( uint32_t read_pipe, uint32_t new_receiver )
-{
-  // IN
-  register uint32_t code asm ( "r0" ) = PassingOff;
-  register uint32_t pipe asm ( "r1" ) = read_pipe;
-  register uint32_t task asm ( "r2" ) = new_receiver;
-
-  // OUT
-  register error_block *error asm ( "r0" );
-
-  // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
-  asm volatile (
-        "svc %[swi]"
-    "\n  movvc r0, #0"
-
-        : "=r" (error)
-        : [swi] "i" (OS_PipeOp)
-        , "r" (code)
-        , "r" (pipe)
-        , "r" (task)
-        );
-
-  return error;
-}
-
-static inline error_block *PipeOp_PassingOver( uint32_t write_pipe, uint32_t new_sender )
-{
-  // IN
-  register uint32_t code asm ( "r0" ) = PassingOver;
-  register uint32_t pipe asm ( "r1" ) = write_pipe;
-  register uint32_t task asm ( "r2" ) = new_sender;
-
-  // OUT
-  register error_block *error asm ( "r0" );
-
-  // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
-  asm volatile (
-        "svc %[swi]"
-    "\n  movvc r0, #0"
-
-        : "=r" (error)
-        : [swi] "i" (OS_PipeOp)
-        , "r" (code)
-        , "r" (pipe)
-        , "r" (task)
-        );
-
-  return error;
-}
-
 void producer_thread( uint32_t thread, uint32_t pipe )
 {
   Write0( "Producer task running" ); NewLine;
@@ -4035,3 +3736,25 @@ static void user_mode_code( int core_number )
 
   __builtin_unreachable();
 }
+
+// Four graphics contexts, one for each core.
+// Wimp will have one claimed at all times. Always the same one? Maybe the one
+// for the core the Wimp Task is running on.
+// Later, the contexts should be independent of cores and not use fixed
+// workspace.
+// Access is through an OS_PipeOp pipe. (Oh, so can be one core's.)
+// A thread listens on the pipe and calls the appropriate legacy routines.
+// What happens when a legacy app has its output redirected? *spool or { > }
+// newlib programs should not close pipes they're given as stdin/out/err, but
+// return ownership to the parent task.
+// Files that are opened should be closed on exit.
+// Most files are unidirectional, read or write, and not random access, but
+// there has to be support for that. How do you communicate with the other
+// end of the pipe?
+// Seek SWI (PTR#X=...) gets FS to empty pipe, then set the pointer?
+// Programs in ResourceFS, starting with !Boot.
+// Only modern progams and the Wimp will have to be aware of claiming contexts.
+// Screen redraw threads will have to stop on asynchronous command and report
+// that they have (or block the caller of a service call until they're ready)?
+
+

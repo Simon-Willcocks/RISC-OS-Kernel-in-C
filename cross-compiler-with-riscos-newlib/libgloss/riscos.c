@@ -98,6 +98,12 @@ int _close(int file)
 // Maybe store in the TaskSlot for access by all local threads?
 char *_environ[] = { 0 };
 
+static struct {
+  uint32_t read;        // OS_PipeOp pipe to read from
+  uint32_t write;       // OS_PipeOp pipe to write to
+  uint32_t os_file;     // OS file descriptor
+} fds[64];
+
 int _execve (const char *__path, char * const __argv[], char * const __envp[])
 {
   assert( false );
@@ -170,7 +176,9 @@ int _wait(int *status)
 
 ssize_t _write (int __fd, const void *__buf, size_t __nbyte)
 {
-  assert( false );
+  PipeSpace space = PipeOp_WaitForSpace( fds[__fd].write, __nbytes );
+  assert( space.error == 0 );
+  memcpy( space.location, __buf, __nbytes );
 }
 
 int _gettimeofday(struct timeval *__restrict p, void *__restrict z)

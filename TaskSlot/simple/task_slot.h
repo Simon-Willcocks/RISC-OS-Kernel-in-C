@@ -39,6 +39,7 @@ struct Task {
   integer_registers regs;
   TaskSlot *slot;
   Task *next;
+  int block_op;
 };
 
 struct TaskSlot_workspace {
@@ -53,6 +54,13 @@ struct TaskSlot_shared_workspace {
 
   uint32_t slots_memory; // FIXME more than one page, extendible, etc.
   uint32_t tasks_memory;
+
+  // Until filesystems learn to play along, only one task at a time can
+  // make filesystem calls.
+  uint32_t filesystem_lock;
+  Task *filesystem_owner;
+  Task *filesystem_blocked_head;
+  Task **filesystem_blocked_tail;
 
   Task *bottleneck_owner;
   Task *next_to_own;

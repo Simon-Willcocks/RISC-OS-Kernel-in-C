@@ -1741,6 +1741,9 @@ bool do_OS_Heap( svc_registers *regs )
   bool reclaimed = claim_lock( &shared.memory.os_heap_lock );
   bool result = run_risos_code_implementing_swi( regs, 0x1d );
   //Write0( "OS_Heap returns " ); WriteNum( regs->r[3] ); NewLine;
+
+asm volatile ( "" : : "r" (regs->r[0]), "r" (regs->r[1]), "r" (regs->r[2]) ); // FIXME remove, only for debugging in qemu
+
   if (!reclaimed) release_lock( &shared.memory.os_heap_lock );
   return result;
 }
@@ -2013,12 +2016,12 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
   return;
 }
 
-      switch (number & ~Xbit) { // FIXME
-      case 0x406c0 ... 0x406ff: return; // Hourglass
-      case 0x400de: StartTask( regs ); return;
-      case 0x80146: regs->r[0] = 0; return; // PDriver_CurrentJob (called from Desktop?!)
-      }
-      bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
+  switch (number & ~Xbit) { // FIXME
+  case 0x406c0 ... 0x406ff: return; // Hourglass
+  case 0x400de: StartTask( regs ); return;
+  case 0x80146: regs->r[0] = 0; return; // PDriver_CurrentJob (called from Desktop?!)
+  }
+  bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
 
   uint32_t r0 = regs->lr;
 
@@ -2080,8 +2083,10 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
     // Call error handler
     WriteS( "SWI " );
     WriteNum( number );
-    WriteS( " " );
+    asm ( "svc 0x120" );
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
+    asm ( "svc 0x120" );
+    WriteNum( regs->lr );
     asm ( "bkpt 16" );
   }
 }
@@ -2129,31 +2134,6 @@ static void __attribute__(( noinline )) do_something_else( svc_registers *regs )
   }
 }
 
-static void __attribute__(( noinline )) bottleneck_reopened( svc_registers *regs )
-{
-  claim_lock( &shared.task_slot.lock );
-
-  assert( workspace.task_slot.running == shared.task_slot.bottleneck_owner );
-
-  Task *freed = shared.task_slot.next_to_own;
-
-  shared.task_slot.bottleneck_owner = freed;
-
-  if (freed != 0) {
-    shared.task_slot.next_to_own = freed->next;
-    if (freed->next == 0) {
-      assert( shared.task_slot.last_to_own == freed );
-      shared.task_slot.last_to_own = 0;
-    }
-    // The freed task goes to the top of the list, since it's been waiting for
-    // so long, but doesn't preempt the finished task... Debatable. TODO
-    freed->next = shared.task_slot.runnable;
-    shared.task_slot.runnable = freed;
-  }
-
-  release_lock( &shared.task_slot.lock );
-}
-
 void __attribute__(( naked, noreturn )) Kernel_default_svc()
 {
   // Some SWIs preserve all registers
@@ -2188,78 +2168,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
   if ((number & ~Xbit) == OS_CallASWI) number = regs->r[9];
   else if ((number & ~Xbit) == OS_CallASWIR12) number = regs->r[12];
 
-  switch (number & ~Xbit) {
-    case OS_File:
-    case OS_Args:
-    case OS_BGet:
-    case OS_BPut:
-    case OS_GBPB:
-    case OS_Find:
-    case OS_ReadLine:
-    case OS_FSControl:
-    case 0x40080 ... 0x400bf:
-      {
-        // These SWIs expect only a single program running on a single processor
-        Task *blocked = 0;
-
-retry: // This is not its final form
-
-        claim_lock( &shared.task_slot.lock );
-
-        bool already_owner = (shared.task_slot.bottleneck_owner == workspace.task_slot.running);
-        if (already_owner || shared.task_slot.bottleneck_owner == 0) {
-          // We're IN! (Possibly recursing)
-          if (!already_owner) {
-            shared.task_slot.bottleneck_owner = workspace.task_slot.running;
-            assert (shared.task_slot.next_to_own == 0);
-            assert (shared.task_slot.last_to_own == 0);
-          }
-        }
-        else {
-#if 1
-// Implementation assumes the owner is on another core
-// Final implementation puts the current task to sleep until the bottleneck is cleared up again
-release_lock( &shared.task_slot.lock );
-for (int i = 0; i < 1000000; i++) { asm ( "" ); }
-goto retry;
-#else
-          // First come, first served, and we're not first!
-          blocked = workspace.task_slot.running;
-
-          // Save context
-          //workspace.task_slot.running->regs = *regs;
-          asm ( "bkpt 13" ); // FIXME
-          workspace.task_slot.running = 0; // we're not running any more
-
-          if (shared.task_slot.last_to_own == 0) {
-            shared.task_slot.next_to_own = blocked;
-          }
-          else {
-            shared.task_slot.last_to_own->next = blocked;
-          }
-
-          shared.task_slot.last_to_own = blocked;
-#endif
-        }
-        release_lock( &shared.task_slot.lock );
-
-        if (0 == blocked) { // This task owns the filesystem
-          do_svc( regs, number );
-          if (!already_owner) {
-            bottleneck_reopened( regs );
-          }
-        }
-        else {
-          // When this routine returns, there is a thread in the mapped in slot
-          // that can be run by this core
-          do_something_else( regs );
-        }
-      }
-      break;
-    default:
-      do_svc( regs, number );
-      break;
-  }
+  do_svc( regs, number );
 
   if ((number & ~Xbit) == 0x400c8 // Wimp_RedrawWindow
    || (number & ~Xbit) == 0x400ca) { // Wimp_GetRectangle
