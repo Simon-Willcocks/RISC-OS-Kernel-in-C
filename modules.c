@@ -3703,7 +3703,7 @@ static void user_mode_code( int core_number )
 
   //OSCLI( "Modules" );
   if (core_number == 0) {
-    // OSCLI( "Desktop Resources:$.Apps.!Alarm" );
+    OSCLI( "Desktop Resources:$.Apps.!Alarm" );
   }
 
   uint32_t pipe = PipeOp_CreateForTransfer( 4096 ); // N.B. Currently the only size supported!
