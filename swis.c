@@ -30,11 +30,11 @@ bool Kernel_Error_UnknownSWI( svc_registers *regs )
 
 bool Kernel_Error_UnimplementedSWI( svc_registers *regs )
 {
+  asm ( "mov r10, lr\n  bkpt 77" );
   static error_block error = { 0x999, "Unimplemented SWI" };
   regs->r[0] = (uint32_t) &error;
 
   Write0( "Unimplemented SWI" ); NewLine;
-  asm ( "bkpt 77" );
   return false;
 }
 
@@ -182,7 +182,7 @@ static bool do_OS_WriteN( svc_registers *regs )
 }
 
 
-static bool do_OS_Control( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_Control( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_Exit( svc_registers *regs )
 {
@@ -190,7 +190,7 @@ static bool do_OS_Exit( svc_registers *regs )
   return Kernel_Error_UnimplementedSWI( regs );
 }
 
-static bool do_OS_SetEnv( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SetEnv( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_IntOn( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
@@ -205,7 +205,7 @@ static bool do_OS_IntOff( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_CallBack( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_CallBack( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_EnterOS( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
@@ -220,12 +220,12 @@ static bool do_OS_LeaveOS( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_BreakPt( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_BreakPt( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_BreakCtrl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_UnusedSWI( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_UpdateMEMC( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_SetCallBack( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_BreakCtrl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_UnusedSWI( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_UpdateMEMC( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SetCallBack( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ReadUnsigned( svc_registers *regs )
 {
@@ -443,7 +443,7 @@ FC000000 64M        ROM
 
 #endif
 
-//static bool do_OS_BinaryToDecimal( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_BinaryToDecimal( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ReadEscapeState( svc_registers *regs )
 {
@@ -452,11 +452,11 @@ static bool do_OS_ReadEscapeState( svc_registers *regs )
   return true;
 }
 
-//static bool do_OS_EvaluateExpression( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-//static bool do_OS_ReadPalette( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_EvaluateExpression( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+//static bool do_OS_ReadPalette( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_SWINumberToString( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_SWINumberFromString( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SWINumberToString( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SWINumberFromString( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ValidateAddress( svc_registers *regs )
 {
   // FIXME (not all memory checks are going to pass!)
@@ -513,7 +513,7 @@ static void run_ticker_events()
     }
     else {
       e->next = workspace.kernel.ticker_event_pool;
-      workspace.kernel.ticker_event_pool = e->next;
+      workspace.kernel.ticker_event_pool = e;
     }
   }
   asm ( "pop { r0-r12, pc }" );
@@ -569,9 +569,9 @@ static void __attribute__(( naked )) TickerV_handler()
 {
   // C will ensure the callee saved registers are preserved.
   // We don't care about the private word.
-  asm ( "push { "C_CLOBBERED" }" );
+  asm ( "push { "C_CLOBBERED", lr }" ); // Not intercepting vector, so storing return address
   C_TickerV_handler();
-  asm ( "pop { "C_CLOBBERED" }" );
+  asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
 static bool insert_into_timer_queue( uint32_t code, uint32_t private, uint32_t timeout, uint32_t reload )
@@ -638,7 +638,7 @@ static bool do_OS_RemoveTickerEvent( svc_registers *regs )
 
 
 
-static bool do_OS_InstallKeyHandler( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_InstallKeyHandler( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_CheckModeValid( svc_registers *regs )
 {
@@ -654,7 +654,19 @@ static bool do_OS_CheckModeValid( svc_registers *regs )
 }
 
 
-static bool do_OS_ClaimScreenMemory( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ClaimScreenMemory( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool do_OS_MSTime( svc_registers *regs )
+{
+  uint32_t lo;
+  uint32_t hi;
+  uint64_t time;
+  asm ( "mrrc p15, 0, %[lo], %[hi], c14" : [lo] "=r" (lo), [hi] "=r" (hi) );
+  time = (((uint64_t) hi) << 32) | lo;
+  regs->r[0] = lo >> 10; // FIXME: Inaccurate, but doesn't need __aeabi_uldivmod
+  // Optimiser wants a function for uint64_t / uint32_t : __aeabi_uldivmod
+  return true;
+}
 
 static bool do_OS_ReadMonotonicTime( svc_registers *regs )
 {
@@ -668,7 +680,7 @@ static bool do_OS_ReadMonotonicTime( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_SubstituteArgs( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SubstituteArgs( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_PrettyPrint( svc_registers *regs )
 {
@@ -700,8 +712,8 @@ static bool do_OS_PrettyPrint( svc_registers *regs )
   return result;
 }
 
-static bool do_OS_WriteEnv( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ReadArgs( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_WriteEnv( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadArgs( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadRAMFsLimits( svc_registers *regs )
 {
   regs->r[0] = 5;
@@ -714,11 +726,49 @@ static bool do_OS_ReadRAMFsLimits( svc_registers *regs )
   }
 }
 
-static bool do_OS_ClaimDeviceVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ClaimDeviceVector( svc_registers *regs )
+{
+  uint32_t device = regs->r[0];
+  void (*code) = (void*) regs->r[1];
+  uint32_t r12 = regs->r[2];
 
-static bool do_OS_ReleaseDeviceVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+  if (device == 8 || device == 13) {
+    // No expansion cards supported, whoever ports this to RiscPC (or wants to use this mechanism for USB?) can fix it.
+    return Kernel_Error_UnimplementedSWI( regs );
+  }
 
-static bool do_OS_ExitAndDie( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+  // FIXME workspace or shared?
+  if (device > number_of( workspace.interrupts.handlers )) {
+    // FIXME Proper error
+    return Kernel_Error_UnimplementedSWI( regs );
+  }
+
+  InterruptHandler *h = &workspace.interrupts.handlers[device];
+
+  error_block const *err = 0;
+  claim_lock( &workspace.interrupts.lock );
+  if (h->code != 0) {
+    static const error_block error = { 0x999, "Device already claimed" };
+    err = &error;
+  }
+  else {
+    h->code = code;
+    h->r12 = r12;
+    h->slot = workspace.task_slot.running->slot; // May be 0
+  }
+  release_lock( &workspace.interrupts.lock );
+
+  if (err != 0) {
+    regs->r[0] = (uint32_t) err;
+    return false;
+  }
+
+  return true;
+}
+
+static bool do_OS_ReleaseDeviceVector( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool do_OS_ExitAndDie( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadMemMapInfo( svc_registers *regs )
 {
   regs->r[0] = 4096;
@@ -726,8 +776,8 @@ static bool do_OS_ReadMemMapInfo( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_ReadMemMapEntries( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_SetMemMapEntries( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SetMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_AddCallBack( svc_registers *regs )
 {
@@ -746,30 +796,6 @@ static bool do_OS_AddCallBack( svc_registers *regs )
   workspace.kernel.transient_callbacks = callback;
   callback->code = regs->r[0];
   callback->private_word = regs->r[1];
-  return true;
-}
-
-extern vector default_SpriteV;
-extern vector default_ByteV;
-extern vector default_ChEnvV;
-extern vector default_CliV;
-extern vector do_nothing;
-
-static bool do_OS_ReadDefaultHandler( svc_registers *regs )
-{
-  vector *v = &do_nothing;
-  switch (regs->r[0]) {
-  case 0x05: v = &default_CliV; break;
-  case 0x06: v = &default_ByteV; break;
-  case 0x1e: v = &default_ChEnvV; break;
-  case 0x1f: v = &default_SpriteV; break;
-  default:
-    v = &do_nothing; break;
-  }
-
-  regs->r[1] = v->code;
-  regs->r[2] = v->private_word;
-  regs->r[3] = 0; // Only relevant for Error, CallBack, BreakPoint. These will probably have to be associated with Task Slots...?
   return true;
 }
 
@@ -893,8 +919,8 @@ static const uint32_t SysInfo[] = {
 
   [OSRSI6_DomainId]                                = (uint32_t) &workspace.vectors.zp.DomainId, // current Wimp task handle
   [OSRSI6_OSByteVars]                              = 0xbaad0000 | 71, // OS_Byte vars (previously available via OS_Byte &A6/VarStart)
-  [OSRSI6_FgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor, // Used by SpriteExtend
-  [OSRSI6_BgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.BgEcfOraEor, // Used by SpriteExtend
+  [OSRSI6_FgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws.FgEcfOraEor, // Used by SpriteExtend
+  [OSRSI6_BgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws.BgEcfOraEor, // Used by SpriteExtend
   [OSRSI6_DebuggerSpace]                           = 0xbaad0000 | 74,
   [OSRSI6_DebuggerSpace_Size]                      = 0xbaad0000 | 75,
   [OSRSI6_CannotReset]                             = 0xbaad0000 | 76,
@@ -904,8 +930,8 @@ static const uint32_t SysInfo[] = {
   [OSRSI6_CLibWord]                                = (uint32_t) &workspace.vectors.zp.CLibWord,
   [OSRSI6_FPEAnchor]                               = 0xbaad0000 | 81,
   [OSRSI6_ESC_Status]                              = 0xbaad0000 | 82,
-  [OSRSI6_ECFYOffset]                              = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.ECFYOffset, // Used by SpriteExtend
-  [OSRSI6_ECFShift]                                = (uint32_t) &workspace.vectors.zp.VduDriverWorkSpace.ws.ECFShift, // Used by SpriteExtend
+  [OSRSI6_ECFYOffset]                              = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws.ECFYOffset, // Used by SpriteExtend
+  [OSRSI6_ECFShift]                                = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws.ECFShift, // Used by SpriteExtend
   [OSRSI6_VecPtrTab]                               = 0xbaad0000 | 85,
   [OSRSI6_NVECTORS]                                = 0xbaad0000 | 86,
   [OSRSI6_CAMFormat]                               = 0xbaad0000 | 87, // 0 = 8 bytes per entry, 1 = 16 bytes per entry
@@ -965,12 +991,12 @@ static bool do_OS_ReadSysInfo( svc_registers *regs )
   return false;
 }
 
-static bool do_OS_Confirm( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_Confirm( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_CRC( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_CRC( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_PrintChar( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ChangeRedirection( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_PrintChar( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ChangeRedirection( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_RemoveCallBack( svc_registers *regs )
 {
   // This is not at all reentrant, and I'm not sure how you could make it so...
@@ -988,7 +1014,7 @@ static bool do_OS_RemoveCallBack( svc_registers *regs )
 }
 
 
-static bool do_OS_FindMemMapEntries( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_FindMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 typedef union {
   struct {
@@ -1015,18 +1041,18 @@ static bool do_OS_SetColour( svc_registers *regs )
   if (flags.read_colour) {
     if (flags.text_colour) {
       if (flags.background)
-        regs->r[1] = workspace.vectors.zp.VduDriverWorkSpace.ws.TextBgColour;
+        regs->r[1] = workspace.vectors.zp.vdu_drivers.ws.TextBgColour;
       else
-        regs->r[1] = workspace.vectors.zp.VduDriverWorkSpace.ws.TextFgColour;
+        regs->r[1] = workspace.vectors.zp.vdu_drivers.ws.TextFgColour;
     }
     else {
       uint32_t *pattern_data = (void*) regs->r[1];
       uint32_t *to_read;
 
       if (flags.background)
-        to_read = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgPattern[0];
+        to_read = &workspace.vectors.zp.vdu_drivers.ws.BgPattern[0];
       else
-        to_read = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgPattern[0];
+        to_read = &workspace.vectors.zp.vdu_drivers.ws.FgPattern[0];
 
       for (int i = 0; i < 8; i++) {
         pattern_data[i] = to_read[i];
@@ -1038,9 +1064,9 @@ static bool do_OS_SetColour( svc_registers *regs )
 
   if (flags.text_colour) {
     if (flags.background)
-      workspace.vectors.zp.VduDriverWorkSpace.ws.TextBgColour = regs->r[1];
+      workspace.vectors.zp.vdu_drivers.ws.TextBgColour = regs->r[1];
     else
-      workspace.vectors.zp.VduDriverWorkSpace.ws.TextFgColour = regs->r[1];
+      workspace.vectors.zp.vdu_drivers.ws.TextFgColour = regs->r[1];
 
     return true;
   }
@@ -1051,15 +1077,15 @@ static bool do_OS_SetColour( svc_registers *regs )
   uint32_t *pattern;
 
   if (flags.background) {
-    workspace.vectors.zp.VduDriverWorkSpace.ws.GPLBMD = flags.action | 0x60;
-    pattern = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgPattern[0];
-    ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.BgEcfOraEor;
+    workspace.vectors.zp.vdu_drivers.ws.GPLBMD = flags.action | 0x60;
+    pattern = &workspace.vectors.zp.vdu_drivers.ws.BgPattern[0];
+    ecf = &workspace.vectors.zp.vdu_drivers.ws.BgEcfOraEor;
     *vduvarloc[154 - 128] = regs->r[1];
   }
   else {
-    workspace.vectors.zp.VduDriverWorkSpace.ws.GPLFMD = flags.action | 0x60;
-    pattern = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgPattern[0];
-    ecf = &workspace.vectors.zp.VduDriverWorkSpace.ws.FgEcfOraEor;
+    workspace.vectors.zp.vdu_drivers.ws.GPLFMD = flags.action | 0x60;
+    pattern = &workspace.vectors.zp.vdu_drivers.ws.FgPattern[0];
+    ecf = &workspace.vectors.zp.vdu_drivers.ws.FgEcfOraEor;
     *vduvarloc[153 - 128] = regs->r[1];
   }
 
@@ -1071,7 +1097,7 @@ static bool do_OS_SetColour( svc_registers *regs )
   }
   else {
     uint32_t colour = regs->r[1];
-    uint32_t log2bpp = workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPP;
+    uint32_t log2bpp = workspace.vectors.zp.vdu_drivers.ws.Log2BPP;
     uint32_t bits = 1 << log2bpp;
     uint32_t mask = (1 << bits) - 1;
     colour = colour & mask;
@@ -1099,12 +1125,13 @@ static bool do_OS_SetColour( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_Pointer( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_Pointer( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ScreenMode( svc_registers *regs )
 {
   Write0( __func__ ); WriteNum( regs->r[0] ); NewLine;
 
-  enum { SelectMode, CurrentModeSpecifier, EnumerateModes, SetMonitorType, ConfigureAcceleration, FlushScreenCache, ForceFlushCache }; // ...
+  enum { SelectMode, CurrentModeSpecifier, EnumerateModes, SetMonitorType, ConfigureAcceleration, FlushScreenCache, ForceFlushCache,
+  RegisterGraphicsVDriver = 64, StartGraphicsVDriver, StopGraphicsVDriver, DeregisterGraphicsVDriver, EnumerateGraphicsVDriver };
 
   switch (regs->r[0]) {
   case SelectMode: 
@@ -1125,17 +1152,23 @@ static bool do_OS_ScreenMode( svc_registers *regs )
     else {
       return Kernel_Error_UnimplementedSWI( regs );
     }
-  case FlushScreenCache: return true;
+  case FlushScreenCache: asm ( "svc 0xff" ); return true;
+
+  case RegisterGraphicsVDriver: regs->r[0] = 1; return true;
+  case StartGraphicsVDriver: return true;
+  case StopGraphicsVDriver: return Kernel_Error_UnimplementedSWI( regs );
+  case DeregisterGraphicsVDriver: return Kernel_Error_UnimplementedSWI( regs );
+  case EnumerateGraphicsVDriver: return Kernel_Error_UnimplementedSWI( regs );
   default: return Kernel_Error_UnimplementedSWI( regs );
   }
 }
 
-static bool do_OS_ClaimProcessorVector( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_Reset( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ClaimProcessorVector( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_Reset( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_MMUControl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_MMUControl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_ResyncTime( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ResyncTime( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_PlatformFeatures( svc_registers *regs )
 {
@@ -1155,18 +1188,25 @@ static bool do_OS_PlatformFeatures( svc_registers *regs )
   return false;
 }
 
-static bool do_OS_AMBControl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_AMBControl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_SpecialControl( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_EnterUSR32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_EnterUSR26( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_VIDCDivider( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_NVMemory( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_Hardware( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_IICOp( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ReadLine32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_SubstituteArgs32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-// static bool do_OS_HeapSort32( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SpecialControl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_EnterUSR32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_EnterUSR26( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_VIDCDivider( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_NVMemory( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool do_OS_Hardware( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+  WriteNum( regs->r[8] ); NewLine; // R8?!
+  return Kernel_Error_UnimplementedSWI( regs );
+}
+
+static bool do_OS_IICOp( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ReadLine32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SubstituteArgs32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+// static bool do_OS_HeapSort32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_SynchroniseCodeAreas( svc_registers *regs )
 {
@@ -1335,38 +1375,96 @@ static bool do_OS_ConvertInteger4( svc_registers *regs )
 }
 
 
-static bool do_OS_ConvertBinary1( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertBinary2( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertBinary3( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertBinary4( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertBinary1( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertBinary2( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertBinary3( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertBinary4( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_ConvertSpacedCardinal1( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedCardinal2( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedCardinal3( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedCardinal4( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedCardinal1( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedCardinal2( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedCardinal3( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedCardinal4( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_ConvertSpacedInteger1( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedInteger2( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedInteger3( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedInteger4( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedInteger1( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedInteger2( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedInteger3( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertSpacedInteger4( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_ConvertFixedNetStation( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertNetStation( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertFixedNetStation( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertNetStation( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+
+static int32_t GraphicsWindow_ec_Left()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return (ws->GWLCol << ws->XEigFactor) + ws->OrgX;
+}
+
+static int32_t GraphicsWindow_ec_Bottom()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return (ws->GWBRow << ws->YEigFactor) + ws->OrgY;
+}
+
+static int32_t GraphicsWindow_ec_Right()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return (ws->GWRCol << ws->XEigFactor) + ws->OrgX;
+}
+
+static int32_t GraphicsWindow_ec_Top()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return (ws->GWTRow << ws->YEigFactor) + ws->OrgY;
+}
+
+static int32_t GraphicsWindow_ic_Left()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return ws->GWLCol;
+}
+
+static int32_t GraphicsWindow_ic_Bottom()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return ws->GWBRow;
+}
+
+static int32_t GraphicsWindow_ic_Right()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return ws->GWRCol;
+}
+
+static int32_t GraphicsWindow_ic_Top()
+{
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  return ws->GWTRow;
+}
 
 static bool CLG( svc_registers *regs )
 {
-  // Move bottom left
-  register uint32_t code asm( "r0" ) = 4;
-  register uint32_t x asm( "r1" ) = 0;
-  register uint32_t y asm( "r2" ) = 0;
-  asm ( "svc 0x45" : : "r" (code), "r" (x), "r" (y) : "lr" );
+  // Was using Plot, but this is not allowed to affect the graphics cursor.
+  // Ugly, ignores many aspects of colour management FIXME.
+  // Good enough for only_one_mode
 
-  // Fill rectangle top right. FIXME don't just try to draw over a random-sized screen!
-  code = 96 + 7;
-  x = 1920 * 4;
-  y = 1080 * 4; 
-  asm ( "svc 0x45" : : "r" (code), "r" (x), "r" (y) : "lr" );
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+
+  int32_t x = GraphicsWindow_ic_Left();
+  int32_t y = GraphicsWindow_ic_Top();
+
+  uint32_t bg_colour = ws->BgPattern[0];
+  uint32_t left = ws->ScreenStart + (ws->YWindLimit - y) * ws->LineLength + (x << 2);
+
+  int32_t rows = GraphicsWindow_ic_Top() - GraphicsWindow_ic_Bottom();
+
+  for (; y > GraphicsWindow_ic_Bottom(); y--) {
+    uint32_t *p = (uint32_t*) left;
+    left += ws->LineLength;
+    for (int xx = x; xx < GraphicsWindow_ic_Right(); xx++) {
+      *p++ = bg_colour;
+    }
+  }
 
   return true;
 }
@@ -1400,6 +1498,14 @@ static bool VDU23( svc_registers *regs )
   }
   NewLine;
 
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+
+  switch (params[0]) {
+  case 16: ws->CursorFlags = (ws->CursorFlags & 0xffffff00) | ((ws->CursorFlags & params[2])^params[3]); break;
+  case 32 ... 255: break; // Should redefine character. Wimp does 131, 132, 136-139
+  default: break; // Do nothing
+  }
+
   return true;
 }
 
@@ -1419,10 +1525,11 @@ static bool DefineGraphicsWindow( svc_registers *regs )
   int32_t r = int16_at( &params[4] );
   int32_t t = int16_at( &params[6] );
 
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = l;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = b;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol = r;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow = t;
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  ws->GWLCol = l >> ws->XEigFactor;
+  ws->GWBRow = b >> ws->YEigFactor;
+  ws->GWRCol = r >> ws->XEigFactor;
+  ws->GWTRow = t >> ws->YEigFactor;
 
   Write0( __func__ ); WriteS( " " ); WriteNum( l ); WriteS( ", " ); WriteNum( b ); WriteS( ", " ); WriteNum( r ); WriteS( ", " ); WriteNum( t ); NewLine;
 
@@ -1449,10 +1556,16 @@ static bool Plot( svc_registers *regs )
 static bool RestoreDefaultWindows( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol = 0;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow = 0;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol = 1920;
-  workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow = 1080;
+  workspace.vectors.zp.vdu_drivers.ws.GWLCol = 0;
+  workspace.vectors.zp.vdu_drivers.ws.GWBRow = 0;
+  workspace.vectors.zp.vdu_drivers.ws.GWRCol = only_one_mode.xres * 2; // os_units FIXME
+  workspace.vectors.zp.vdu_drivers.ws.GWTRow = only_one_mode.yres * 2; // os_units FIXME
+  return true;
+}
+
+static bool Bell()
+{
+  Write0( __func__ ); NewLine;
   return true;
 }
 
@@ -1464,10 +1577,12 @@ static bool do_OS_VduCommand( svc_registers *regs )
 
   switch (regs->r[0]) {
   case 0: asm ( "bkpt 1" ); break; // do nothing, surely shouldn't be called
+  case 1: WriteNum( regs->lr ); asm ( "bkpt 1" ); break; // Send next character to printer if enabled, ignore next char otherwise
   case 2: asm ( "bkpt 1" ); break; // "enable printer"
   case 3: break; // do nothing, "disable printer"
-  case 4: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= ~(1 << 30); return true;
-  case 5: workspace.vectors.zp.VduDriverWorkSpace.ws.CursorFlags |= (1 << 30); return true;
+  case 4: workspace.vectors.zp.vdu_drivers.ws.CursorFlags |= ~(1 << 30); return true;
+  case 5: workspace.vectors.zp.vdu_drivers.ws.CursorFlags |= (1 << 30); return true;
+  case 7: return Bell();
   case 16: return CLG( regs );
   case 17: return SetTextColour( regs );
   case 19: return SetPalette( regs );
@@ -1478,7 +1593,7 @@ static bool do_OS_VduCommand( svc_registers *regs )
   case 26: return RestoreDefaultWindows( regs );
   default:
     {
-      static error_block error = { 0x111, "Unimplemented VDU code" };
+      static error_block error = { 0x111, "Unimplemented VDU code..." };
       Write0( error.desc ); WriteNum( regs->r[0] ); NewLine;
       regs->r[0] = (uint32_t) &error;
       return false;
@@ -1516,6 +1631,7 @@ static bool do_OS_ReleaseDMALock( svc_registers *regs )
 }
 
 // FIXME Move to TaskSlot
+// Or Pipes?
 static bool do_OS_LockForDMA( svc_registers *regs )
 {
   // On entry
@@ -1612,7 +1728,7 @@ static bool do_OS_FlushCache( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_ConvertFileSize( svc_registers *regs ) { return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertFileSize( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 bool do_OS_Heap( svc_registers *regs )
 {
@@ -1625,6 +1741,9 @@ bool do_OS_Heap( svc_registers *regs )
   bool reclaimed = claim_lock( &shared.memory.os_heap_lock );
   bool result = run_risos_code_implementing_swi( regs, 0x1d );
   //Write0( "OS_Heap returns " ); WriteNum( regs->r[3] ); NewLine;
+
+asm volatile ( "" : : "r" (regs->r[0]), "r" (regs->r[1]), "r" (regs->r[2]) ); // FIXME remove, only for debugging in qemu
+
   if (!reclaimed) release_lock( &shared.memory.os_heap_lock );
   return result;
 }
@@ -1829,6 +1948,10 @@ static swifn os_swis[256] = {
   [OS_ConvertNetStation] =  do_OS_ConvertNetStation,
   [OS_ConvertFixedFileSize] =  do_OS_ConvertFixedFileSize,
 
+  [OS_MSTime] = do_OS_MSTime,
+  [OS_ThreadOp] = do_OS_ThreadOp,
+  [OS_PipeOp] = do_OS_PipeOp,
+
   [OS_VduCommand] = do_OS_VduCommand,
   [OS_LockForDMA] = do_OS_LockForDMA,
   [OS_ReleaseDMALock] = do_OS_ReleaseDMALock,
@@ -1888,17 +2011,17 @@ static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t nu
 {
   regs->spsr &= ~VF;
 
-if (OS_ValidateAddress == (number & ~Xbit)) {
+if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
   regs->spsr &= ~CF;
   return;
 }
 
-      switch (number & ~Xbit) {
-      case 0x406c0 ... 0x406ff: return; // Hourglass
-      case 0x400de: StartTask( regs ); return;
-      case 0x80146: regs->r[0] = 0; return; // PDriver_CurrentJob (called from Desktop?!)
-      }
-      bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
+  switch (number & ~Xbit) { // FIXME
+  case 0x406c0 ... 0x406ff: return; // Hourglass
+  case 0x400de: StartTask( regs ); return;
+  case 0x80146: regs->r[0] = 0; return; // PDriver_CurrentJob (called from Desktop?!)
+  }
+  bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
 
   uint32_t r0 = regs->lr;
 
@@ -1960,8 +2083,10 @@ if (OS_ValidateAddress == (number & ~Xbit)) {
     // Call error handler
     WriteS( "SWI " );
     WriteNum( number );
-    WriteS( " " );
+    asm ( "svc 0x120" );
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
+    asm ( "svc 0x120" );
+    WriteNum( regs->lr );
     asm ( "bkpt 16" );
   }
 }
@@ -2009,31 +2134,6 @@ static void __attribute__(( noinline )) do_something_else( svc_registers *regs )
   }
 }
 
-static void __attribute__(( noinline )) bottleneck_reopened( svc_registers *regs )
-{
-  claim_lock( &shared.task_slot.lock );
-
-  assert( workspace.task_slot.running == shared.task_slot.bottleneck_owner );
-
-  Task *freed = shared.task_slot.next_to_own;
-
-  shared.task_slot.bottleneck_owner = freed;
-
-  if (freed != 0) {
-    shared.task_slot.next_to_own = freed->next;
-    if (freed->next == 0) {
-      assert( shared.task_slot.last_to_own == freed );
-      shared.task_slot.last_to_own = 0;
-    }
-    // The freed task goes to the top of the list, since it's been waiting for
-    // so long, but doesn't preempt the finished task... Debatable. TODO
-    freed->next = shared.task_slot.runnable;
-    shared.task_slot.runnable = freed;
-  }
-
-  release_lock( &shared.task_slot.lock );
-}
-
 void __attribute__(( naked, noreturn )) Kernel_default_svc()
 {
   // Some SWIs preserve all registers
@@ -2068,78 +2168,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
   if ((number & ~Xbit) == OS_CallASWI) number = regs->r[9];
   else if ((number & ~Xbit) == OS_CallASWIR12) number = regs->r[12];
 
-  switch (number & ~Xbit) {
-    case OS_File:
-    case OS_Args:
-    case OS_BGet:
-    case OS_BPut:
-    case OS_GBPB:
-    case OS_Find:
-    case OS_ReadLine:
-    case OS_FSControl:
-    case 0x40080 ... 0x400bf:
-      {
-        // These SWIs expect only a single program running on a single processor
-        Task *blocked = 0;
-
-retry: // This is not its final form
-
-        claim_lock( &shared.task_slot.lock );
-
-        bool already_owner = (shared.task_slot.bottleneck_owner == workspace.task_slot.running);
-        if (already_owner || shared.task_slot.bottleneck_owner == 0) {
-          // We're IN! (Possibly recursing)
-          if (!already_owner) {
-            shared.task_slot.bottleneck_owner = workspace.task_slot.running;
-            assert (shared.task_slot.next_to_own == 0);
-            assert (shared.task_slot.last_to_own == 0);
-          }
-        }
-        else {
-#if 1
-// Implementation assumes the owner is on another core
-// Final implementation puts the current task to sleep until the bottleneck is cleared up again
-release_lock( &shared.task_slot.lock );
-for (int i = 0; i < 1000000; i++) { asm ( "" ); }
-goto retry;
-#else
-          // First come, first served, and we're not first!
-          blocked = workspace.task_slot.running;
-
-          // Save context
-          //workspace.task_slot.running->regs = *regs;
-          asm ( "bkpt 13" ); // FIXME
-          workspace.task_slot.running = 0; // we're not running any more
-
-          if (shared.task_slot.last_to_own == 0) {
-            shared.task_slot.next_to_own = blocked;
-          }
-          else {
-            shared.task_slot.last_to_own->next = blocked;
-          }
-
-          shared.task_slot.last_to_own = blocked;
-#endif
-        }
-        release_lock( &shared.task_slot.lock );
-
-        if (0 == blocked) { // This task owns the filesystem
-          do_svc( regs, number );
-          if (!already_owner) {
-            bottleneck_reopened( regs );
-          }
-        }
-        else {
-          // When this routine returns, there is a thread in the mapped in slot
-          // that can be run by this core
-          do_something_else( regs );
-        }
-      }
-      break;
-    default:
-      do_svc( regs, number );
-      break;
-  }
+  do_svc( regs, number );
 
   if ((number & ~Xbit) == 0x400c8 // Wimp_RedrawWindow
    || (number & ~Xbit) == 0x400ca) { // Wimp_GetRectangle
@@ -2153,8 +2182,9 @@ goto retry;
     }
   }
 
-  if (0 == (regs->spsr & 0x1f)) {
+  if (0x10 == (regs->spsr & 0x1f)) {
     run_transient_callbacks();
+    swi_returning_to_usr_mode( regs );
   }
 
   asm ( "pop { r0-r12 }"

@@ -42,7 +42,7 @@ static inline error_block *OSCLI( const char *command )
 
 // TEMPORARY!
 
-#define assert( x ) while (!(x)) { asm ( "bkpt 5" ); }
+#define assert( x ) while (!(x)) { Write0( "Assertion failed: " ); Write0( __func__ ); WriteS( #x ); asm ( "bkpt 5" ); }
 
 #ifndef NO_DEBUG_OUTPUT
 #define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "cc", "lr" )

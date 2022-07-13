@@ -60,9 +60,14 @@ struct MMU_workspace {
 
 struct MMU_shared_workspace {
   uint32_t lock;
+  uint32_t pipes_tt[1024];
 };
 
+// This routine is a service to the MMU code from the Kernel. It returns
+// information about the physical block of memory that should appear at
+// the given virtual address.
 physical_memory_block Kernel_physical_address( uint32_t va );
+
 TaskSlot *MMU_new_slot();
 void TaskSlot_add( TaskSlot *slot, physical_memory_block memory );
 uint32_t TaskSlot_asid( TaskSlot *slot );
@@ -74,6 +79,16 @@ void MMU_map_at( void *va, uint32_t pa, uint32_t size );
 void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size );
 void MMU_map_device_at( void *va, uint32_t pa, uint32_t size );
 void MMU_map_device_shared_at( void *va, uint32_t pa, uint32_t size );
+
+// Map the block twice into virtual memory (where? who decides?)
+// The reason is that that allows the readers and writers to see
+// contiguous memory, even for data that overruns the end of the
+// memory and starts again at the beginning.
+// Does it have to be the full double, or just the configured
+// maximum block size?
+// Note: this memory can be in top bit set address range, since
+// only new code will use it.
+//void MMU_map_pipe( uint32_t phys, uint32_t size, uint32_t over );
 
 void BOOT_finished_allocating( uint32_t core, volatile startup *startup );
 

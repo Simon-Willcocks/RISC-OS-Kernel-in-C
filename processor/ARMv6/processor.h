@@ -19,7 +19,8 @@
 
 typedef struct __attribute__(( packed )) {
   uint32_t r[13];
-  uint32_t sp;
+  uint32_t banked_sp;
+  uint32_t banked_lr;
   uint32_t pc;
   uint32_t psr;
 } integer_registers;

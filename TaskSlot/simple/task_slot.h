@@ -39,12 +39,14 @@ struct Task {
   integer_registers regs;
   TaskSlot *slot;
   Task *next;
+  int block_op;
 };
 
 struct TaskSlot_workspace {
   Task *running;        // The task that is running on this core
   Task *runnable;       // The tasks that may only run on this core
   bool memory_mapped;   // Have the shared.task_slot.tasks_memory and shared.task_slot.slots_memory been mapped into this core's MMU?
+  Task *sleeping;       // 0 or more sleeping tasks
 };
 
 struct TaskSlot_shared_workspace {
@@ -52,6 +54,13 @@ struct TaskSlot_shared_workspace {
 
   uint32_t slots_memory; // FIXME more than one page, extendible, etc.
   uint32_t tasks_memory;
+
+  // Until filesystems learn to play along, only one task at a time can
+  // make filesystem calls.
+  uint32_t filesystem_lock;
+  Task *filesystem_owner;
+  Task *filesystem_blocked_head;
+  Task **filesystem_blocked_tail;
 
   Task *bottleneck_owner;
   Task *next_to_own;
@@ -61,13 +70,3 @@ struct TaskSlot_shared_workspace {
   Task **core_runnable; // Array of Tasks that may run on that core
 };
 
-/*
-  SWI OS_TaskSlot
-
-    0 AdjustSize R0 = signed amount to change in bytes, on exit R0 = new size (adjust by 0 to read)
-    1 CreateThread R0 = start address, R1 = stack size
-    2 LockMap 
-        Stop the memory from being re-mapped or re-located, so that background activites read or write it
-    3 ReleaseMap 
-        Re-enable background re-mapping of the slot's memory (once the release count matches the lock count)
-*/

@@ -37,6 +37,7 @@ typedef struct shared_workspace shared_workspace;
 #include "mmu.h"
 #include "memory_manager.h"
 #include "task_slot.h"
+#include "interrupts.h"
 
 typedef struct callback callback;
 
@@ -44,6 +45,7 @@ typedef struct module module;
 typedef callback vector;
 typedef callback transient_callback;
 typedef struct variable variable;
+typedef struct os_pipe os_pipe;
 
 typedef struct ticker_event ticker_event;
 struct ticker_event {
@@ -77,6 +79,8 @@ struct Kernel_workspace {
   module *module_list_tail;
   uint32_t DomainId;
   vector *vectors[64];   // https://www.riscosopen.org/wiki/documentation/show/Software%20Vector%20Numbers
+
+  Task *irq_task;
 
   // 0 -> disabled
   // There is no associated code, it will be listening for EventV.
@@ -126,6 +130,9 @@ struct Kernel_shared_workspace {
   module *module_list_head;
   module *module_list_tail;
 
+  uint32_t pipes_lock;
+  os_pipe *pipes;
+
   uint32_t screen_lock; // Not sure if this will always be wanted; it might make sense to make the screen memory outer (only) sharable, and flush the L1 cache to it before releasing this lock.
 };
 
@@ -140,6 +147,7 @@ extern struct core_workspace {
       uint32_t svc;
       uint32_t prefetch;
       uint32_t data;
+      uint32_t unused_vector;
       uint32_t irq;
       uint32_t fiq[2]; // Shrunk, because legacy zero page starts lower than I thought.
 
@@ -149,6 +157,7 @@ extern struct core_workspace {
       void (*svc_vec)();
       void (*prefetch_vec)();
       void (*data_vec)();
+      uint32_t unused;
       void (*irq_vec)();
     };
     LegacyZeroPage zp;
@@ -156,6 +165,7 @@ extern struct core_workspace {
 
   uint32_t core_number;
   struct MMU_workspace mmu;
+  struct Interrupts_workspace interrupts;
   struct VDU_workspace vdu;
   struct Kernel_workspace kernel;
   struct Memory_manager_workspace memory;
@@ -164,6 +174,7 @@ extern struct core_workspace {
 
 extern struct shared_workspace {
   struct MMU_shared_workspace mmu;
+  struct Interrupts_shared_workspace interrupts;
   struct Kernel_shared_workspace kernel;
   struct Memory_manager_shared_workspace memory;
   struct TaskSlot_shared_workspace task_slot;

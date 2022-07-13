@@ -38,68 +38,68 @@ bool do_OS_ChangedBox( svc_registers *regs )
 // Horribly incorporate legacy variables so legacy code can access them
 // I'd like to move the used ones to a module's workspace and dump the rest.
 const uint32_t* vduvarloc[173-128] = { 
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GWLCol,           // 0x80 128
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GWBRow,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GWRCol,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GWTRow,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TWLCol,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TWBRow,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TWRCol,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TWTRow,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.OrgX,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.OrgY,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCsX,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCsY,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.OlderCsX,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.OlderCsY,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.OldCsX,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.OldCsY,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCsIX,            // 0x90 144
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCsIY,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.NewPtX,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.NewPtY,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenStart,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.DisplayStart,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TotalScreenSize,
+  &workspace.vectors.zp.vdu_drivers.ws.GWLCol,           // 0x80 128
+  &workspace.vectors.zp.vdu_drivers.ws.GWBRow,
+  &workspace.vectors.zp.vdu_drivers.ws.GWRCol,
+  &workspace.vectors.zp.vdu_drivers.ws.GWTRow,
+  &workspace.vectors.zp.vdu_drivers.ws.TWLCol,
+  &workspace.vectors.zp.vdu_drivers.ws.TWBRow,
+  &workspace.vectors.zp.vdu_drivers.ws.TWRCol,
+  &workspace.vectors.zp.vdu_drivers.ws.TWTRow,
+  &workspace.vectors.zp.vdu_drivers.ws.OrgX,
+  &workspace.vectors.zp.vdu_drivers.ws.OrgY,
+  &workspace.vectors.zp.vdu_drivers.ws.GCsX,
+  &workspace.vectors.zp.vdu_drivers.ws.GCsY,
+  &workspace.vectors.zp.vdu_drivers.ws.OlderCsX,
+  &workspace.vectors.zp.vdu_drivers.ws.OlderCsY,
+  &workspace.vectors.zp.vdu_drivers.ws.OldCsX,
+  &workspace.vectors.zp.vdu_drivers.ws.OldCsY,
+  &workspace.vectors.zp.vdu_drivers.ws.GCsIX,            // 0x90 144
+  &workspace.vectors.zp.vdu_drivers.ws.GCsIY,
+  &workspace.vectors.zp.vdu_drivers.ws.NewPtX,
+  &workspace.vectors.zp.vdu_drivers.ws.NewPtY,
+  &workspace.vectors.zp.vdu_drivers.ws.ScreenStart,
+  &workspace.vectors.zp.vdu_drivers.ws.DisplayStart,
+  &workspace.vectors.zp.vdu_drivers.ws.TotalScreenSize,
 
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GPLFMD,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GPLBMD,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GFCOL,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GBCOL,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TForeCol,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TBackCol,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GFTint,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GBTint,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TFTint,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TBTint,           // 0xa0 160
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.MaxMode,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCharSizeX,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCharSizeY,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCharSpaceX,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.GCharSpaceY,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.HLineAddr,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TCharSizeX,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TCharSizeY,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TCharSpaceX,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.TCharSpaceY,
-  (uint32_t*) &workspace.vectors.zp.VduDriverWorkSpace.ws.GcolOraEorAddr,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.VIDCClockSpeed
+  &workspace.vectors.zp.vdu_drivers.ws.GPLFMD,
+  &workspace.vectors.zp.vdu_drivers.ws.GPLBMD,
+  &workspace.vectors.zp.vdu_drivers.ws.GFCOL,
+  &workspace.vectors.zp.vdu_drivers.ws.GBCOL,
+  &workspace.vectors.zp.vdu_drivers.ws.TForeCol,
+  &workspace.vectors.zp.vdu_drivers.ws.TBackCol,
+  &workspace.vectors.zp.vdu_drivers.ws.GFTint,
+  &workspace.vectors.zp.vdu_drivers.ws.GBTint,
+  &workspace.vectors.zp.vdu_drivers.ws.TFTint,
+  &workspace.vectors.zp.vdu_drivers.ws.TBTint,           // 0xa0 160
+  &workspace.vectors.zp.vdu_drivers.ws.MaxMode,
+  &workspace.vectors.zp.vdu_drivers.ws.GCharSizeX,
+  &workspace.vectors.zp.vdu_drivers.ws.GCharSizeY,
+  &workspace.vectors.zp.vdu_drivers.ws.GCharSpaceX,
+  &workspace.vectors.zp.vdu_drivers.ws.GCharSpaceY,
+  &workspace.vectors.zp.vdu_drivers.ws.HLineAddr,
+  &workspace.vectors.zp.vdu_drivers.ws.TCharSizeX,
+  &workspace.vectors.zp.vdu_drivers.ws.TCharSizeY,
+  &workspace.vectors.zp.vdu_drivers.ws.TCharSpaceX,
+  &workspace.vectors.zp.vdu_drivers.ws.TCharSpaceY,
+  (uint32_t*) &workspace.vectors.zp.vdu_drivers.ws.GcolOraEorAddr,
+  &workspace.vectors.zp.vdu_drivers.ws.VIDCClockSpeed
 };
 
 uint32_t *const modevarloc[13] = {
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.ModeFlags,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.ScrRCol,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.ScrBRow,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.NColour,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.XEigFactor,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.YEigFactor,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.LineLength,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.ScreenSize,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.YShftFactor,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPP,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.Log2BPC,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.XWindLimit,
-  &workspace.vectors.zp.VduDriverWorkSpace.ws.YWindLimit
+  &workspace.vectors.zp.vdu_drivers.ws.ModeFlags,
+  &workspace.vectors.zp.vdu_drivers.ws.ScrRCol,
+  &workspace.vectors.zp.vdu_drivers.ws.ScrBRow,
+  &workspace.vectors.zp.vdu_drivers.ws.NColour,
+  &workspace.vectors.zp.vdu_drivers.ws.XEigFactor,
+  &workspace.vectors.zp.vdu_drivers.ws.YEigFactor,
+  &workspace.vectors.zp.vdu_drivers.ws.LineLength,
+  &workspace.vectors.zp.vdu_drivers.ws.ScreenSize,
+  &workspace.vectors.zp.vdu_drivers.ws.YShftFactor,
+  &workspace.vectors.zp.vdu_drivers.ws.Log2BPP,
+  &workspace.vectors.zp.vdu_drivers.ws.Log2BPC,
+  &workspace.vectors.zp.vdu_drivers.ws.XWindLimit,
+  &workspace.vectors.zp.vdu_drivers.ws.YWindLimit
 };
 
 uint32_t *const textwindowloc[] = {
@@ -119,7 +119,7 @@ WriteS( "Read Vdu Var " ); WriteNum( *var ); WriteS( " = " );
     switch (*var) {
     case 0 ... 12: *val = *modevarloc[*var]; break;
     case 128 ... 172: *val = *vduvarloc[*var - 128]; break;
-    case 192: *val = workspace.vectors.zp.VduDriverWorkSpace.ws.CurrentGraphicsVDriver; break;
+    case 192: *val = workspace.vectors.zp.vdu_drivers.ws.CurrentGraphicsVDriver; break;
     case 256 ... 257: asm ( "bkpt 99" ); *val = *textwindowloc[*var - 256]; break; // Can't find this in zero page...
     default: for (;;) { asm( "bkpt 68" ); }
     }

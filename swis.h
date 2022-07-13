@@ -77,8 +77,8 @@ enum {
 /* e8 */ OS_ConvertSpacedInteger4, OS_ConvertFixedNetStation, OS_ConvertNetStation, OS_ConvertFixedFileSize,
 /* ec */ OS_ConvertFileSize,
 
-// New SWIs for C kernel, if they duplicate another solution, one or other approach may be discarded.
-/* fb */ OS_VduCommand = 0xfb, // update the current graphics state for this task
+// New SWIs for C kernel, if they duplicate another solution, one or the other approach may be discarded.
+/* f8 */ OS_MSTime = 0xf8, OS_ThreadOp, OS_PipeOp, OS_VduCommand, // update the current graphics state for this task
 /* fc */ OS_LockForDMA = 0xfc, OS_ReleaseDMALock, OS_MapDevicePages, OS_FlushCache, // For screen updates, etc.
 /* 100-1ff */ OS_WriteI = 0x100 };
  
@@ -99,7 +99,7 @@ bool do_OS_Release( svc_registers *regs );
 bool do_OS_AddToVector( svc_registers *regs );
 bool do_OS_DelinkApplication( svc_registers *regs );
 bool do_OS_RelinkApplication( svc_registers *regs );
-bool do_OS_GetEnv( svc_registers *regs );
+bool do_OS_ReadDefaultHandler( svc_registers *regs );
 
 // Vectored SWIs (do nothing but call the appropriate vectors)
 bool do_OS_GenerateError( svc_registers *regs );
@@ -128,6 +128,12 @@ bool do_OS_SerialOp( svc_registers *regs );
 
 // TaskSlot
 void __attribute__(( naked )) default_os_changeenvironment();
+void __attribute__(( naked )) default_ticker();
+void __attribute__(( naked )) default_irq();
+bool do_OS_GetEnv( svc_registers *regs );
+bool do_OS_ThreadOp( svc_registers *regs );
+bool do_OS_PipeOp( svc_registers *regs ); // because it blocks tasks
+void swi_returning_to_usr_mode( svc_registers *regs );
 
 // memory/
 

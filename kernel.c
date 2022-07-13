@@ -28,13 +28,25 @@ Drop support for: 26-bit modes
 
 #include "inkernel.h"
 
-// Kernel_default_undef, Kernel_default_irq, Kernel_default_reset temporarily in memory_manager.c - BSOD
+// Kernel_default_undef, Kernel_default_reset temporarily in memory_manager.c - BSOD
 
+// Kernel_default_irq in task_slot.c
 // Kernel_default_svc in swis.c
 // Kernel_default_prefetch, Kernel_default_data_abort in memory_manager.c
 
 void __attribute__(( noreturn, noinline )) Kernel_start()
 {
+  // Fail early, fail hard
+  {
+    // Problems occur when the shared and core workspaces overlap
+    // This can be fixed in the linker script by moving their allocated space further apart
+    // This check should ring alarm bells (in qemu).
+    char *ws = (void*) &workspace;
+    char *sh = (void*) &shared;
+    if ((ws > sh) && (ws - sh) < sizeof( shared )) asm ( "bkpt 1" );
+    if ((ws < sh) && (sh - ws) < sizeof( workspace )) asm ( "bkpt 1" );
+  }
+
   if (workspace.core_number == 0) {
     // Final use of the pre-mmu sequence's ram_blocks array, now read-only
 
@@ -59,6 +71,7 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
   workspace.vectors.svc           = 0xe59ff000 + vector_offset;
   workspace.vectors.prefetch      = 0xe59ff000 + vector_offset;
   workspace.vectors.data          = 0xe59ff000 + vector_offset;
+  workspace.vectors.unused_vector = 0xeafffffe; // for (;;) {}
   workspace.vectors.irq           = 0xe59ff000 + vector_offset;
   workspace.vectors.fiq[0]        = 0xeafffffe; // for (;;) {}
 
@@ -67,6 +80,7 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
   workspace.vectors.svc_vec       = Kernel_default_svc;
   workspace.vectors.prefetch_vec  = Kernel_default_prefetch;
   workspace.vectors.data_vec      = Kernel_default_data_abort;
+  workspace.vectors.unused        = 0; // Needed to keep the distance the same
   workspace.vectors.irq_vec       = Kernel_default_irq;
 
   Initialise_undefined_registers();

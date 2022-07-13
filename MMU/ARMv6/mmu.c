@@ -434,9 +434,15 @@ void __attribute__(( naked, optimize( 0 ), noreturn )) Kernel_default_data_abort
       );
 
   if (!handle_data_abort()) {
+    // Put the important information somewhere the developer can see it
+    register uint32_t fa asm ( "r8" ) = fault_address();
+    register uint32_t fault_type asm ( "r9" ) = data_fault_type();
     asm volatile ( "pop { "C_CLOBBERED" }"
-               "\n  pop { lr }"
-               "\n  b Kernel_failed_data_abort" );
+               "\n  pop { r0, r1 } // Fault instruction and processor mode"
+               "\n  b Kernel_failed_data_abort"
+               :
+               : "r" (fa)
+               , "r" (fault_type) );
   }
 
   asm volatile ( "pop { "C_CLOBBERED" }"
@@ -461,5 +467,8 @@ void MMU_switch_to( TaskSlot *slot )
   asm ( "mcr p15, 0, %[asid], c13, c0, 1" : : [asid] "r" (TaskSlot_asid( slot )) );
   // FIXME: clear out L2TTs, or disable walks until one is needed, then clear them
   release_lock( &shared.mmu.lock );
+
+  // This appears to be necessary. Perhaps it should be in MMU_switch_to.
+  clean_cache_to_PoC();
 }
 
