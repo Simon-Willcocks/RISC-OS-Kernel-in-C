@@ -456,7 +456,7 @@ static bool do_OS_ReadEscapeState( svc_registers *regs )
 //static bool do_OS_ReadPalette( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_SWINumberToString( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_SWINumberFromString( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+
 static bool do_OS_ValidateAddress( svc_registers *regs )
 {
   // FIXME (not all memory checks are going to pass!)
@@ -1028,6 +1028,16 @@ typedef union {
   uint32_t raw;
 } OS_SetColour_Flags;
 
+typedef union {
+  struct {
+    uint32_t r:8;
+    uint32_t g:8;
+    uint32_t b:8;
+    uint32_t q:8; // Unused, I think
+  };
+  uint32_t raw;
+} OS_SetColour_Colour; // &00BBGGRR
+
 static void SetColours( uint32_t bpp, uint32_t fore, uint32_t back )
 {
   switch (bpp) {
@@ -1036,6 +1046,8 @@ static void SetColours( uint32_t bpp, uint32_t fore, uint32_t back )
 
 static bool do_OS_SetColour( svc_registers *regs )
 {
+Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->r[1] ); NewLine;
+
   OS_SetColour_Flags flags = { .raw = regs->r[0] };
 
   if (flags.read_colour) {
@@ -1126,9 +1138,12 @@ static bool do_OS_SetColour( svc_registers *regs )
 }
 
 static bool do_OS_Pointer( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+
 static bool do_OS_ScreenMode( svc_registers *regs )
 {
+#ifdef DEBUG__SHOW_SCREEN_MODE_CALLS
   Write0( __func__ ); WriteNum( regs->r[0] ); NewLine;
+#endif
 
   enum { SelectMode, CurrentModeSpecifier, EnumerateModes, SetMonitorType, ConfigureAcceleration, FlushScreenCache, ForceFlushCache,
   RegisterGraphicsVDriver = 64, StartGraphicsVDriver, StopGraphicsVDriver, DeregisterGraphicsVDriver, EnumerateGraphicsVDriver };
@@ -1152,7 +1167,7 @@ static bool do_OS_ScreenMode( svc_registers *regs )
     else {
       return Kernel_Error_UnimplementedSWI( regs );
     }
-  case FlushScreenCache: asm ( "svc 0xff" ); return true;
+  case FlushScreenCache: asm ( "svc 0xff" : : : "lr" ); return true;
 
   case RegisterGraphicsVDriver: regs->r[0] = 1; return true;
   case StartGraphicsVDriver: return true;
@@ -1188,7 +1203,7 @@ static bool do_OS_PlatformFeatures( svc_registers *regs )
   return false;
 }
 
-static bool do_OS_AMBControl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_AMBControl( svc_registers *regs ) { Write0( __func__ ); NewLine; asm ( "bkpt 1" ); return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_SpecialControl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_EnterUSR32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
@@ -1453,7 +1468,9 @@ static bool CLG( svc_registers *regs )
   int32_t x = GraphicsWindow_ic_Left();
   int32_t y = GraphicsWindow_ic_Top();
 
-  uint32_t bg_colour = ws->BgPattern[0];
+  uint32_t bg_colour = ws->BgEcfOraEor.line[0].eor;
+  // Write0( "CLG" ); WriteNum( ws->BgEcfOraEor.line[0].orr ); Space; WriteNum( ws->BgEcfOraEor.line[0].eor ); NewLine;
+  
   uint32_t left = ws->ScreenStart + (ws->YWindLimit - y) * ws->LineLength + (x << 2);
 
   int32_t rows = GraphicsWindow_ic_Top() - GraphicsWindow_ic_Bottom();
@@ -1472,6 +1489,16 @@ static bool CLG( svc_registers *regs )
 static bool SetTextColour( svc_registers *regs )
 {
   Write0( __func__ );
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  asm ( "bkpt 1" );
+
+  return true;
+}
+
+static bool SetGraphicsColour( svc_registers *regs )
+{
+  Write0( __func__ );
+  asm ( "bkpt 1" );
   return true;
 }
 
@@ -1489,6 +1516,14 @@ static bool SetMode( svc_registers *regs )
   return true;
 }
 
+static bool SetCursorMode( svc_registers *regs )
+{
+  Write0( __func__ );
+  return true;
+}
+
+bool run_vector( svc_registers *regs, int vec );
+
 static bool VDU23( svc_registers *regs )
 {
   Write0( __func__ );
@@ -1501,7 +1536,21 @@ static bool VDU23( svc_registers *regs )
   VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
 
   switch (params[0]) {
+  case 1: return SetCursorMode( regs );
   case 16: ws->CursorFlags = (ws->CursorFlags & 0xffffff00) | ((ws->CursorFlags & params[2])^params[3]); break;
+  case 18 ... 25:
+  case 28 ... 31:
+    {
+      uint32_t r0 = regs->r[0];
+
+      regs->r[0] = params[0]; // The vector expects the code in r0 as well as the first parameter
+      if (!run_vector( 0x17, regs )) { // UKVDU23V
+        return false;
+      }
+
+      regs->r[0] = r0;
+    }
+    break;
   case 32 ... 255: break; // Should redefine character. Wimp does 131, 132, 136-139
   default: break; // Do nothing
   }
@@ -1563,6 +1612,19 @@ static bool RestoreDefaultWindows( svc_registers *regs )
   return true;
 }
 
+static bool SetGraphicsOrigin( svc_registers *regs )
+{
+  uint8_t *params = (void*) regs->r[1];
+  int32_t x = int16_at( &params[0] );
+  int32_t y = int16_at( &params[2] );
+
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  workspace.vectors.zp.vdu_drivers.ws.OrgX = x >> ws->XEigFactor;
+  workspace.vectors.zp.vdu_drivers.ws.OrgY = y >> ws->YEigFactor;
+
+  return true;
+}
+
 static bool Bell()
 {
   Write0( __func__ ); NewLine;
@@ -1585,12 +1647,14 @@ static bool do_OS_VduCommand( svc_registers *regs )
   case 7: return Bell();
   case 16: return CLG( regs );
   case 17: return SetTextColour( regs );
+  case 18: return SetGraphicsColour( regs );
   case 19: return SetPalette( regs );
   case 22: return SetMode( regs );
   case 23: return VDU23( regs );
   case 24: return DefineGraphicsWindow( regs );
   case 25: return Plot( regs );
   case 26: return RestoreDefaultWindows( regs );
+  case 29: return SetGraphicsOrigin( regs );
   default:
     {
       static error_block error = { 0x111, "Unimplemented VDU code..." };
@@ -1881,7 +1945,7 @@ static swifn os_swis[256] = {
 
 
   [OS_FindMemMapEntries] =  do_OS_FindMemMapEntries,
-  [OS_SetColour] =  do_OS_SetColour,
+  // [OS_SetColour] =  do_OS_SetColour,
   [OS_Pointer] =  do_OS_Pointer,
   [OS_ScreenMode] =  do_OS_ScreenMode,
 
@@ -2170,6 +2234,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
 
   do_svc( regs, number );
 
+#if 0
   if ((number & ~Xbit) == 0x400c8 // Wimp_RedrawWindow
    || (number & ~Xbit) == 0x400ca) { // Wimp_GetRectangle
     if (regs->r[0] == 0) { Write0( "GetRectangle Done" ); NewLine; }
@@ -2181,7 +2246,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
       }
     }
   }
-
+#endif
   if (0x10 == (regs->spsr & 0x1f)) {
     run_transient_callbacks();
     swi_returning_to_usr_mode( regs );

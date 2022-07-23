@@ -1145,8 +1145,11 @@ void init( uint32_t this_core, uint32_t number_of_cores )
 
     if (first_entry) {
       workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
-#ifdef QEMU
-      workspace->ticks_per_interval = clock_frequency / 5; // Slower, for testing in QEMU
+#ifdef DEBUG__SLOW_TICKS
+      workspace->ticks_per_interval = workspace->ticks_per_interval * 100; // Slower, for testing in QEMU
+#endif
+#ifdef DEBUG__VERY_SLOW_TICKS
+      workspace->ticks_per_interval = workspace->ticks_per_interval * 100; // Really slow, if debugging interrupts
 #endif
       Write0( "Timer ticks per interval: " ); WriteNum( workspace->ticks_per_interval ); NewLine;
     }

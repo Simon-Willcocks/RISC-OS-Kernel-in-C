@@ -34,9 +34,10 @@ physical_memory_block Kernel_physical_address( uint32_t va );
 // I think that a child process changing its working directory should affect
 // the parent when it exits, but icbw.
 void __attribute__(( noinline )) do_FSControl( uint32_t *regs );
+void __attribute__(( noinline )) do_UpCall( uint32_t *regs );
 
 struct Task {
-  integer_registers regs;
+  integer_registers regs; // WARNING Keep at start of struct
   TaskSlot *slot;
   Task *next;
   int block_op;
@@ -61,10 +62,6 @@ struct TaskSlot_shared_workspace {
   Task *filesystem_owner;
   Task *filesystem_blocked_head;
   Task **filesystem_blocked_tail;
-
-  Task *bottleneck_owner;
-  Task *next_to_own;
-  Task *last_to_own;
 
   Task *runnable;       // Tasks that may run on any core
   Task **core_runnable; // Array of Tasks that may run on that core

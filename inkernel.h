@@ -52,7 +52,7 @@ extern const char hex[16];
 // Warning, using the same variable name for n as inside the braces quietly fails
 // Hence: write_num_number_to_write
 #define WriteNum( n ) { \
-  uint32_t write_num_number_to_write = n; \
+  uint32_t write_num_number_to_write = (uint32_t) n; \
   uint32_t shift = 32; \
   while (shift > 0) { \
     shift -= 4; \
@@ -66,6 +66,7 @@ extern const char hex[16];
 #define WriteN( string, len ) { register uint32_t r0 asm( "r0" ) = (uint32_t) string; register uint32_t r1 asm( "r1" ) = len; asm volatile ( "svc 0x46" : : "r" (r0), "r" (r1) : "cc", "lr" ); }
 
 #define NewLine asm ( "svc 3" : : : "cc", "lr" )
+#define Space asm ( "svc 0x120" : : : "cc", "lr" )
 
 #else
 #define WriteS( string )

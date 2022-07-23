@@ -100,6 +100,7 @@ bool do_OS_AddToVector( svc_registers *regs );
 bool do_OS_DelinkApplication( svc_registers *regs );
 bool do_OS_RelinkApplication( svc_registers *regs );
 bool do_OS_ReadDefaultHandler( svc_registers *regs );
+bool do_OS_SWINumberFromString( svc_registers *regs );
 
 // Vectored SWIs (do nothing but call the appropriate vectors)
 bool do_OS_GenerateError( svc_registers *regs );

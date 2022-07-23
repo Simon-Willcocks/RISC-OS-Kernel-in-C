@@ -47,6 +47,15 @@ static bool Kernel_Error_NoMoreIncarnations( svc_registers *regs )
   return false;
 }
 
+static bool Kernel_Error_SWINameNotKnown( svc_registers *regs )
+{
+  static error_block error = { 486, "SWI name not known" };
+
+  regs->r[0] = (uint32_t) &error;
+
+  return false;
+}
+
 // Linker generated:
 extern uint32_t _binary_AllMods_start;
 extern uint32_t rma_base;
@@ -83,9 +92,9 @@ static void *pointer_at_offset_from( void *base, uint32_t off )
   return ((uint8_t*) base) + off;
 }
 
-static inline uint32_t start_code( module_header *header )
+static inline void *start_code( module_header *header )
 {
-  return header->offset_to_start + (uint32_t) header;
+  return pointer_at_offset_from( header, header->offset_to_start );
 }
 
 static inline uint32_t mp_aware( module_header *header )
@@ -240,10 +249,11 @@ if (svc == 0x41b40 || svc == 0x61b40) {
 vector do_nothing;
 #endif
 
-static bool run_vector( svc_registers *regs, int vec )
+bool run_vector( svc_registers *regs, int vec )
 {
 #ifdef DEBUG__SHOW_VECTORS_VERBOSE
-  if (vec != 3 && workspace.kernel.vectors[3] != &do_nothing)
+  // Ignore WrchV, TickerV
+  if (vec != 3 && vec != 0x1c && workspace.kernel.vectors[3] != &do_nothing)
   {
     Write0( "Running vector " ); WriteNum( vec ); NewLine;
     vector *v = workspace.kernel.vectors[vec];
@@ -304,7 +314,7 @@ static bool run_vector( svc_registers *regs, int vec )
       : "r0", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r12", "r14" );
 
 #ifdef DEBUG__SHOW_VECTORS_VERBOSE
-  if (vec != 3 && workspace.kernel.vectors[3] != &do_nothing)
+  if (vec != 3 && vec != 0x1c && workspace.kernel.vectors[3] != &do_nothing)
   {
     Write0( "Vector " ); WriteNum( vec ); asm ( "svc 0x120" ); WriteNum( flags ); NewLine;
   }
@@ -606,14 +616,15 @@ Write0( __func__ ); for (;;) {};
 static bool do_Module_Enter( svc_registers *regs )
 {
 Write0( __func__ ); NewLine;
+Write0( (char*) regs->r[1] ); NewLine;
+Write0( (char*) regs->r[2] ); NewLine;
   // This routine should follow the procedure described in 1-235 including 
   // making the upcall OS_FSControl 2 2-85
 
-  // At the moment, we're just starting the WindowManager (Wimp), via
-  // Desktop.
+  // The caller expects to be replaced by the module
 
   char const *module_name = (void*) regs->r[1];
-  // char const *parameters = (void*) regs->r[2]; FIXME
+  char const *parameters = (void*) regs->r[2];
   module *m = find_module( module_name );
 
   if (m == 0) {
@@ -628,6 +639,72 @@ Write0( __func__ ); NewLine;
     return true;
   }
 
+  TaskSlot *slot;
+  {
+    char command_line[4096];
+    char const *s = module_name;
+    char *d = command_line;
+    while (*s > ' ' && d - command_line < sizeof( command_line ) - 3) *d++ = *s++;
+    *d++ = ' ';
+    s = parameters;
+    while (*s >= ' ' && d - command_line < sizeof( command_line ) - 2) *d++ = *s++;
+    *d++ = '\0';
+    if (d - command_line >= sizeof( command_line ) - 2) {
+      asm ( "bkpt 1" ); // FIXME
+    }
+    slot = TaskSlot_new( command_line );
+  }
+
+  {
+    register uint32_t reason asm ( "r0" ) = 256; // NewApplication UpCall
+    register uint32_t allowed asm ( "r0" );      // Set to zero if not allowed
+    asm ( "svc 0x20033"
+      : "=r" (allowed)
+      : "r" (reason)
+      : "lr" );
+    if (!allowed) {
+      asm ( "bkpt 1" ); // FIXME ErrorBlock_CantStartApplication
+    }
+  }
+
+  {
+    register uint32_t service asm ( "r1" ) = 0x2a; // Service_NewApplication
+    register uint32_t allowed asm ( "r1" );        // Set to zero if not allowed
+    asm ( "svc 0x20030"
+      : "=r" (allowed)
+      : "r" (service)
+      : "lr" );
+    if (!allowed) {
+      asm ( "bkpt 1" ); // FIXME ErrorBlock_CantStartApplication, but this time with feeling!
+    }
+  }
+
+  // FIXME ; try out the pervy scheme for removing handlers
+
+  void *start_address = start_code( m->header );
+
+  // FIXME: This is where the new TaskSlot replaces the old as the current
+  // slot for this Task.
+  workspace.task_slot.running->slot = slot;
+  MMU_switch_to( slot );
+
+  { // FIXME Vary amount (Next)
+    static const int initial_slot_size = 64 << 10;
+    physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( initial_slot_size, 4096 ), .size = initial_slot_size };
+    TaskSlot_add( slot, block );
+  }
+
+  {
+    register uint32_t handler asm ( "r0" ) = 15; // CAOPointer
+    register void *address asm ( "r1" ) = start_address;
+    asm ( "svc 0x20040" // XOS_ChangeEnvironment
+      : "=r" (address)  // clobbered, but can't go in the clobber list...
+      , "=r" (handler)  // clobbered, but can't go in the clobber list...
+      : "r" (handler)
+      , "r" (address)
+      : "r2", "r3", "lr" );
+  }
+
   // Remember: eret is unpredictable in System mode
   // TODO: This does not yet reset the SVC stack.
   register void *private asm ( "r12" ) = m->private_word;
@@ -639,7 +716,7 @@ Write0( __func__ ); NewLine;
     "\n\teret" 
     : 
     : [stacktop] "r" (0xffffffff)       // Dummy. It's up to the module to allocate stack if it needs it
-    , [usr] "r" (pointer_at_offset_from( m->header, m->header->offset_to_start ))
+    , [usr] "r" (start_address)
     , [usermode] "r" (0x10)
     , "r" (private) );
 
@@ -1512,6 +1589,9 @@ void init_modules()
         }
       }
       NewLine;
+#ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
+    show_module_commands( header );
+#endif
       }
 #endif
 
@@ -2033,7 +2113,7 @@ static void __attribute__(( naked )) default_os_byte()
 
 bool do_OS_GenerateError( svc_registers *regs )
 {
-WriteFunc;
+WriteFunc; Write0( regs->r[0] + 4 ); NewLine;
   return run_vector( regs, 1 );
 }
 
@@ -2095,7 +2175,9 @@ WriteFunc;
 
 bool do_OS_ChangeEnvironment( svc_registers *regs )
 {
-WriteFunc;
+#ifdef DEBUG__SHOW_ENVIRONMENT_CHANGES
+Write0( __func__ ); Space; WriteNum( regs->lr ); NewLine;
+#endif
   return run_vector( regs, 30 );
 }
 
@@ -2483,6 +2565,26 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
 
   if (error != 0 && error->code == 214) {
     // Not found in any module
+    register uint32_t reason asm ( "r0" ) = 5; // Read catalogue information
+    register void const *filename asm ( "r1" ) = command;     // File name
+    register uint32_t word1 asm( "r2" );
+    register uint32_t word2 asm( "r3" );
+    register uint32_t size asm( "r4" );
+    register uint32_t attrs asm( "r5" );
+    asm volatile (
+        "svc 0x20008"
+    "\n  movvs %[error], r0"
+    "\n  movvc %[error], #0"
+        : "=r" (word1)
+        , "=r" (word2)
+        , "=r" (size)
+        , "=r" (attrs)
+        , [error] "=r" (error)
+        : "r" (reason)
+        : "lr" );
+    if (error == 0) {
+        // and...?
+    }
 #ifdef DEBUG__SHOW_COMMANDS
     Write0( "Command not found, try filesystem, then files..." );
     // WindowManager runs FontInstall but is initialised before FontManager
@@ -2509,12 +2611,31 @@ void __attribute__(( naked )) default_os_fscontrol()
 {
   register uint32_t *regs;
   // Return address is already on stack, ignore lr
-  // Some FSControl commands take up to r8; store them all
-  asm ( "push { "C_CLOBBERED" }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+  // Some FSControl commands take up to r8
+  // Pushes too many registers, to be sure that all C_CLOBBERED registers
+  // are included.
+  asm ( "push { r0-r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
 
   do_FSControl( regs );
 
-  asm ( "pop { "C_CLOBBERED", pc }" );
+  asm ( "pop { r0-r12, pc }" );
+}
+
+void __attribute__(( naked )) default_os_upcall()
+{
+  register uint32_t *regs;
+  // Return address is already on stack, ignore lr
+  // Pushes too many registers, to be sure that all C_CLOBBERED registers
+  // are included.
+  asm ( "push { r0-r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+
+Write0( __func__ ); Space; WriteNum( regs ); NewLine;
+  do_UpCall( regs );
+
+  asm ( "mov %[regs], sp" : [regs] "=r" (regs) );
+Write0( "Done: " ); Space; WriteNum( regs ); NewLine;
+
+  asm ( "pop { r0-r12, pc }" );
 }
 
 static void __attribute__(( naked )) default_os_args()
@@ -2539,9 +2660,10 @@ vector do_nothing = { .next = 0, .code = (uint32_t) finish_vector, .private_word
 vector default_SpriteV = { .next = &do_nothing, .code = (uint32_t) SpriteVecHandler, .private_word = 0 };
 vector default_ByteV = { .next = 0, .code = (uint32_t) default_os_byte, .private_word = 0 };
 vector default_ArgsV = { .next = 0, .code = (uint32_t) default_os_args, .private_word = 0 };
+vector default_FSControlV = { .next = 0, .code = (uint32_t) default_os_fscontrol, .private_word = 0 };
+vector default_UpCallV = { .next = 0, .code = (uint32_t) default_os_upcall, .private_word = 0 };
 vector default_ChEnvV = { .next = 0, .code = (uint32_t) default_os_changeenvironment, .private_word = 0 };
 vector default_CliV = { .next = 0, .code = (uint32_t) default_os_cli, .private_word = 0 };
-vector default_FSControlV = { .next = 0, .code = (uint32_t) default_os_fscontrol, .private_word = 0 };
 vector default_PaletteV = { .next = &do_nothing, .code = (uint32_t) MOSPaletteV, .private_word = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws };
 vector default_GraphicsV = { .next = &do_nothing, .code = (uint32_t) MOSGraphicsV, .private_word = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws };
 vector default_IrqV = { .next = 0, .code = (uint32_t) default_irq, .private_word = 0 };
@@ -2556,6 +2678,7 @@ static vector *default_handler( int number )
   case 0x09: return &default_ArgsV;
   case 0x0f: return &default_FSControlV;
   case 0x1c: return &default_TickerV;
+  case 0x1d: return &default_UpCallV;
   case 0x1e: return &default_ChEnvV;
   case 0x1f: return &default_SpriteV;
   case 0x22: return &default_GraphicsV;
@@ -2573,6 +2696,53 @@ bool do_OS_ReadDefaultHandler( svc_registers *regs )
   regs->r[2] = v->private_word;
   regs->r[3] = 0; // Only relevant for Error, CallBack, BreakPoint. These will probably have to be associated with Task Slots...?
   return true;
+}
+
+bool do_OS_SWINumberFromString( svc_registers *regs )
+{
+  // String is terminated by any character <= ' '
+  char const * const string = (void*) regs->r[1];
+
+  // FIXME: X prefix. Does it exclude SWI names starting with an X?
+
+  module *m = workspace.kernel.module_list_head;
+
+  // TODO SWI Decoder code
+  while (m != 0) {
+    if (0 != m->header->offset_to_swi_decoding_table) {
+      char const *prefix = pointer_at_offset_from( m->header, m->header->offset_to_swi_decoding_table );
+      char const *matched = string;
+
+WriteNum( m->header ); Space; Write0( prefix ); NewLine;
+      while (*prefix == *matched) { prefix++; matched++; }
+
+      if (*prefix == '\0' && *matched == '_') {
+        uint32_t swi_number = m->header->swi_chunk;
+
+        char const *table_entry = prefix + 1;
+        while (*table_entry != '\0') {
+Write0( table_entry ); Space;
+          char const *tail = matched + 1;
+          // Case sensitive
+          while (*tail == *table_entry) { tail++; table_entry++; }
+          if (*tail <= ' ' && *table_entry == '\0') {
+            regs->r[0] = swi_number;
+            return true;
+          }
+          while (*table_entry != '\0') { table_entry++; }
+          table_entry++;
+          swi_number++;
+        }
+
+        // Stop checking modules when a prefix is matched, or not?
+        break; // Yes. (May be wrong choice.)
+      }
+    }
+
+    m = m->next;
+  }
+
+  return Kernel_Error_SWINameNotKnown( regs );
 }
 
 static uint64_t timer_now()
@@ -2896,7 +3066,13 @@ void Boot()
 
     asm volatile ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
   }
+  MMU_switch_to( slot ); // Only done so late so it shows up in the debug. TODO move just after creating the slot.
 
+#ifdef BASIC_ONLY
+  init_module( "FileSwitch" ); // needed by...
+  init_module( "ResourceFS" ); // needed by...
+  init_module( "BASIC" );
+#else
 #ifdef LIMITED_MODULES
   init_module( "UtilityModule" );
   init_module( "ColourTrans" );
@@ -2916,8 +3092,11 @@ void Boot()
   init_module( "Messages" );
   init_module( "MessageTrans" );
   init_module( "UK" );
+
+  init_module( "BASIC" );
 #else
   init_modules();
+#endif
 #endif
 
   {
@@ -3006,10 +3185,20 @@ static uint32_t read_file_size( const char *name )
 {
   register uint32_t os_file_code asm( "r0" ) = 17;
   register const char *filename asm( "r1" ) = name;
+  register uint32_t object_type asm( "r0" );
+  register uint32_t word1 asm( "r2" );
+  register uint32_t word2 asm( "r3" );
   register uint32_t file_size asm( "r4" );
-  asm volatile ( "svc %[swi]" : "=r" (file_size) 
-                     : [swi] "i" (OS_File), "r" (os_file_code), "r" (filename)
-                     : "r2", "r3", "r5" );
+  register uint32_t attributes asm( "r5" );
+  asm volatile ( "svc %[swi]" 
+      : "=r" (file_size) 
+      , "=r" (object_type)
+      , "=r" (word1)
+      , "=r" (word2)
+      , "=r" (attributes)
+      : [swi] "i" (OS_File)
+      , "r" (os_file_code)
+      , "r" (filename) );
   return file_size;
 }
 
@@ -3621,7 +3810,7 @@ void consumer_thread( uint32_t thread, uint32_t pipe )
       for (int i = 0; i < 26; i++) {
         char c = p[i];
         if (c != 'A' + i) {
-          Write0( "Expected " ); register nc asm ( "r0" ) = 'A'+i; asm volatile ( "swi 0" : : "r" (nc) );
+          Write0( "Expected " ); register uint32_t nc asm ( "r0" ) = 'A'+i; asm volatile ( "swi 0" : : "r" (nc) );
           Write0( " read " ); nc = c; asm ( "swi 0" : : "r" (nc) );
           Write0( " instead " ); asm volatile ( "swi 0xff" ); nc = p[i]; asm volatile ( "swi 0" : : "r" (nc) );
           Write0( " at " ); WriteNum( (uint32_t) p+i ); NewLine;
@@ -3695,15 +3884,56 @@ static uint32_t create_consumer_thread( uint32_t pipe )
   return handle;
 }
 
+#include "Resources.h"
+
+#if 0
+static uint8_t __attribute__(( aligned( 4 ) )) resources[] = { 0x44, 0, 0, 0, // Length
+    0x5a, 0xfb, 0xff, 0xff, // Timestamped, type BASIC (ffb), byte of timestamp
+    0xdf, 0xaf, 0x56, 0x07, // rest of timestamp
+    0x21, 0x00, 0x00, 0x00, // Size of file
+    0x13, 0x00, 0x00, 0x00, // Attributes
+    '!', 'B', 'o', 'o', 't', 0, 0, 0, // Filename (nul terminated, padded to word)
+
+    0x25, 0x00, 0x00, 0x00, // Length of file + 4
+
+    0x0d, 0x00, 0x0a, 0x05, 0xf5, // 10 REPEAT
+    0x0d, 0x00, 0x14, 0x13, 0xf1, // 20 PRINT
+    ' ', '"', 'H', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd', '"',
+    0x0d, 0x00, 0x1e, 0x07, 0xfd, ' ', '0', // 30 UNTIL 0
+    0x0d, 0xff,
+    0x00, 0x00, 0x00, // Padding to word
+
+    0x28, 0, 0, 0,
+    0x5a, 0xff, 0xff, 0xff, // Timestamped, type Text (fff), byte of timestamp
+    0xdf, 0xaf, 0x56, 0x07, // rest of timestamp
+    0x0c, 0x00, 0x00, 0x00, // size of file
+    0x13, 0x00, 0x00, 0x00, // Attributes
+    't', 'x', 't', 0,       // Filename
+    0x10, 0x00, 0x00, 0x00, // Length of file + 4
+    'H', 'e', 'l', 'l', 'o', ' ', 'W', 'o', 'r', 'l', 'd', '!',
+
+    0, 0, 0, 0 }; // End
+#endif
+
 static void user_mode_code( int core_number )
 {
   Write0( "In USR32 mode" ); NewLine;
   WriteNum( core_number ); NewLine;
-  *(uint32_t*) 0x8000 = 0; // Reset the lock
+
+//  *(uint32_t*) 0x8000 = 0; // Reset the lock
 
   //OSCLI( "Modules" );
   if (core_number == 0) {
-    OSCLI( "Desktop Resources:$.Apps.!Alarm" );
+    register void *file asm( "r0" ) = resources;
+    asm volatile ( "svc 0x41b40" : : "r" (file) ); // ResourceFS_RegisterFiles
+
+    {
+    register uint32_t reason asm ( "r0" ) = 5;
+    register void *dir asm ( "r1" ) = "Resources:$";
+    asm volatile ( "svc 0x20029" : : "r" (reason), "r" (dir) ); // OS_FSControl 5 Catalogue a directory
+    }
+
+    OSCLI( "Basic -quit Resources:$.!Boot" );
   }
 
   uint32_t pipe = PipeOp_CreateForTransfer( 4096 ); // N.B. Currently the only size supported!

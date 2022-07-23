@@ -120,7 +120,8 @@ WriteS( "Read Vdu Var " ); WriteNum( *var ); WriteS( " = " );
     case 0 ... 12: *val = *modevarloc[*var]; break;
     case 128 ... 172: *val = *vduvarloc[*var - 128]; break;
     case 192: *val = workspace.vectors.zp.vdu_drivers.ws.CurrentGraphicsVDriver; break;
-    case 256 ... 257: asm ( "bkpt 99" ); *val = *textwindowloc[*var - 256]; break; // Can't find this in zero page...
+    case 256:; *val = 1920/8/4-1; break; // Can't find this in zero page...
+    case 257:; *val = 30; break; // Can't find this in zero page...
     default: for (;;) { asm( "bkpt 68" ); }
     }
 #ifdef DEBUG__SHOW_VDU_VARS

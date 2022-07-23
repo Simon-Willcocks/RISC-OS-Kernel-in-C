@@ -93,23 +93,52 @@ function build_shared_module {
   rm /tmp/module$$.elf || exit 1
 }
 
+rm -f Resources.h # Generated file, see below
 
-
-function paddedstring { echo -n $1 | dd bs=4 conv=sync ; }
+function paddedstring { echo -ne $1\\x00 | dd bs=4 conv=sync 2>/dev/null ; }
+function paddedfile { cat $1 | dd bs=4 conv=sync 2>/dev/null ; }
 function byte { echo -en $( printf '\\'x%02x $1 ) ; }
 function number { byte $(( $1 & 0xff )); byte $(( ($1 >> 8) & 0xff )); byte $(( ($1 >> 16) & 0xff )); byte $(( ($1 >> 24) & 0xff )) ; }
 
-function resourcefile { number 0 ; number 0; number $( stat -c %s $i ) ; number 3 ; ( echo -ne Resources.CKernel.$i | dd bs=4 conv=sync ) ; number $(( $( stat -c %s $i ) + 4 )) ; ( cat $i  | dd bs=4 conv=sync ); }
+# Output the binary that should be passed (word-aligned) to 
+# ResourceFS_RegisterFiles for the given file
+# Timestamp is always zero.
 
-function resourcefiles { if [ $# == 1 ]; then number $( stat -c %s $1 ) ; cat $1 ; else number 0 ; cat $1 ; shift ; resourcefiles $*  ; fi ; }
+function resourcefile {
+  N=${1//\//.}
+  S=$( stat -c %s $1 )
+  T=${N/*,}
+  N=${N/,*}
+  if [ "$T" == "$N" ] ; then T=fff ; fi
+  L=$(( 24 + $( paddedstring $N | wc -c ) + ( ($S + 3) & ~3 ) ))
+  echo $N, $S, $T, $L >&2
+  number $L
+  number $(( 0xfff00000 + (0x$T << 8) ))
+  number 0 # Timestamp zero
+  number $L
+  number 0x13 # Attributes
+  paddedstring $N
+  number $(( 4 + $L ))
+  paddedfile $1
+}
+
+(
+echo 'static uint8_t const __attribute__(( aligned( 4 ) )) resources[] = {' &&
+cd RiscOS/CKernel/ &&
+( for i in $( find . -type f )
+  do
+    echo Adding file ${i/\.\//} >&2
+    resourcefile ${i/\.\//}
+  done 
+  number 0
+) | xxd -i &&
+echo '};' &&
+cd ..
+) > Resources.h &&
 
 # Linking in a HAL module. I don't know if that's what I want to see in future, or a block of modules in a list like in the ROM
 build_shared_module $HAL &&
 
-METRICS="0xfc$( strings $ROM -t x | grep Trinity.Medium.Int | cut -f 2 -d ' ' )" &&
-OUTLINE="0xfc$( strings $ROM -t x | grep Trinity.Medium.Out | cut -f 2 -d ' ' )" &&
-echo Found Trinity.Medium at $METRICS $OUTLINE &&
-# build_shared_module FontManager -DFONT_METRICS=$METRICS -DFONT_OUTLINE=$OUTLINE &&
 build_shared_module VFPSupport &&
 build_shared_module Portable &&
 

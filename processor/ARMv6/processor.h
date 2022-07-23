@@ -17,6 +17,7 @@
 // This should probably go into a separate BuildEnvironment directory structure.
 #define C_CLOBBERED "r0-r3,r12"
 
+// WARNING: The order of these fields is used in assembler code
 typedef struct __attribute__(( packed )) {
   uint32_t r[13];
   uint32_t banked_sp;

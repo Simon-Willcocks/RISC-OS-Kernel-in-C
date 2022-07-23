@@ -43,7 +43,10 @@ struct TaskSlot {
   physical_memory_block blocks[10];
   handler handlers[17];
   char const *command;
+  char const *name;
+  char const *tail;
   uint64_t start_time;
+  TaskSlot *parent;
   Task task;
   Task *waiting;       // 0 or more tasks waiting for locks
 };
@@ -146,6 +149,12 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
     h->buffer = regs[3];
   }
 
+#ifdef DEBUG__SHOW_ENVIRONMENT_CHANGES
+  Write0( "Changed environment " ); WriteNum( regs[0] ); NewLine;
+  WriteNum( regs[1] ); Space; WriteNum( regs[2] ); Space; WriteNum( regs[3] ); NewLine;
+  WriteNum( old.code ); Space; WriteNum( old.private_word ); Space; WriteNum( old.buffer ); NewLine;
+  WriteNum( h->code ); Space; WriteNum( h->private_word ); Space; WriteNum( h->buffer ); NewLine;
+#endif
   regs[1] = old.code;
   regs[2] = old.private_word;
   regs[3] = old.buffer;
@@ -273,6 +282,11 @@ static void allocate_taskslot_memory()
   }
 }
 
+static void __attribute__(( noinline, naked )) ignore_event()
+{
+  asm ( "bx lr" );
+}
+
 // Which comes first, the slot or the task? Privileged (module?) tasks don't need a slot.
 TaskSlot *TaskSlot_new( char const *command_line )
 {
@@ -301,22 +315,22 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
 
   static const handler default_handlers[17] = {
     { 0, 0, 0 },                // RAM Limit for program (0x8000 + amount of RAM)
-    { 0xbadf00d1, 0, 0 },
-    { 0xbadf00d2, 0, 0 },
-    { 0xbadf00d3, 0, 0 },
-    { 0xbadf00d4, 0, 0 },
-    { 0xbadf00d5, 0, 0 },
-    { 0xbadf00d6, 0, 0 },
-    { 0xbadf00d7, 0, 0 },
-    { 0xbadf00d8, 0, 0 },
-    { 0xbadf00d9, 0, 0 },
-    { 0xbadf00da, 0, 0 },
-    { 0xbadf00db, 0, 0 },
-    { 0xbadf00dc, 0, 0 },
-    { 0xbadf00dd, 0, 0 },
+    { 0xbadf00d1, 0, 0 },       // Undefined instruction
+    { 0xbadf00d2, 0, 0 },       // Prefetch abort
+    { 0xbadf00d3, 0, 0 },       // Data abort
+    { 0xbadf00d4, 0, 0 },       // Address exception
+    { 0xbadf00d5, 0, 0 },       // Other exceptions
+    { 0xbadf00d6, 0, 0 },       // Error
+    { 0xbadf00d7, 0, 0 },       // CallBack
+    { 0xbadf00d8, 0, 0 },       // Breakpoint
+    { 0xbadf00d9, 0, 0 },       // Escape
+    { 0xbadf00da, 0, 0 },       // Event
+    { 0xbadf00db, 0, 0 },       // Exit
+    { 0xbadf00dc, 0, 0 },       // Unused SWI
+    { 0xbadf00dd, 0, 0 },       // Exception registers
     { 0, 0, 0 },                // Application space (When does this not = RAM Limit?)
-    { 0xbadf00df, 0, 0 },
-    { 0xbadf00e0, 0, 0 }
+    { 0xbadf00df, 0, 0 },       // Currently Active Object
+    { (uint32_t) ignore_event, 0, 0 }        // UpCall handler
   };
 
   for (int i = 0; i < number_of( result->handlers ); i++) {
@@ -325,16 +339,44 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
     result->handlers[i] = default_handlers[i];
   }
 
+  // CAO unique to each TaskSlot, with luck, this should stop the Wimp from messing with Application memory space.
+  result->handlers[15].code = (uint32_t) result;
+
+  // Remove leading spaces and *'s
+  while (command_line[0] == ' ' || command_line[0] == '*') command_line++;
+
   svc_registers regs;
-  char *copy = rma_allocate( strlen( command_line ), &regs );
+  uint32_t length = strlen( command_line );
+  // Allocate space for a copy of the whole command line, then
+  // a second copy which will be spilt into command name and
+  // command tail (parameters).
+  // FIXME: redirections?
+  char *copy = rma_allocate( length * 2 + 2, &regs );
   strcpy( copy, command_line );
+  char *command_name = copy+length+1;
+  strcpy( command_name, command_line );
+  char *command_tail = command_name;
+  while (command_tail[0] > ' ') command_tail++;
+  bool has_tail = '\0' != command_tail[0];
+  command_tail[0] = '\0'; // Terminate the command_name
+  if (has_tail) command_tail++; // Otherwise leave it pointing at the nul
+  while (command_tail[0] == ' ') command_tail++;
+
+  Task *running = workspace.task_slot.running;
+
   result->command = copy;
+  result->name = command_name;
+  result->tail = command_tail;
   result->start_time = 0; // cs since Jan 1st 1900 TODO
   result->lock = 0;
   result->waiting = 0;
+  result->parent = (running == 0) ? 0 : running->slot;
 
 #ifdef DEBUG__WATCH_TASK_SLOTS
   Write0( "TaskSlot_new " ); WriteNum( (uint32_t) result ); NewLine;
+  Write0( "Command " ); Write0( result->command ); NewLine;
+  Write0( "Name " ); Write0( result->name ); NewLine;
+  Write0( "Tail " ); Write0( result->tail ); NewLine;
 #endif
 
   return result;
@@ -403,7 +445,7 @@ uint32_t TaskSlot_Himem( TaskSlot *slot )
   Write0( "TaskSlot_Himem " ); WriteNum( (uint32_t) slot ); Write0( " " ); WriteNum( slot->blocks[0].virtual_base ); Write0( " " ); WriteNum( slot->blocks[0].size ); NewLine;
 #endif
 
-  result = slot->blocks[0].size + slot->blocks[0].virtual_base;
+  result = slot->blocks[0].size + 0x8000; // slot->blocks[0].virtual_base;
   release_lock( &shared.mmu.lock );
   return result;
 }
@@ -416,6 +458,27 @@ void *TaskSlot_Time( TaskSlot *slot )
 char const *TaskSlot_Command( TaskSlot *slot )
 {
   return slot->command;
+}
+
+void __attribute__(( noinline )) do_UpCall( uint32_t *regs )
+{
+Write0( __func__ ); Space; WriteNum( regs[0] ); Space; WriteNum( workspace.task_slot.running->slot->handlers[16].code ); NewLine;
+return;
+  Task *running = workspace.task_slot.running;
+  TaskSlot *slot = running->slot;
+
+  assert( slot != 0 );
+
+  handler *h = &slot->handlers[16];
+  register uint32_t r12 asm ( "r12" ) = h->private_word;
+  register uint32_t code asm ( "lr" ) = h->code;
+  asm volatile ( "ldm %[regs], { r0-r6 }\n  blx lr\n stm %[regs], { r0-r6 }"
+    : "=r" (code) // Clobbered, but can't go in clobber list
+    : [regs] "r" (regs)
+    , "r" (r12)
+    , "r" (code)
+    : "r0", "r1", "r2", "r3", "r4", "r5", "r6" );
+Write0( __func__ ); Space; WriteNum( r12 ); NewLine;
 }
 
 void __attribute__(( noinline )) do_FSControl( uint32_t *regs )
@@ -492,9 +555,27 @@ void __attribute__(( naked )) default_ticker()
   asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
+#ifdef DEBUG__SHOW_TASK_SWITCHES
+static void show_task( Task *task )
+{
+  Write0( "task " ); WriteNum( task ); NewLine;
+  for (int  i = 0; i < 13; i++) {
+    WriteNum( task->regs.r[i] ); Write0( " " );
+  }
+  WriteNum( task->regs.pc ); Write0( " " );
+  WriteNum( task->regs.psr ); Write0( " " );
+  NewLine ; Write0( "Banked sp, lr: " ); WriteNum( task->regs.banked_sp ); Write0( " " ); WriteNum( task->regs.banked_lr ); Write0( " Slot " ); WriteNum( task->slot ); NewLine;
+}
+#endif
+
 // FIXME make the following static, as soon as they work!
 void __attribute__(( noinline )) save_and_resume( Task *running, Task *resume, svc_registers *regs )
 {
+#ifdef DEBUG__SHOW_TASK_SWITCHES
+  Write0( "Saving " ); show_task( running );
+  Write0( "Resuming " ); show_task( resume );
+#endif
+
   workspace.task_slot.running = resume;
 
   // Save task context (integer only), including the usr stack pointer and link register
@@ -1519,9 +1600,9 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
 
     asm volatile (
           "  ldr lr, [lr]"
-        "\n  stm lr!, {r0-r12}"
-        "\n  pop { r2, r3 } // Resume address, SPSR"
-        "\n  ands r4, r3, #0x0f // Never from Aarch64!"
+        "\n  stm lr!, {r0-r12}  // lr -> banked_sp"
+        "\n  pop { r2, r3 }     // Resume address, SPSR"
+        "\n  ands r4, r3, #0x0f // Never comes from Aarch64!"
         "\n  mrseq r0, sp_usr"
         "\n  mrseq r1, lr_usr"
         "\n  mrsne r0, sp_svc"
@@ -1530,6 +1611,11 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
         : 
         : "r" (running) );
   }
+
+#ifdef DEBUG__SHOW_INTERRUPTS
+Write0( "IRQ: " ); show_task( workspace.task_slot.running );
+#endif
+
 
   // We're going to deal with the interrupt(s) now, with interrupts disabled,
   // generally resuming a task that will take care of anything time-consuming
@@ -1605,6 +1691,8 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
 // and calls to the legacy FileCore/FileSwitch fileing systems (using CallAVector)
 // Only one task thread will access the legacy filing systems at a time.
 
+bool run_vector( svc_registers *regs, int vec );
+#if 0
 //static void run_vector( svc_registers *regs, int vec ) FIXME make static again
 void run_vector( svc_registers *regs, int vec )
 {
@@ -1623,6 +1711,7 @@ void run_vector( svc_registers *regs, int vec )
     regs->spsr |= VF;
   }
 }
+#endif
 
 bool delegate_operation( svc_registers *regs, int operation )
 {
@@ -1681,6 +1770,8 @@ bool delegate_operation( svc_registers *regs, int operation )
 
 bool do_OS_File( svc_registers *regs )
 {
+// Write0( __func__ ); WriteS( " " ); WriteNum( regs->r[0] ); WriteS( " " ); WriteNum( regs->r[1] ); NewLine;
+// if (regs->r[0] == 255) { Write0( regs->r[1] ); NewLine; }
   return delegate_operation( regs, 8 );
 }
 
