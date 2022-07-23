@@ -1468,7 +1468,7 @@ static bool CLG( svc_registers *regs )
   int32_t x = GraphicsWindow_ic_Left();
   int32_t y = GraphicsWindow_ic_Top();
 
-  uint32_t bg_colour = ws->BgEcfOraEor.line[0].eor;
+  uint32_t bg_colour = ws->BgEcfOraEor.line[0].eor ^ ws->BgEcfOraEor.line[0].orr;
   // Write0( "CLG" ); WriteNum( ws->BgEcfOraEor.line[0].orr ); Space; WriteNum( ws->BgEcfOraEor.line[0].eor ); NewLine;
   
   uint32_t left = ws->ScreenStart + (ws->YWindLimit - y) * ws->LineLength + (x << 2);
