@@ -52,6 +52,13 @@ bool Kernel_Error_NonMatchingDevicePagingRequest( svc_registers *regs )
   return false;
 }
 
+bool Kernel_Error_BufferOverflow( svc_registers *regs )
+{
+  static error_block error = { 0x1e4, "Buffer overflow" };
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
+
 static uint32_t word_align( void *p )
 {
   return (((uint32_t) p) + 3) & ~3;
@@ -183,12 +190,6 @@ static bool do_OS_WriteN( svc_registers *regs )
 
 
 static bool do_OS_Control( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-
-static bool do_OS_Exit( svc_registers *regs )
-{
-  WriteS( "OS_Exit" ); NewLine;
-  return Kernel_Error_UnimplementedSWI( regs );
-}
 
 static bool do_OS_SetEnv( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_IntOn( svc_registers *regs )
@@ -680,7 +681,20 @@ static bool do_OS_ReadMonotonicTime( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_SubstituteArgs( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_SubstituteArgs( svc_registers *regs )
+{
+  // The implementation in the RISC OS source doesn't pass on the flag
+  uint32_t r0 = regs->r[0];
+  uint32_t r5 = regs->r[5];
+  regs->r[5] = regs->r[0] & 0x80000000;
+  regs->r[0] = regs->r[0] & ~0x80000000;
+  bool result = do_OS_SubstituteArgs32( regs );
+  if (result) {
+    regs->r[0] = r0;
+  }
+  regs->r[5] = r5;
+  return result;
+}
 
 static bool do_OS_PrettyPrint( svc_registers *regs )
 {
@@ -768,7 +782,6 @@ static bool do_OS_ClaimDeviceVector( svc_registers *regs )
 
 static bool do_OS_ReleaseDeviceVector( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_ExitAndDie( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadMemMapInfo( svc_registers *regs )
 {
   regs->r[0] = 4096;
@@ -1220,7 +1233,121 @@ static bool do_OS_Hardware( svc_registers *regs )
 
 static bool do_OS_IICOp( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadLine32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_SubstituteArgs32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+
+static bool terminator( char c )
+{
+  return c == 13 || c == 10 || c == 0;
+}
+
+bool do_OS_SubstituteArgs32( svc_registers *regs )
+{
+  // Re-write in C of RISC OS code, simply commenting out the following line results in "SWI &7e not known"
+  // [OS_SubstituteArgs32] = do_OS_SubstituteArgs32
+
+  char const *args = (void*) regs->r[0];
+  bool append_remaining_args = 0 == (regs->r[5] & 0x80000000);
+
+  char const *start[11]; // 0-9 + rest of line
+  char const *end[11]; // 0-9 + rest of line
+
+  for (int parameter = 0; parameter < 11; parameter++) {
+    // Skip intermediate spaces
+    while (' ' == *args) { args++; }
+
+    start[parameter] = args;
+
+    char c = *args;
+
+    if (c == '"') {
+      while (!terminator( c = *args )) {
+        args++;
+        if (c == '"') {
+          if (*args == '"') args++; else break;
+        }
+      }
+      if (c != '"') {
+        asm ( "bkpt 1" ); // Mismatched quote
+      }
+      args++; // Include the '"'
+    }
+    else if (parameter < 10) {
+      while (!terminator( c = *args ) && c != ' ') {
+        args++;
+        if (c == '"') {
+          if (*args == '"') args++; else break;
+        }
+      }
+    }
+    else {
+      while (!terminator( c )) {
+        c = *++args;
+      } 
+    }
+
+    end[parameter] = args;
+  }
+
+  char *buffer = (void*) regs->r[1];
+  int length = regs->r[2];
+  char const *template = (void*) regs->r[3];
+  int template_length = regs->r[4];
+
+  int highest = 0;
+
+  char const *t = template;
+  char const *template_end = template + template_length;
+
+  char *d = buffer;
+  char *end_of_buffer = buffer + length - 1; // Always allow for terminator
+
+  while (t < template_end && d < end_of_buffer) {
+    char c = *t++;
+    if (c == '%') {
+      bool all_from = *t == '*';
+      if (all_from) t++;
+      if (*t >= '0' && *t <= '9') {
+        int p = *t++ - '0';
+        if (p > highest) highest = p;
+        char const *a = start[p];
+        char const *e = end[p];
+        if (all_from) {
+          highest = 10;
+          e = end[10];
+        }
+
+        while (d < end_of_buffer && a < e) {
+          *d++ = *a++;
+        }
+
+        if (a < e) {
+          break; // Buffer overflow
+        }
+        continue;
+      }
+      if (all_from) t--; // %*X where X is not a digit, go back to the *
+    }
+    *d++ = c;
+  }
+
+  if (append_remaining_args && highest < 10) {
+    char const *a = start[highest+1];
+    char const *e = end[10];
+    while (d < end_of_buffer && a < e) {
+      *d++ = *a++;
+    }
+  }
+
+  if (d == end_of_buffer) {
+    return Kernel_Error_BufferOverflow( regs );
+  }
+
+  *d++ = '\0'; // Terminator
+
+  regs->r[2] = d - buffer;
+
+  return true;
+}
+
 // static bool do_OS_HeapSort32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_SynchroniseCodeAreas( svc_registers *regs )
@@ -1544,7 +1671,7 @@ static bool VDU23( svc_registers *regs )
       uint32_t r0 = regs->r[0];
 
       regs->r[0] = params[0]; // The vector expects the code in r0 as well as the first parameter
-      if (!run_vector( 0x17, regs )) { // UKVDU23V
+      if (!run_vector( regs, 0x17 )) { // UKVDU23V
         return false;
       }
 

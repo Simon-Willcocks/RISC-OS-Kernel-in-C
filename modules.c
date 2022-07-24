@@ -1443,13 +1443,13 @@ bool excluded( const char *name )
                                   , "VCHIQ"             //  "
                                   , "BCMSound"          // ???
 
-                                  , "DeviceFS"          // Calls ChangeEnvironment before there's a TaskSlot
+                                  // , "DeviceFS"          // Calls ChangeEnvironment before there's a TaskSlot
 
 // Probably don't work, I can't be bothered to see if their problems are solved already
                                   , "SoundDMA"          // Uses OS_Memory
                                   , "SoundChannels"     // ???
                                   , "SoundScheduler"    // Sound_Tuning
-                                  , "TaskManager"       // Initialisation returns an error
+                                  // , "TaskManager"       // Initialisation returns an error
                                   , "BCMVideo"          // Tries to use OS_MMUControl
                                   , "FilterManager"     // Uses Wimp_ReadSysInfo 
                                   , "WaveSynth"         // throws exception
@@ -1534,7 +1534,7 @@ bool excluded( const char *name )
                                   , "SerialDeviceSupport"        // "esources$Path{,_Message} not found
                                   , "ShellCLI"        // "esources$Path{,_Message} not found
                                   , "SoundControl"          // No return
-                                  , "BootFX"                    // No return
+                                  , "BootFX"                    // Calls CallASWIR12 with 0x78440
                                   , "SystemDevices"             // No return
                                   , "TaskWindow"             // Data abort, fc339bc4 -> 01f0343c
 /**/
@@ -1971,6 +1971,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
         break;
       }
 #else
+    case 0xb9: regs[2] = 11; break; // Language
     // Desktop features
     case 0xbc: regs[2] = 0x1; break; // FIXME made up: opt 4, 1
 
@@ -2454,7 +2455,7 @@ static error_block *run_module_command( const char *command )
         } *c = (void*) &cmd[(len+4)&~3]; // +4 because len is strlen, not including terminator
 
 #ifdef DEBUG__SHOW_ALL_COMMANDS
-        NewLine; Write0( "Yes! " ); WriteNum( c->code_offset ); WriteNum( c->info_word ); WriteNum( c->invalid_syntax_offset ); WriteNum( c->help_offset ); NewLine;
+        NewLine; Write0( "Yes! " ); WriteNum( c->code_offset ); Space; WriteNum( c->info_word ); Space; WriteNum( c->invalid_syntax_offset ); Space; WriteNum( c->help_offset ); NewLine;
 #endif
 
         if (c->code_offset != 0) {
@@ -2500,8 +2501,9 @@ static error_block *run_module_command( const char *command )
   return &not_found;
 }
 
-static void __attribute__(( noinline )) do_CLI( const char *command )
+static error_block *__attribute__(( noinline )) do_CLI( const char *command )
 {
+  error_block *error = 0;
 #ifdef DEBUG__SHOW_COMMANDS
   Write0( "CLI: " ); Write0( command ); Write0( " at " ); WriteNum( (uint32_t) command ); NewLine;
 #endif
@@ -2549,7 +2551,7 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
     register uint32_t size asm( "r2" ) = sizeof( result );
     register uint32_t context asm( "r3" ) = 0;
     register uint32_t convert asm( "r4" ) = 0;
-    error_block *error;
+
     asm volatile ( "svc 0x20023\n  movvs %[err], r0\n  movvc %[err], #0"
         : "=r" (size), [err] "=r" (error)
         : "r" (var_name), "r" (value), "r" (size), "r" (context), "r" (convert)
@@ -2561,9 +2563,12 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
     }
   }
 
-  error_block *error = run_module_command( command );
+  error = run_module_command( command );
 
   if (error != 0 && error->code == 214) {
+Write0( "Looking for file " ); Write0( command ); NewLine;
+    error = 0;
+
     // Not found in any module
     register uint32_t reason asm ( "r0" ) = 5; // Read catalogue information
     register void const *filename asm ( "r1" ) = command;     // File name
@@ -2581,10 +2586,57 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
         , "=r" (attrs)
         , [error] "=r" (error)
         : "r" (reason)
+        , "r" (filename)
         : "lr" );
     if (error == 0) {
-        // and...?
+      // and...?
+      union {
+        struct {
+          uint32_t timestamp_MSB:8;
+          uint32_t filetype:12;
+          uint32_t timestamped:12;
+        };
+        uint32_t raw;
+      } info = { .raw = word1 };
+      char runtype[] = "Alias$@RunType_XXX";
+      runtype[15] = hex[(info.filetype >> 8) & 0xf];
+      runtype[16] = hex[(info.filetype >> 4) & 0xf];
+      runtype[17] = hex[(info.filetype >> 0) & 0xf];
+
+      Write0( "Found file, type " ); WriteNum( info.filetype ); NewLine;
+      Write0( "Looking for " ); Write0( runtype ); NewLine;
+
+      char template[256];
+      register const char *var_name asm( "r0" ) = runtype;
+      register char *value asm( "r1" ) = template;
+      register uint32_t size asm( "r2" ) = sizeof( template );
+      register uint32_t context asm( "r3" ) = 0;
+      register uint32_t convert asm( "r4" ) = 0;
+      error_block *error;
+      asm volatile ( "svc 0x20023\n  movvs %[err], r0\n  movvc %[err], #0"
+          : "=r" (size), [err] "=r" (error)
+          : "r" (var_name), "r" (value), "r" (size), "r" (context), "r" (convert)
+          : "lr", "cc" );
+      uint32_t varlen = size;
+
+      if (error == 0) {
+        template[varlen] = '\0';
+        Write0( runtype ); Write0( " variable found " ); NewLine; Write0( "X" ); Write0( template ); Write0( "X" ); NewLine;
+        char to_run[1024];
+        svc_registers regs = {
+            .r[0] = command,
+            .r[1] = to_run,
+            .r[2] = sizeof( to_run ),
+            .r[3] = template,
+            .r[4] = varlen };
+        bool result = do_OS_SubstituteArgs32( &regs );
+        Write0( "Command to run: " ); Write0( to_run ); NewLine;
+        error = run_module_command( to_run );
+        Write0( "Command returned" ); NewLine;
+      }
     }
+    else {
+      Write0( "No file" );
 #ifdef DEBUG__SHOW_COMMANDS
     Write0( "Command not found, try filesystem, then files..." );
     // WindowManager runs FontInstall but is initialised before FontManager
@@ -2593,7 +2645,10 @@ static void __attribute__(( noinline )) do_CLI( const char *command )
     if (0 != riscoscmp( command, exception, true ))
       asm( "bkpt 51" );
 #endif
+    }
   }
+
+  return error;
 }
 
 void __attribute__(( naked )) default_os_cli()
@@ -2602,7 +2657,7 @@ void __attribute__(( naked )) default_os_cli()
   // Return address is already on stack, ignore lr
   asm ( "push { "C_CLOBBERED" }\n  mov %[regs], sp" : [regs] "=r" (regs) );
 
-  do_CLI( (const char *) regs[0] );
+  regs[0] = (uint32_t) do_CLI( (const char *) regs[0] );
 
   asm ( "pop { "C_CLOBBERED", pc }" );
 }
@@ -3094,6 +3149,7 @@ void Boot()
   init_module( "UK" );
 
   init_module( "BASIC" );
+  init_module( "Obey" );
 #else
   init_modules();
 #endif
@@ -3886,35 +3942,6 @@ static uint32_t create_consumer_thread( uint32_t pipe )
 
 #include "Resources.h"
 
-#if 0
-static uint8_t __attribute__(( aligned( 4 ) )) resources[] = { 0x44, 0, 0, 0, // Length
-    0x5a, 0xfb, 0xff, 0xff, // Timestamped, type BASIC (ffb), byte of timestamp
-    0xdf, 0xaf, 0x56, 0x07, // rest of timestamp
-    0x21, 0x00, 0x00, 0x00, // Size of file
-    0x13, 0x00, 0x00, 0x00, // Attributes
-    '!', 'B', 'o', 'o', 't', 0, 0, 0, // Filename (nul terminated, padded to word)
-
-    0x25, 0x00, 0x00, 0x00, // Length of file + 4
-
-    0x0d, 0x00, 0x0a, 0x05, 0xf5, // 10 REPEAT
-    0x0d, 0x00, 0x14, 0x13, 0xf1, // 20 PRINT
-    ' ', '"', 'H', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd', '"',
-    0x0d, 0x00, 0x1e, 0x07, 0xfd, ' ', '0', // 30 UNTIL 0
-    0x0d, 0xff,
-    0x00, 0x00, 0x00, // Padding to word
-
-    0x28, 0, 0, 0,
-    0x5a, 0xff, 0xff, 0xff, // Timestamped, type Text (fff), byte of timestamp
-    0xdf, 0xaf, 0x56, 0x07, // rest of timestamp
-    0x0c, 0x00, 0x00, 0x00, // size of file
-    0x13, 0x00, 0x00, 0x00, // Attributes
-    't', 'x', 't', 0,       // Filename
-    0x10, 0x00, 0x00, 0x00, // Length of file + 4
-    'H', 'e', 'l', 'l', 'o', ' ', 'W', 'o', 'r', 'l', 'd', '!',
-
-    0, 0, 0, 0 }; // End
-#endif
-
 static void user_mode_code( int core_number )
 {
   Write0( "In USR32 mode" ); NewLine;
@@ -3933,7 +3960,7 @@ static void user_mode_code( int core_number )
     asm volatile ( "svc 0x20029" : : "r" (reason), "r" (dir) ); // OS_FSControl 5 Catalogue a directory
     }
 
-    OSCLI( "Basic -quit Resources:$.!Boot" );
+    OSCLI( "Resources:$.!Boot" );
   }
 
   uint32_t pipe = PipeOp_CreateForTransfer( 4096 ); // N.B. Currently the only size supported!

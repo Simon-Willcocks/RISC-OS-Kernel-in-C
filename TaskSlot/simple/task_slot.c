@@ -32,7 +32,7 @@ typedef struct handler handler;
 typedef struct os_pipe os_pipe;
 
 struct handler {
-  uint32_t code;
+  void (* code)();
   uint32_t private_word;
   uint32_t buffer;
 };
@@ -460,16 +460,14 @@ char const *TaskSlot_Command( TaskSlot *slot )
   return slot->command;
 }
 
-void __attribute__(( noinline )) do_UpCall( uint32_t *regs )
+static void CallHandler( uint32_t *regs, int number )
 {
-Write0( __func__ ); Space; WriteNum( regs[0] ); Space; WriteNum( workspace.task_slot.running->slot->handlers[16].code ); NewLine;
-return;
+Write0( __func__ ); Space; WriteNum( number ); Space; WriteNum( regs[0] ); Space; WriteNum( workspace.task_slot.running->slot->handlers[16].code ); NewLine;
+
   Task *running = workspace.task_slot.running;
   TaskSlot *slot = running->slot;
 
-  assert( slot != 0 );
-
-  handler *h = &slot->handlers[16];
+  handler *h = &slot->handlers[number];
   register uint32_t r12 asm ( "r12" ) = h->private_word;
   register uint32_t code asm ( "lr" ) = h->code;
   asm volatile ( "ldm %[regs], { r0-r6 }\n  blx lr\n stm %[regs], { r0-r6 }"
@@ -478,7 +476,13 @@ return;
     , "r" (r12)
     , "r" (code)
     : "r0", "r1", "r2", "r3", "r4", "r5", "r6" );
+
 Write0( __func__ ); Space; WriteNum( r12 ); NewLine;
+}
+
+void __attribute__(( noinline )) do_UpCall( uint32_t *regs )
+{
+  CallHandler( regs, 16 );
 }
 
 void __attribute__(( noinline )) do_FSControl( uint32_t *regs )
@@ -1810,3 +1814,14 @@ bool do_OS_FSControl( svc_registers *regs )
   return delegate_operation( regs, 15 );
 }
 
+bool do_OS_Exit( svc_registers *regs )
+{
+  CallHandler( regs->r, 11 );
+}
+
+bool do_OS_ExitAndDie( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+  asm ( "bkpt 1" );
+  return Kernel_Error_UnimplementedSWI( regs );
+}

@@ -85,6 +85,8 @@ enum {
 // OS SWIs implemented or used other than in swis.c:
 
 bool do_OS_GSTrans( svc_registers *regs );
+bool do_OS_SubstituteArgs32( svc_registers *regs );
+
 
 // Implemented in os_heap.c:
 bool do_OS_Heap( svc_registers *regs );
@@ -132,6 +134,8 @@ void __attribute__(( naked )) default_os_changeenvironment();
 void __attribute__(( naked )) default_ticker();
 void __attribute__(( naked )) default_irq();
 bool do_OS_GetEnv( svc_registers *regs );
+bool do_OS_Exit( svc_registers *regs );
+bool do_OS_ExitAndDie( svc_registers *regs );
 bool do_OS_ThreadOp( svc_registers *regs );
 bool do_OS_PipeOp( svc_registers *regs ); // because it blocks tasks
 void swi_returning_to_usr_mode( svc_registers *regs );
