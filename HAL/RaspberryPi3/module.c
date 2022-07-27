@@ -105,6 +105,9 @@ struct workspace {
 
   struct core_workspace {
     struct workspace *shared;
+    struct ticker_stack {
+      uint64_t stack[64];
+    } ticker_stack;
     uint8_t queued;
     uint8_t queue[15];
     uint32_t x;
@@ -1031,6 +1034,69 @@ static inline void memory_read_barrier()
   asm ( "dsb sy" );
 }
 
+#define OS_ThreadOp 0xf9
+
+static void wait_for_interrupt( uint32_t device )
+{
+  register uint32_t request asm ( "r0" ) = 256; // WaitForInterrupt
+  register uint32_t dev asm ( "r1" ) = device;
+
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (dev)
+      : "lr" );
+}
+
+static void timer_interrupt_task( struct core_workspace *ws, int device )
+{
+  uint32_t ticks_per_interval = ws->shared->ticks_per_interval;
+
+  do {
+    wait_for_interrupt( device );
+    // Running in IRQ32 mode
+
+    // This is officially a signed value, but any value greater than
+    // ticks_per_interval is out of range.
+    uint32_t timer = timer_value();
+    uint32_t missed_ticks = 0;
+
+    while (timer > ticks_per_interval) {
+      timer += ticks_per_interval;
+      missed_ticks++;
+    }
+    // TODO: Report missed ticks?
+
+    timer_set_countdown( timer );
+
+    // interrupt_is_off( device ); // If we wanted to drop to USR32 mode
+    // Call TickerV
+  } while (true); // Could check a flag in ws, in case of shutdown
+}
+
+static void start_timer_interrupt_task( struct core_workspace *ws, int device )
+{
+  uint64_t *stack = (&ws->ticker_stack)+1;
+
+  register uint32_t request asm ( "r0" ) = 0; // Create Thread
+  register void *code asm ( "r1" ) = timer_interrupt_task;
+  register void *stack_top asm ( "r2" ) = stack;
+  register struct core_workspace *workspace asm( "r3" ) = ws;
+  register uint32_t dev asm( "r4" ) = device;
+
+  register uint32_t handle asm ( "r0" );
+
+  asm volatile ( "svc %[swi]"
+      : "=r" (handle) 
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (code)
+      , "r" (stack_top)
+      , "r" (workspace)
+      , "r" (dev) );
+}
+
 void init( uint32_t this_core, uint32_t number_of_cores )
 {
   struct workspace **private;
@@ -1121,6 +1187,9 @@ void init( uint32_t this_core, uint32_t number_of_cores )
 
     asm volatile ( "adr r1, timer_tick\n  svc %[swi]" : : [swi] "i" (0x4b), "r" (dev), "r" (r12) : "r1" );
   }
+  
+  start_timer_interrupt_task( &workspace->core_specific[this_core], 44 );
+
 #define QEMU
   {
     // Establish 1ms timer, using generic timer
@@ -1145,11 +1214,10 @@ void init( uint32_t this_core, uint32_t number_of_cores )
 
     if (first_entry) {
       workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
-#ifdef DEBUG__SLOW_TICKS
-      workspace->ticks_per_interval = workspace->ticks_per_interval * 100; // Slower, for testing in QEMU
-#endif
-#ifdef DEBUG__VERY_SLOW_TICKS
-      workspace->ticks_per_interval = workspace->ticks_per_interval * 100; // Really slow, if debugging interrupts
+#ifdef QEMU
+      const int slower = 1000;
+      Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
+      workspace->ticks_per_interval = workspace->ticks_per_interval * slower;
 #endif
       Write0( "Timer ticks per interval: " ); WriteNum( workspace->ticks_per_interval ); NewLine;
     }

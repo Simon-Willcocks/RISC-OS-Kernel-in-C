@@ -397,7 +397,7 @@ NewLine;
 
     variable *v;
     do {
-      v = rma_allocate( sizeof( variable ) + ((store_length + name_length +3)&~3), regs );
+      v = rma_allocate( sizeof( variable ) + ((store_length + name_length +3)&~3) );
 if (v == 0) {
   WriteS( "No space in RMA" ); for (;;) { asm ( "svc 0xff\n  wfi" : : : "cc", "lr" ); }
 }

@@ -42,17 +42,27 @@ struct TaskSlot {
   uint32_t lock;
   physical_memory_block blocks[10];
   handler handlers[17];
+  Task *creator; // creator's slot is parent slot
   char const *command;
   char const *name;
   char const *tail;
   uint64_t start_time;
-  TaskSlot *parent;
-  Task task;
   Task *waiting;       // 0 or more tasks waiting for locks
 };
 
 extern TaskSlot task_slots[];
 extern Task tasks[];
+
+// #ifdef DEBUG__SHOW_TASK_SWITCHES
+static void show_task( Task *task )
+{
+  Write0( "task " ); WriteNum( task ); NewLine;
+  for (int  i = 0; i < 13; i++) {
+    WriteNum( task->regs.r[i] ); Write0( " " );
+  }
+  NewLine ; Write0( "Banked sp, lr: " ); WriteNum( task->regs.banked_sp ); Space; WriteNum( task->regs.banked_lr ); Write0( " Slot " ); WriteNum( task->slot ); Space; WriteNum( task->regs.pc ); Space; WriteNum( task->regs.psr ); NewLine;
+}
+// #endif
 
 static inline TaskSlot *slot_from_handle( uint32_t handle )
 {
@@ -140,7 +150,7 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
   handler *h = &slot->handlers[regs[0]];
   handler old = *h;
   if (regs[1] != 0) {
-    h->code = regs[1];
+    h->code = (void*) regs[1];
   }
   if (regs[2] != 0) {
     h->private_word = regs[2];
@@ -155,7 +165,7 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
   WriteNum( old.code ); Space; WriteNum( old.private_word ); Space; WriteNum( old.buffer ); NewLine;
   WriteNum( h->code ); Space; WriteNum( h->private_word ); Space; WriteNum( h->buffer ); NewLine;
 #endif
-  regs[1] = old.code;
+  regs[1] = (uint32_t) old.code;
   regs[2] = old.private_word;
   regs[3] = old.buffer;
 }
@@ -287,8 +297,82 @@ static void __attribute__(( noinline, naked )) ignore_event()
   asm ( "bx lr" );
 }
 
+void __attribute__(( noinline, noreturn )) do_Exit( uint32_t *regs )
+{
+  // FIXME: What to do with any existing threads?
+  // FIXME: Free the TaskSlot
+  // FIXME: Free the Task
+  // resume the code in the parent slot? Where? After OS_CLI?
+  // Yes, I think so.
+  Task *task = workspace.task_slot.running;
+  TaskSlot *slot = task->slot;
+
+  slot->creator->next = task->next;
+  task->next = 0; // TODO delete the task!
+  workspace.task_slot.running = slot->creator;
+  MMU_switch_to( slot->creator->slot );
+
+  Write0( "Exiting slot " ); WriteNum( slot ); Write0( " returning to " ); WriteNum( slot->creator->slot ); NewLine;
+  show_task( slot->creator );
+
+  // FIXME memory leak!
+
+  {
+    register Task **running asm ( "lr" ) = &workspace.task_slot.running;
+
+    asm volatile (
+          "  ldr r0, [lr]"
+        "\n  add lr, r0, %[sp]"
+        "\n  ldm lr!, {r1, r2} // Load sp, banked lr, point lr at pc/psr"
+        "\n  ldr r3, [lr, #4] // PSR"
+        "\n  ands r3, r3, #0x0f // Never from Aarch64! (Don't need original value.)"
+        "\n  bne 0f"
+        "\n  msr sp_usr, r1"
+        "\n  msr lr_usr, r2"
+        "\n  ldm r0, {r0-r12}"
+        "\n  rfeia lr // Restore execution and SPSR"
+        "\n0:"
+        "\n  msr cpsr, r3"
+        "\n  ldm r0, {r0-r13}"
+        "\n  ldr pc, [lr]"
+        : 
+        : "r" (running)
+        , [sp] "i" ((char*)&((integer_registers*)0)->banked_sp) );
+  }
+
+  __builtin_unreachable();
+}
+
+static void __attribute__(( naked )) ExitHandler()
+{
+  register uint32_t *regs;
+  asm ( "push { r0-r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+  do_Exit( regs );
+}
+
+void __attribute__(( noinline )) save_context( Task *running, svc_registers *regs )
+{
+#ifdef DEBUG__SHOW_TASK_SWITCHES
+  Write0( "Saving for later " ); show_task( running ); Space; WriteNum( regs ); NewLine;
+#endif
+
+  // Save task context (integer only), including the usr stack pointer and link register
+  // The register values when the task is resumed
+  for (int i = 0; i < 13; i++) {
+    running->regs.r[i] = regs->r[i];
+  }
+
+  running->regs.pc = regs->lr;
+  running->regs.psr = regs->spsr;
+  asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (running->regs.banked_sp) );
+  asm volatile ( "mrs %[lr], lr_usr" : [lr] "=r" (running->regs.banked_lr) );
+#ifdef DEBUG__SHOW_TASK_SWITCHES
+  Write0( "Saved for later " ); show_task( running ); Space; WriteNum( regs ); NewLine;
+#endif
+}
+
 // Which comes first, the slot or the task? Privileged (module?) tasks don't need a slot.
-TaskSlot *TaskSlot_new( char const *command_line )
+TaskSlot *TaskSlot_new( char const *command_line, svc_registers *regs )
 {
   TaskSlot *result = 0;
 
@@ -313,6 +397,22 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
 
   if (result == 0) for (;;) { asm ( "bkpt 32" ); } // FIXME: expand
 
+  Task *new_task = Task_new( result );
+
+  Task *task = workspace.task_slot.running;
+  if (task != 0) {
+    // When resumed, it will return to the point of the SWI that caused this call
+    Write0( "Saving creator: " );
+    save_context( task, regs ); 
+
+    // Not the first task in the first slot for this core
+    result->creator = task;
+    new_task->next = task->next;
+    // No need to save_and_resume, the new task becomes the current
+  }
+
+  workspace.task_slot.running = new_task;
+
   static const handler default_handlers[17] = {
     { 0, 0, 0 },                // RAM Limit for program (0x8000 + amount of RAM)
     { 0xbadf00d1, 0, 0 },       // Undefined instruction
@@ -325,12 +425,12 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
     { 0xbadf00d8, 0, 0 },       // Breakpoint
     { 0xbadf00d9, 0, 0 },       // Escape
     { 0xbadf00da, 0, 0 },       // Event
-    { 0xbadf00db, 0, 0 },       // Exit
+    { ExitHandler, 0, 0 },       // Exit
     { 0xbadf00dc, 0, 0 },       // Unused SWI
     { 0xbadf00dd, 0, 0 },       // Exception registers
     { 0, 0, 0 },                // Application space (When does this not = RAM Limit?)
     { 0xbadf00df, 0, 0 },       // Currently Active Object
-    { (uint32_t) ignore_event, 0, 0 }        // UpCall handler
+    { ignore_event, 0, 0 }        // UpCall handler
   };
 
   for (int i = 0; i < number_of( result->handlers ); i++) {
@@ -345,13 +445,12 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
   // Remove leading spaces and *'s
   while (command_line[0] == ' ' || command_line[0] == '*') command_line++;
 
-  svc_registers regs;
   uint32_t length = strlen( command_line );
   // Allocate space for a copy of the whole command line, then
   // a second copy which will be spilt into command name and
   // command tail (parameters).
   // FIXME: redirections?
-  char *copy = rma_allocate( length * 2 + 2, &regs );
+  char *copy = rma_allocate( length * 2 + 2 );
   strcpy( copy, command_line );
   char *command_name = copy+length+1;
   strcpy( command_name, command_line );
@@ -362,15 +461,12 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
   if (has_tail) command_tail++; // Otherwise leave it pointing at the nul
   while (command_tail[0] == ' ') command_tail++;
 
-  Task *running = workspace.task_slot.running;
-
   result->command = copy;
   result->name = command_name;
   result->tail = command_tail;
   result->start_time = 0; // cs since Jan 1st 1900 TODO
   result->lock = 0;
   result->waiting = 0;
-  result->parent = (running == 0) ? 0 : running->slot;
 
 #ifdef DEBUG__WATCH_TASK_SLOTS
   Write0( "TaskSlot_new " ); WriteNum( (uint32_t) result ); NewLine;
@@ -404,6 +500,8 @@ Task *Task_new( TaskSlot *slot )
 
   result->slot = slot;
   result->next = 0;
+
+  Write0( "New Task: " ); WriteNum( result ); NewLine;
 
   return result;
 }
@@ -469,7 +567,7 @@ Write0( __func__ ); Space; WriteNum( number ); Space; WriteNum( regs[0] ); Space
 
   handler *h = &slot->handlers[number];
   register uint32_t r12 asm ( "r12" ) = h->private_word;
-  register uint32_t code asm ( "lr" ) = h->code;
+  register void (*code)() asm ( "lr" ) = h->code;
   asm volatile ( "ldm %[regs], { r0-r6 }\n  blx lr\n stm %[regs], { r0-r6 }"
     : "=r" (code) // Clobbered, but can't go in clobber list
     : [regs] "r" (regs)
@@ -559,19 +657,6 @@ void __attribute__(( naked )) default_ticker()
   asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
-#ifdef DEBUG__SHOW_TASK_SWITCHES
-static void show_task( Task *task )
-{
-  Write0( "task " ); WriteNum( task ); NewLine;
-  for (int  i = 0; i < 13; i++) {
-    WriteNum( task->regs.r[i] ); Write0( " " );
-  }
-  WriteNum( task->regs.pc ); Write0( " " );
-  WriteNum( task->regs.psr ); Write0( " " );
-  NewLine ; Write0( "Banked sp, lr: " ); WriteNum( task->regs.banked_sp ); Write0( " " ); WriteNum( task->regs.banked_lr ); Write0( " Slot " ); WriteNum( task->slot ); NewLine;
-}
-#endif
-
 // FIXME make the following static, as soon as they work!
 void __attribute__(( noinline )) save_and_resume( Task *running, Task *resume, svc_registers *regs )
 {
@@ -582,18 +667,9 @@ void __attribute__(( noinline )) save_and_resume( Task *running, Task *resume, s
 
   workspace.task_slot.running = resume;
 
-  // Save task context (integer only), including the usr stack pointer and link register
-  // The register values when the task is resumed
-  for (int i = 0; i < 13; i++) {
-    running->regs.r[i] = regs->r[i];
-  }
+  save_context( running, regs );
 
-  running->regs.pc = regs->lr;
-  running->regs.psr = regs->spsr;
-  asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (running->regs.banked_sp) );
-  asm volatile ( "mrs %[lr], lr_usr" : [lr] "=r" (running->regs.banked_lr) );
-
-  // Replace the calling task with the next task in the queue
+  // Replace the calling task with the resume task
   regs->lr = resume->regs.pc;
   regs->spsr = resume->regs.psr;
   asm volatile ( "msr sp_usr, %[sp]" : : [sp] "r" (resume->regs.banked_sp) );
@@ -799,11 +875,13 @@ void __attribute__(( naked )) task_exit()
 
 bool __attribute__(( optimize( "O4" ) )) do_OS_ThreadOp( svc_registers *regs )
 {
-  enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, LockClaim, LockRelease };
+  enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, LockClaim, LockRelease,
+         WaitForInterrupt = 256, InterruptIsOff };
 
   error_block *error = 0;
 
-  if ((regs->spsr & 0x1f) != 0x10) {
+  if ((regs->spsr & 0x1f) != 0x10
+   && regs->r[0] != Start) {
     WriteNum( regs->spsr ); NewLine;
     static error_block error = { 0x999, "OS_ThreadOp only supported from usr mode, so far." };
     regs->r[0] = (uint32_t) &error;
@@ -818,7 +896,6 @@ bool __attribute__(( optimize( "O4" ) )) do_OS_ThreadOp( svc_registers *regs )
     return true; // Yield, but no other threads on this core.
   }
 
-  assert ( next != 0 );
   TaskSlot *slot = running->slot;
 
   if (slot == 0) {
@@ -1081,7 +1158,7 @@ static bool PipeCreate( svc_registers *regs )
     return PipeOp_CreationError( regs );
   }
 
-  os_pipe *pipe = rma_allocate( sizeof( os_pipe ), regs );
+  os_pipe *pipe = rma_allocate( sizeof( os_pipe ) );
 
   if (pipe == 0) {
     return PipeOp_CreationProblem( regs );
@@ -1596,6 +1673,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
       "\n  srsdb sp!, #0x12 // Store return address and SPSR (IRQ mode)" );
 
   {
+    // This is essentially save_context, but without storing much on the stack first.
     assert( 0 == (void*) &((Task*) 0)->regs );
 
     // Need to be careful with this, that the compiler doesn't insert any code to
@@ -1617,7 +1695,10 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
   }
 
 #ifdef DEBUG__SHOW_INTERRUPTS
-Write0( "IRQ: " ); show_task( workspace.task_slot.running );
+{
+Task *task = workspace.task_slot.running;
+Write0( "IRQ: " ); Write0( "task " ); WriteNum( task ); Space; WriteNum( task->regs.pc ); Space; WriteNum( task->regs.psr ); Space; WriteNum( task->slot ); NewLine;
+}
 #endif
 
 
@@ -1677,8 +1758,8 @@ Write0( "IRQ: " ); show_task( workspace.task_slot.running );
         "\n  ands r3, r3, #0x0f // Never from Aarch64! (Don't need original value.)"
         "\n  msreq sp_usr, r1"
         "\n  msreq lr_usr, r2"
-        "\n  msrne sp_svc, r1"
-        "\n  msrne lr_svc, r2"
+        "\n  msrne sp_svc, r1 // Works because in irq32 mode"
+        "\n  msrne lr_svc, r2 // Works because in irq32 mode"
         "\n  ldm r0, {r0-r12}"
         "\n  rfeia lr // Restore execution and SPSR"
         : 
@@ -1814,14 +1895,15 @@ bool do_OS_FSControl( svc_registers *regs )
   return delegate_operation( regs, 15 );
 }
 
-bool do_OS_Exit( svc_registers *regs )
+bool __attribute__(( noreturn )) do_OS_Exit( svc_registers *regs )
 {
   CallHandler( regs->r, 11 );
+  __builtin_unreachable();
 }
 
-bool do_OS_ExitAndDie( svc_registers *regs )
+bool __attribute__(( noreturn )) do_OS_ExitAndDie( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
   asm ( "bkpt 1" );
-  return Kernel_Error_UnimplementedSWI( regs );
+  __builtin_unreachable();
 }

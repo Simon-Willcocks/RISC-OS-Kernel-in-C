@@ -123,7 +123,7 @@ memset( (void*) 0x7000, '\0', 4096 );
     // RMA heap initialised, can call rma_allocate
 
     { // RMA
-      DynamicArea *da = rma_allocate( sizeof( DynamicArea ), &regs );
+      DynamicArea *da = rma_allocate( sizeof( DynamicArea ) );
       if (da == 0) goto nomem;
       da->number = 1;
       da->permissions = 7; // rwx
@@ -159,7 +159,7 @@ memset( (void*) 0x7000, '\0', 4096 );
 
   {
   // Empty RamFS, TODO
-    DynamicArea *da = rma_allocate( sizeof( DynamicArea ), &regs );
+    DynamicArea *da = rma_allocate( sizeof( DynamicArea ) );
     if (da == 0) goto nomem;
     da->number = 5;
     da->permissions = 6; // rw-
@@ -178,7 +178,7 @@ memset( (void*) 0x7000, '\0', 4096 );
   // TODO Add names, handlers to DAs
     extern uint32_t free_pool;
 
-    DynamicArea *da = rma_allocate( sizeof( DynamicArea ), &regs );
+    DynamicArea *da = rma_allocate( sizeof( DynamicArea ) );
     if (da == 0) goto nomem;
     da->number = 6;
     da->permissions = 6; // rw-
@@ -200,7 +200,7 @@ memset( (void*) 0x7000, '\0', 4096 );
     // UtilityModule requires its presence on initialisation
     extern uint32_t system_heap;
 
-    DynamicArea *da = rma_allocate( sizeof( DynamicArea ), &regs );
+    DynamicArea *da = rma_allocate( sizeof( DynamicArea ) );
     if (da == 0) goto nomem;
     da->number = 0;
     da->permissions = 6; // rw-
@@ -553,7 +553,7 @@ bool do_OS_DynamicArea( svc_registers *regs )
   WriteS( "New DA " ); WriteNum( regs->r[1] ); WriteS( " caller " ); WriteNum( regs->lr ); NewLine;
   WriteNum( regs->r[6] ); WriteS( " " ); WriteNum( regs->r[7] ); WriteS( " " ); Write0( regs->r[8] ); NewLine;
 #endif
-      DynamicArea *da = rma_allocate( sizeof( DynamicArea ) + strlen( name ) + 1, regs );
+      DynamicArea *da = rma_allocate( sizeof( DynamicArea ) + strlen( name ) + 1 );
       if (da == 0) goto nomem;
 
       strcpy( da_name( da ), name );
@@ -634,7 +634,7 @@ bool do_OS_DynamicArea( svc_registers *regs )
       }
 
       if (da == 0) {
-        da = rma_allocate( sizeof( DynamicArea ), regs );
+        da = rma_allocate( sizeof( DynamicArea ) );
         if (da == 0) goto nomem;
         da->number = 2;
         da->permissions = 6; // rw-

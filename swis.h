@@ -16,7 +16,7 @@
 // Copy of the registers stored for an SVC instruction; doesn't include
 // the user stack pointer, or link registers, which will be preserved
 // automatically (except if the SVC performs a task switch).
-typedef struct __attribute__(( packed )) {
+typedef struct __attribute__(( packed )) svc_registers {
   uint32_t r[13];
   uint32_t lr;
   uint32_t spsr;
@@ -186,33 +186,24 @@ static inline void rma_free( uint32_t block )
   // FIXME
 }
 
-static inline void *rma_allocate( uint32_t size, svc_registers *regs )
+static inline void *rma_allocate( uint32_t size )
 {
-  uint32_t r0 = regs->r[0];
-  uint32_t r1 = regs->r[1];
-  uint32_t r2 = regs->r[2];
-  uint32_t r3 = regs->r[3];
-  uint32_t psr = regs->spsr;
+  svc_registers regs;
+
   void *result = 0;
 
-  regs->r[0] = 2;
-  regs->r[1] = (uint32_t) &rma_heap;
-  regs->r[3] = size;
-  regs->spsr = 0; // V flag set on entry results in failure
+  regs.r[0] = 2;
+  regs.r[1] = (uint32_t) &rma_heap;
+  regs.r[3] = size;
+  regs.spsr = 0; // V flag set on entry results in failure
 
   claim_lock( &shared.memory.lock );
 
-  if (do_OS_Heap( regs )) {
-    result = (void*) regs->r[2];
-    regs->r[0] = r0; // Don't overwrite error word
+  if (do_OS_Heap( &regs )) {
+    result = (void*) regs.r[2];
   }
 
   release_lock( &shared.memory.lock );
-
-  regs->r[1] = r1;
-  regs->r[2] = r2;
-  regs->r[3] = r3;
-  regs->spsr = psr;
 
   return result;
 }

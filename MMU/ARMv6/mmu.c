@@ -454,7 +454,7 @@ void __attribute__(( naked, optimize( 0 ), noreturn )) Kernel_default_data_abort
 void MMU_switch_to( TaskSlot *slot )
 {
   claim_lock( &shared.mmu.lock );
-  Write0( "Switching to slot " ); WriteNum( slot ); Write0( " " ); WriteNum( TaskSlot_asid( slot ) ); NewLine;
+  Write0( "Switching to slot " ); WriteNum( slot ); Space; WriteNum( TaskSlot_asid( slot ) ); NewLine;
   // FIXME Only clear what's used
   // FIXME deal with slots that go over the first MiB
   // Note: My idea is to try to keep memory as contiguous as possible, and have

@@ -473,8 +473,7 @@ static ticker_event *allocate_ticker_event()
 {
   ticker_event *result = workspace.kernel.ticker_event_pool;
   if (result == 0) {
-    svc_registers regs;
-    result = rma_allocate( sizeof( transient_callback ), &regs );
+    result = rma_allocate( sizeof( transient_callback ) );
   }
   else {
     workspace.kernel.ticker_event_pool = result->next;
@@ -799,7 +798,7 @@ static bool do_OS_AddCallBack( svc_registers *regs )
 #endif
   transient_callback *callback = workspace.kernel.transient_callbacks_pool;
   if (callback == 0) {
-    callback = rma_allocate( sizeof( transient_callback ), regs );
+    callback = rma_allocate( sizeof( transient_callback ) );
   }
   else {
     workspace.kernel.transient_callbacks_pool = callback->next;
@@ -1536,49 +1535,49 @@ static bool do_OS_ConvertFixedNetStation( svc_registers *regs ) { Write0( __func
 static bool do_OS_ConvertNetStation( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static int32_t GraphicsWindow_ec_Left()
+static inline int32_t GraphicsWindow_ec_Left()
 {
   VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
   return (ws->GWLCol << ws->XEigFactor) + ws->OrgX;
 }
 
-static int32_t GraphicsWindow_ec_Bottom()
+static inline int32_t GraphicsWindow_ec_Bottom()
 {
   VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
   return (ws->GWBRow << ws->YEigFactor) + ws->OrgY;
 }
 
-static int32_t GraphicsWindow_ec_Right()
+static inline int32_t GraphicsWindow_ec_Right()
 {
   VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
   return (ws->GWRCol << ws->XEigFactor) + ws->OrgX;
 }
 
-static int32_t GraphicsWindow_ec_Top()
+static inline int32_t GraphicsWindow_ec_Top()
 {
   VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
   return (ws->GWTRow << ws->YEigFactor) + ws->OrgY;
 }
 
-static int32_t GraphicsWindow_ic_Left()
+static inline int32_t GraphicsWindow_ic_Left()
 {
   VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
   return ws->GWLCol;
 }
 
-static int32_t GraphicsWindow_ic_Bottom()
+static inline int32_t GraphicsWindow_ic_Bottom()
 {
   VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
   return ws->GWBRow;
 }
 
-static int32_t GraphicsWindow_ic_Right()
+static inline int32_t GraphicsWindow_ic_Right()
 {
   VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
   return ws->GWRCol;
 }
 
-static int32_t GraphicsWindow_ic_Top()
+static inline int32_t GraphicsWindow_ic_Top()
 {
   VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
   return ws->GWTRow;
@@ -2300,28 +2299,6 @@ void run_transient_callbacks()
 #endif
 
     run_handler( latest.code, latest.private_word );
-  }
-}
-
-static void __attribute__(( noinline )) do_something_else( svc_registers *regs )
-{
-  while (0 == workspace.task_slot.running) {
-    if (0 != shared.task_slot.runnable) { // Checking outside lock
-      claim_lock( &shared.task_slot.lock );
-
-      if (0 != shared.task_slot.runnable) { // Safe check
-        workspace.task_slot.running->regs = shared.task_slot.runnable->regs;
-        shared.task_slot.runnable = shared.task_slot.runnable->next;
-        // *regs = workspace.task_slot.running->regs;
-        asm( "bkpt 17" ); // Do the above properly, still untested
-        MMU_switch_to( workspace.task_slot.running->slot );
-      }
-
-      release_lock( &shared.task_slot.lock );
-    }
-    else {
-      asm ( "wfe" ); // Maybe this should be WFI?
-    }
   }
 }
 

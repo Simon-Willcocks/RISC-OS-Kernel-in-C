@@ -652,7 +652,7 @@ Write0( (char*) regs->r[2] ); NewLine;
     if (d - command_line >= sizeof( command_line ) - 2) {
       asm ( "bkpt 1" ); // FIXME
     }
-    slot = TaskSlot_new( command_line );
+    slot = TaskSlot_new( command_line, regs );
   }
 
   {
@@ -684,7 +684,7 @@ Write0( (char*) regs->r[2] ); NewLine;
   void *start_address = start_code( m->header );
 
   // FIXME: This is where the new TaskSlot replaces the old as the current
-  // slot for this Task.
+  // slot, we're already "in" the associated new Task.
   workspace.task_slot.running->slot = slot;
   MMU_switch_to( slot );
 
@@ -861,7 +861,7 @@ static void post_init_service( module_header *m, uint32_t size_plus_4 )
 static module *new_instance( module_header *m, svc_registers *regs, const char *postfix )
 {
   int len = postfix == 0 ? 1 : strlen( postfix ) + 1;
-  module *instance = rma_allocate( sizeof( module ) + len, regs );
+  module *instance = rma_allocate( sizeof( module ) + len );
 
   if (instance != 0) {
     instance->header = m;
@@ -1249,8 +1249,7 @@ static callback *get_a_callback()
     workspace.kernel.callbacks_pool = result->next;
   }
   else {
-    svc_registers regs;
-    result = rma_allocate( sizeof( callback ), &regs );
+    result = rma_allocate( sizeof( callback ) );
   }
   return result;
 }
@@ -2510,8 +2509,8 @@ static error_block *__attribute__(( noinline )) do_CLI( const char *command )
   // Max length is 1024 bytes in RO 5.28
   // PRM 1-958
   command = discard_leading_characters( command );
-  if (*command == '|') return; // Comment, nothing to do
-  if (*command < ' ') return; // Nothing on line, nothing to do
+  if (*command == '|') return 0; // Comment, nothing to do
+  if (*command < ' ') return 0; // Nothing on line, nothing to do
   bool run = (*command == '/');
   if (run) {
     command++;
@@ -2567,28 +2566,32 @@ static error_block *__attribute__(( noinline )) do_CLI( const char *command )
 
   if (error != 0 && error->code == 214) {
 Write0( "Looking for file " ); Write0( command ); NewLine;
-    error = 0;
 
     // Not found in any module
     register uint32_t reason asm ( "r0" ) = 5; // Read catalogue information
     register void const *filename asm ( "r1" ) = command;     // File name
-    register uint32_t word1 asm( "r2" );
-    register uint32_t word2 asm( "r3" );
-    register uint32_t size asm( "r4" );
-    register uint32_t attrs asm( "r5" );
+    register uint32_t Rword1 asm( "r2" );
+    register uint32_t Rword2 asm( "r3" );
+    register uint32_t Rsize asm( "r4" );
+    register uint32_t Rattrs asm( "r5" );
+    register uint32_t Rtype asm( "r0" );
     asm volatile (
         "svc 0x20008"
     "\n  movvs %[error], r0"
     "\n  movvc %[error], #0"
-        : "=r" (word1)
-        , "=r" (word2)
-        , "=r" (size)
-        , "=r" (attrs)
+        : "=r" (Rtype)
+        , "=r" (Rword1)
+        , "=r" (Rword2)
+        , "=r" (Rsize)
+        , "=r" (Rattrs)
         , [error] "=r" (error)
         : "r" (reason)
         , "r" (filename)
         : "lr" );
-    if (error == 0) {
+    // The register variables seem to get overwritten if you're not careful
+    uint32_t type = Rtype;
+    uint32_t word1 = Rword1;
+    if (error == 0 && type == 1) {
       // and...?
       union {
         struct {
@@ -2624,12 +2627,13 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
         Write0( runtype ); Write0( " variable found " ); NewLine; Write0( "X" ); Write0( template ); Write0( "X" ); NewLine;
         char to_run[1024];
         svc_registers regs = {
-            .r[0] = command,
-            .r[1] = to_run,
+            .r[0] = (uint32_t) command,
+            .r[1] = (uint32_t) to_run,
             .r[2] = sizeof( to_run ),
-            .r[3] = template,
+            .r[3] = (uint32_t) template,
             .r[4] = varlen };
-        bool result = do_OS_SubstituteArgs32( &regs );
+        if (!do_OS_SubstituteArgs32( &regs )) return (error_block*) regs.r[0];
+
         Write0( "Command to run: " ); Write0( to_run ); NewLine;
         error = run_module_command( to_run );
         Write0( "Command returned" ); NewLine;
@@ -2638,7 +2642,6 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
     else {
       Write0( "No file" );
 #ifdef DEBUG__SHOW_COMMANDS
-    Write0( "Command not found, try filesystem, then files..." );
     // WindowManager runs FontInstall but is initialised before FontManager
     // and ROMFonts. Let this one go... (and re-order the modules)
     static const char exception[] = "FontInstall";
@@ -2858,7 +2861,6 @@ static void set_up_legacy_zero_page()
   // For default PaletteV code
   // Legacy code has this in System Heap, but whatever.
   // PalEntries*5 = 0x514, sizeof( PV ) = 0x1850
-  svc_registers regs;
   struct PV {
     uint32_t blank[256+1+3];
     uint32_t LogFirst[256+1+3];
@@ -2869,7 +2871,7 @@ static void set_up_legacy_zero_page()
     uint8_t GTable[256];
     uint8_t BTable[256];
     uint8_t STable[256];
-  } *palette = rma_allocate( sizeof( struct PV ), &regs );
+  } *palette = rma_allocate( sizeof( struct PV ) );
   if (sizeof( struct PV ) != 0x1850) { asm ( "bkpt 1" ); }
 
   memset( palette, 0, sizeof( struct PV ) );
@@ -3066,11 +3068,8 @@ static void set_up_legacy_zero_page()
   workspace.vectors.zp.vdu_drivers.ws.MaxMode = 53; // "Constant now"
   // etc...
 
-  { // FIXME this should be system heap
-    svc_registers regs;
-    regs.spsr = 0; // OS_Heap fails if entered with V flag set
-    workspace.vectors.zp.vdu_drivers.ws.TextExpandArea = rma_allocate( 2048, &regs );
-  }
+  // FIXME this should be system heap
+  workspace.vectors.zp.vdu_drivers.ws.TextExpandArea = rma_allocate( 2048 );
 
   // To avoid problems in SWIPlot Kernel/s/vdu/vduswis
   // Rather than doing its job, it will put a stream of characters into the WrchV queue, if:
@@ -3095,11 +3094,38 @@ static void setup_OS_vectors()
   }
 }
 
+static void __attribute__(( naked, noreturn )) idle_thread()
+{
+  // This thread currently has no stack!
+  for (;;) {
+    // Transfer control to the boot task.
+    // Don't make a function call, there's no stack.
+    // (In practice it wouldn't be needed, but why take the chance?)
+    asm volatile ( "mov r0, #3 // Sleep"
+               "\n  mov r1, #0 // For no time - yield"
+               "\n  svc %[swi]"
+        :
+        : [swi] "i" (OS_ThreadOp)
+        : "r0", "r1", "lr" );
+    // TODO: Pootle around, tidying up memory, etc.
+    // Don't do any I/O!
+    // Don't forget to give it some stack!
+    asm volatile ( "wfi" );
+  }
+
+  __builtin_unreachable();
+}
+
+void __attribute__(( naked )) returned_to_root()
+{
+  asm ( "bkpt 0x7777" );
+}
+
 void Boot()
 {
   setup_OS_vectors();
 
-  TaskSlot *slot = TaskSlot_new( "System" );
+  TaskSlot *slot = TaskSlot_new( "Root", 0 );
 
   Task *task = Task_new( slot );
   assert (task->slot == slot);
@@ -3171,50 +3197,51 @@ void Boot()
 
   Write0( "System slot: " ); WriteNum( slot ); NewLine;
 
-  NewLine; Write0( "All modules initialised, starting USR mode code" ); NewLine;
+  NewLine; Write0( "All modules initialised, starting idle thread" ); NewLine;
 
-  for (int i = 0; i < workspace.core_number << 27; i++) { asm volatile ( "" ); }
+  Task *idle_task = Task_new( slot );
 
-  { // Environment for boot sequence
-  TaskSlot *slot = TaskSlot_new( "BootSystem" );
-  Task *task = Task_new( slot );
+    // Initial state
+  idle_task->regs.r[0] = workspace.core_number;
+  idle_task->regs.pc = (uint32_t) idle_thread;
+  idle_task->regs.psr = 0x13;
 
-  // Initial state
-  task->regs.r[0] = workspace.core_number;
-  task->regs.pc = (uint32_t) user_mode_code;
-  task->regs.psr = 0x10;
-  task->regs.banked_sp = 0x9000;
+  workspace.task_slot.running->next = idle_task;
 
-  workspace.task_slot.running->next = task;
+  if (0 == workspace.core_number) {
+    // File declaring resources, ROM-based boot files.
+    // This should probably be done in the HAL
+#include "Resources.h"
 
-  // This will be replaced with code to load an application at 0x8000 and run it...
-  //uint32_t const initial_slot_size = 64 << 10;  // 64k
-  uint32_t const initial_slot_size = 4 << 10;  // 4k
-  physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( initial_slot_size, 4096 ), .size = initial_slot_size };
-  TaskSlot_add( slot, block );
+    register void const *file asm( "r0" ) = resources;
+    asm volatile ( "svc 0x41b40" : : "r" (file) ); // ResourceFS_RegisterFiles
+
+    {
+    register uint32_t reason asm ( "r0" ) = 5;
+    register void *dir asm ( "r1" ) = "Resources:$";
+    asm volatile ( "svc 0x20029" : : "r" (reason), "r" (dir) ); // OS_FSControl 5 Catalogue a directory
+    }
+
+    svc_registers regs = { .r[5] = 0x4444, .lr = (uint32_t) returned_to_root, .spsr = 0x1d0 };
+    TaskSlot *slot = TaskSlot_new( "BootSequence", &regs );
+
+    OSCLI( "Resources:$.!Boot" );
   }
-
-  asm volatile ( "svc %[swi]" : : [swi] "i" (OS_LeaveOS) : "lr" );
-  asm volatile ( "svc %[swi]" : : [swi] "i" (OS_IntOn) : "lr" );
-  for (;;) {
-    // Transfer control to the boot task.
-    // Don't make a function call, there's no stack.
-    // (In practice it wouldn't be needed, but why take the chance?)
-    asm volatile ( "mov r0, #3 // Sleep"
-               "\n  mov r1, #0 // For no time - yield"
-               "\n  svc %[swi]"
-        :
-        : [swi] "i" (OS_ThreadOp)
-        : "r0", "r1", "lr" );
-    // TODO: Pootle around, tidying up memory, etc.
-    // Don't do any I/O!
-    // Don't forget to give it some stack!
-    asm volatile ( "wfi" );
+  else {
+    for (;;) {
+      asm volatile ( "mov r0, #3 // Sleep"
+                 "\n  mov r1, #0 // For no time - yield"
+                 "\n  svc %[swi]"
+            :
+            : [swi] "i" (OS_ThreadOp)
+            : "r0", "r1", "lr" );
+    }
   }
 
   __builtin_unreachable();
 }
 
+#if 0
 // None of the following will remain in the kernel, it is experimental user
 // mode code.
 
@@ -3940,8 +3967,6 @@ static uint32_t create_consumer_thread( uint32_t pipe )
   return handle;
 }
 
-#include "Resources.h"
-
 static void user_mode_code( int core_number )
 {
   Write0( "In USR32 mode" ); NewLine;
@@ -4014,4 +4039,4 @@ static void user_mode_code( int core_number )
 // Screen redraw threads will have to stop on asynchronous command and report
 // that they have (or block the caller of a service call until they're ready)?
 
-
+#endif

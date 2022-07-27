@@ -16,8 +16,9 @@
 // FIXME physical_memory_block probably shouldn't have a virtual address
 
 typedef struct Task Task;
+typedef struct svc_registers svc_registers;
 
-TaskSlot *TaskSlot_new( char const *command_line );
+TaskSlot *TaskSlot_new( char const *command_line, svc_registers *regs );
 Task *Task_new( TaskSlot *slot );
 
 uint32_t TaskSlot_Himem( TaskSlot *slot );
