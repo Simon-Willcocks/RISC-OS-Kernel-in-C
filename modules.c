@@ -618,13 +618,13 @@ static bool do_Module_Enter( svc_registers *regs )
 Write0( __func__ ); NewLine;
 Write0( (char*) regs->r[1] ); NewLine;
 Write0( (char*) regs->r[2] ); NewLine;
-  // This routine should follow the procedure described in 1-235 including 
+  // This routine should follow the procedure described in 1-235 including
   // making the upcall OS_FSControl 2 2-85
 
   // The caller expects to be replaced by the module
 
   char const *module_name = (void*) regs->r[1];
-  char const *parameters = (void*) regs->r[2];
+  char const *args = (void*) regs->r[2];
   module *m = find_module( module_name );
 
   if (m == 0) {
@@ -635,24 +635,11 @@ Write0( (char*) regs->r[2] ); NewLine;
 
   // Found it.
 
+  void *start_address = start_code( m->header );
+
+Write0( "Start address: " ); WriteNum( start_address ); NewLine;
   if (m->header->offset_to_start == 0) {
     return true;
-  }
-
-  TaskSlot *slot;
-  {
-    char command_line[4096];
-    char const *s = module_name;
-    char *d = command_line;
-    while (*s > ' ' && d - command_line < sizeof( command_line ) - 3) *d++ = *s++;
-    *d++ = ' ';
-    s = parameters;
-    while (*s >= ' ' && d - command_line < sizeof( command_line ) - 2) *d++ = *s++;
-    *d++ = '\0';
-    if (d - command_line >= sizeof( command_line ) - 2) {
-      asm ( "bkpt 1" ); // FIXME
-    }
-    slot = TaskSlot_new( command_line, regs );
   }
 
   {
@@ -680,19 +667,7 @@ Write0( (char*) regs->r[2] ); NewLine;
   }
 
   // FIXME ; try out the pervy scheme for removing handlers
-
-  void *start_address = start_code( m->header );
-
-  // FIXME: This is where the new TaskSlot replaces the old as the current
-  // slot, we're already "in" the associated new Task.
-  workspace.task_slot.running->slot = slot;
-  MMU_switch_to( slot );
-
-  { // FIXME Vary amount (Next)
-    static const int initial_slot_size = 64 << 10;
-    physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( initial_slot_size, 4096 ), .size = initial_slot_size };
-    TaskSlot_add( slot, block );
-  }
+  TaskSlot_new_application( module_name, args );
 
   {
     register uint32_t handler asm ( "r0" ) = 15; // CAOPointer
@@ -713,8 +688,8 @@ Write0( (char*) regs->r[2] ); NewLine;
     "\n\tmov lr, %[usr]"
     "\n\tmsr sp_usr, %[stacktop]"
     "\n\tisb"
-    "\n\teret" 
-    : 
+    "\n\teret"
+    :
     : [stacktop] "r" (0xffffffff)       // Dummy. It's up to the module to allocate stack if it needs it
     , [usr] "r" (start_address)
     , [usermode] "r" (0x10)
@@ -722,6 +697,7 @@ Write0( (char*) regs->r[2] ); NewLine;
 
   return false;
 }
+
 
 static bool do_Module_ReInit( svc_registers *regs )
 {
@@ -817,6 +793,11 @@ static bool do_Module_ClaimAligned( svc_registers *regs )
 
 static bool do_Module_Free( svc_registers *regs )
 {
+register uint32_t reason asm( "r0" ) = 3;
+register uint32_t *heap asm( "r1" ) = &rma_heap;
+register uint32_t block asm( "r2" ) = regs->r[2];
+asm ( "svc 0x2001d" : : "r" (reason), "r" (heap), "r" (block) : "lr" );
+return true;
   uint32_t r1 = regs->r[1];
   regs->r[0] = 3; // Free
   regs->r[1] = (uint32_t) &rma_heap;
@@ -2506,6 +2487,16 @@ static error_block *__attribute__(( noinline )) do_CLI( const char *command )
 #ifdef DEBUG__SHOW_COMMANDS
   Write0( "CLI: " ); Write0( command ); Write0( " at " ); WriteNum( (uint32_t) command ); NewLine;
 #endif
+{
+register const char *string asm ( "r0" ) = "CLI: ";
+asm ( "svc 2" : "=r" (string) : "r" (string) : "lr" );
+}
+{
+register const char *string asm ( "r0" ) = command;
+asm ( "svc 2" : "=r" (string) : "r" (string) : "lr" );
+asm ( "svc 3" : : : "lr" );
+}
+
   // Max length is 1024 bytes in RO 5.28
   // PRM 1-958
   command = discard_leading_characters( command );
@@ -3224,6 +3215,9 @@ void Boot()
 
     svc_registers regs = { .r[5] = 0x4444, .lr = (uint32_t) returned_to_root, .spsr = 0x1d0 };
     TaskSlot *slot = TaskSlot_new( "BootSequence", &regs );
+    static const int initial_slot_size = 64 << 10;
+    physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( initial_slot_size, 4096 ), .size = initial_slot_size };
+    TaskSlot_add( slot, block );
 
     OSCLI( "Resources:$.!Boot" );
   }

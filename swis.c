@@ -1767,7 +1767,7 @@ static bool do_OS_VduCommand( svc_registers *regs )
   case 0: asm ( "bkpt 1" ); break; // do nothing, surely shouldn't be called
   case 1: WriteNum( regs->lr ); asm ( "bkpt 1" ); break; // Send next character to printer if enabled, ignore next char otherwise
   case 2: asm ( "bkpt 1" ); break; // "enable printer"
-  case 3: break; // do nothing, "disable printer"
+  case 3: return true; break; // do nothing, "disable printer"
   case 4: workspace.vectors.zp.vdu_drivers.ws.CursorFlags |= ~(1 << 30); return true;
   case 5: workspace.vectors.zp.vdu_drivers.ws.CursorFlags |= (1 << 30); return true;
   case 7: return Bell();

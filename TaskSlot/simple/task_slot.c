@@ -478,6 +478,48 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
   return result;
 }
 
+void TaskSlot_new_application( char const *command, char const *args )
+{
+  Task *task = workspace.task_slot.running;
+  TaskSlot *slot = task->slot;
+
+#ifdef DEBUG__WATCH_TASK_SLOTS
+  Write0( "TaskSlot_new_application " ); WriteNum( (uint32_t) slot ); NewLine;
+  Write0( "Command " ); Write0( slot->command ); NewLine;
+  Write0( "Old Name " ); Write0( slot->name ); NewLine;
+  Write0( "Old Tail " ); Write0( slot->tail ); NewLine;
+  Write0( "New Name " ); Write0( command ); NewLine;
+  Write0( "New Tail " ); Write0( args ); NewLine;
+#endif
+
+  uint32_t command_length = strlen( command );
+  uint32_t args_length = strlen( args );
+
+  char *copy = rma_allocate( command_length * 2 + args_length + 4 ); // Three string terminators and a space
+
+  char *space = copy + command_length;
+  char *tail = copy + command_length + 1;
+  char *name = tail + args_length + 1;
+
+  slot->command = copy;
+  slot->name = name;
+  slot->tail = tail;
+
+  strcpy( copy, command );
+  *space = ' ';
+  strcpy( tail, args );
+  strcpy( name, command );
+
+  slot->start_time = 0; // cs since Jan 1st 1900 TODO
+
+#ifdef DEBUG__WATCH_TASK_SLOTS
+  Write0( "TaskSlot_new_application " ); WriteNum( (uint32_t) slot ); NewLine;
+  Write0( "Command " ); Write0( slot->command ); NewLine;
+  Write0( "Name " ); Write0( slot->name ); NewLine;
+  Write0( "Tail " ); Write0( slot->tail ); NewLine;
+#endif
+}
+
 Task *Task_new( TaskSlot *slot )
 {
   Task *result = 0;
@@ -1897,7 +1939,20 @@ bool do_OS_FSControl( svc_registers *regs )
 
 bool __attribute__(( noreturn )) do_OS_Exit( svc_registers *regs )
 {
-  CallHandler( regs->r, 11 );
+  Task *running = workspace.task_slot.running;
+  TaskSlot *slot = running->slot;
+
+  handler *h = &slot->handlers[11];
+
+  register uint32_t r12 asm ( "r12" ) = h->private_word;
+  register void (*code)() asm ( "r1" ) = h->code;
+
+  asm ( "mrs r0, cpsr"
+    "\n  bic r0, #0xcf" 
+    "\n  msr cpsr, r0"
+    "\n  bx r1" 
+    : : "r" (r12), "r" (code) );
+
   __builtin_unreachable();
 }
 

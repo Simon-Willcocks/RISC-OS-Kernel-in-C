@@ -19,6 +19,8 @@ typedef struct Task Task;
 typedef struct svc_registers svc_registers;
 
 TaskSlot *TaskSlot_new( char const *command_line, svc_registers *regs );
+// Replaces the old application, owning the same application memory.
+void TaskSlot_new_application( char const *command, char const *args );
 Task *Task_new( TaskSlot *slot );
 
 uint32_t TaskSlot_Himem( TaskSlot *slot );

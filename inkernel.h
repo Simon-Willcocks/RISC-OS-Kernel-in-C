@@ -44,10 +44,10 @@ static inline error_block *OSCLI( const char *command )
 
 #define assert( x ) while (!(x)) { Write0( "Assertion failed: " ); Write0( __func__ ); WriteS( #x ); asm ( "bkpt 5" ); }
 
+extern const char hex[16];
+
 #ifndef NO_DEBUG_OUTPUT
 #define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "cc", "lr" )
-
-extern const char hex[16];
 
 // Warning, using the same variable name for n as inside the braces quietly fails
 // Hence: write_num_number_to_write
@@ -73,5 +73,6 @@ extern const char hex[16];
 #define Write0( string )
 #define WriteNum( n )
 #define NewLine 
+#define Space 
 #define WriteN( string, len )
 #endif
