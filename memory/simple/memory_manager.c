@@ -157,23 +157,6 @@ memset( (void*) 0x7000, '\0', 4096 );
 
   // Now the non-shared DAs, can be done in parallel
 
-  {
-  // Empty RamFS, TODO
-    DynamicArea *da = rma_allocate( sizeof( DynamicArea ) );
-    if (da == 0) goto nomem;
-    da->number = 5;
-    da->permissions = 6; // rw-
-    da->shared = 0; // Will be, but non-shared zero size for now
-    da->virtual_page = 0xbad;
-    da->pages = 0;
-    da->actual_pages = da->pages;
-    da->start_page = 0xbadbad;
-    da->handler_routine = 0;
-
-    da->next = workspace.memory.dynamic_areas;
-    workspace.memory.dynamic_areas = da;
-  }
-
   { // "Free Pool" - hopefully obsolete, expected by WindowManager init, at least
   // TODO Add names, handlers to DAs
     extern uint32_t free_pool;
@@ -515,11 +498,7 @@ bool do_OS_ReadDynamicArea( svc_registers *regs )
     return true;
   }
 
-  static error_block error = { 261, "Unknown dynamic area" };
-  regs->r[0] = (uint32_t) &error;
-  return false;
-
-  return true;
+  return Error_UnknownDA( regs );
 }
 
 static char *da_name( DynamicArea *da )
@@ -531,7 +510,7 @@ bool do_OS_DynamicArea( svc_registers *regs )
 {
   bool result = true;
 
-  enum { New, Remove, Info, Enumerate, Renumber };
+  enum { New, Remove, Info, Enumerate, Renumber, NewInfo = 24 };
 
   claim_lock( &shared.memory.dynamic_areas_lock );
 
@@ -578,6 +557,9 @@ bool do_OS_DynamicArea( svc_registers *regs )
       if (va == -1) {
         va = shared.memory.last_da_address;
         shared.memory.last_da_address += max_logical_size;
+// FIXME: Remove:
+shared.memory.last_da_address += (natural_alignment-1);
+shared.memory.last_da_address &= ~(natural_alignment-1);
         regs->r[3] = va;
       }
 
@@ -597,6 +579,9 @@ bool do_OS_DynamicArea( svc_registers *regs )
       da->next = workspace.memory.dynamic_areas;
       workspace.memory.dynamic_areas = da;
 
+#ifdef DEBUG__WATCH_DYNAMIC_AREAS
+  WriteS( "DA " ); WriteNum( da->number ); Space; WriteNum( da->virtual_page << 12 ); Space; WriteNum( da->start_page << 12 ); NewLine;
+#endif
       if (regs->r[2] > 0) {
         svc_registers cda;
         cda.r[0] = da->number;
@@ -657,6 +642,7 @@ bool do_OS_DynamicArea( svc_registers *regs )
     break;
   case Info:
     {
+      // Note: Used by original RamFS
       DynamicArea *da = shared.memory.dynamic_areas;
       while (da != 0 && da->number != regs->r[1]) {
         da = da->next;
@@ -668,9 +654,7 @@ bool do_OS_DynamicArea( svc_registers *regs )
 
       if (da == 0) {
 WriteS( "OS_DynamicArea " ); WriteNum( regs->r[0] ); WriteS( " " ); WriteNum( regs->r[1] ); NewLine;
-        static error_block error = { 0x997, "Unknown Dynamic Area" };
-        regs->r[0] = (uint32_t) &error;
-        result = false;
+        result = Error_UnknownDA( regs );
       }
       else {
 /*
@@ -698,6 +682,71 @@ R8 	Pointer to name of area
     {
       WriteS( "Lying to the Wimp (probably) about free memory" );
       regs->r[2] = 500;
+    }
+    break;
+  case Enumerate:
+    {
+      uint32_t area = regs->r[1]; 
+      DynamicArea *da = shared.memory.dynamic_areas;
+
+      if (area == -1) {
+        regs->r[1] = da->number;
+      }
+      else {
+        while (da != 0 && da->number != area) {
+          da = da->next;
+        }
+
+        if (da != 0) da = da->next;
+        if (da == 0) da = workspace.memory.dynamic_areas;
+
+        while (da != 0 && da->number != area) {
+          da = da->next;
+        }
+
+        if (da != 0) da = da->next;
+        if (da != 0) regs->r[1] = da->number;
+        else regs->r[1] = -1;
+      }
+    }
+    break;
+  case NewInfo:
+    {
+      DynamicArea *da = shared.memory.dynamic_areas;
+      while (da != 0 && da->number != regs->r[1]) {
+        da = da->next;
+      }
+      if (da == 0) da = workspace.memory.dynamic_areas;
+      while (da != 0 && da->number != regs->r[1]) {
+        da = da->next;
+      }
+
+      if (da == 0) {
+WriteS( "OS_DynamicArea " ); WriteNum( regs->r[0] ); WriteS( " " ); WriteNum( regs->r[1] ); NewLine;
+        result = Error_UnknownDA( regs );
+      }
+      else {
+/*
+R0 	Preserved
+R1 	Preserved
+R2 	Current size of area, in bytes
+R3 	Base logical address of area
+R4 	Area flags
+R5 	Maximum size of area in bytes
+R6 	Current physical size of area, in pages*
+R7 	Maximum physical size of area, in pages*
+R8 	Pointer to name of area 
+
+ * Different from Info
+*/
+        regs->r[2] = da->pages << 12;
+        regs->r[3] = da->start_page << 12;
+        regs->r[4] = 0; // FIXME
+        regs->r[5] = da->pages << 12; // FIXME
+        regs->r[6] = da->pages;
+        regs->r[7] = da->pages;
+        regs->r[8] = (uint32_t) "Need to name DAs"; // FIXME
+      }
     }
     break;
   default:

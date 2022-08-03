@@ -101,7 +101,6 @@ bool do_OS_Release( svc_registers *regs );
 bool do_OS_AddToVector( svc_registers *regs );
 bool do_OS_DelinkApplication( svc_registers *regs );
 bool do_OS_RelinkApplication( svc_registers *regs );
-bool do_OS_ReadDefaultHandler( svc_registers *regs );
 bool do_OS_SWINumberFromString( svc_registers *regs );
 
 // Vectored SWIs (do nothing but call the appropriate vectors)
@@ -138,6 +137,7 @@ bool do_OS_Exit( svc_registers *regs );
 bool do_OS_ExitAndDie( svc_registers *regs );
 bool do_OS_ThreadOp( svc_registers *regs );
 bool do_OS_PipeOp( svc_registers *regs ); // because it blocks tasks
+bool do_OS_ReadDefaultHandler( svc_registers *regs );
 void swi_returning_to_usr_mode( svc_registers *regs );
 
 // memory/
@@ -232,6 +232,13 @@ typedef struct {
     uint32_t value;
   } mode_variables[];
 } mode_selector_block;
+
+// This is the only mode supported at the moment. Search for it to find
+// places to modify to cope with more. It's referenced in swis.c and
+// modules.c.
+static const uint32_t only_one_mode_xres = 1920;
+static const uint32_t only_one_mode_yres = 1080;
+extern mode_selector_block const only_one_mode;
 
 // From swis.c, to allow veneers on OS_ SWIs.
 bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc );

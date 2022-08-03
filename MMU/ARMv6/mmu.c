@@ -220,7 +220,7 @@ static void map_at( void *va, uint32_t pa, uint32_t size, bool shared )
     entry.page_base = (pa >> 12);
 
     // FIXME: Obviously more areas of memory need finer granularity than just the
-    // top and bottom megabytes.
+    // top and bottom megabytes. e.g. the top megabyte of application memory.
     if ((uint32_t) va >= 0xfff00000) {
       assert( 0 == top_MiB_tt[(virt & 0xff000)>>12] );
       top_MiB_tt[(virt & 0xff000)>>12] = entry.raw;
@@ -234,6 +234,7 @@ static void map_at( void *va, uint32_t pa, uint32_t size, bool shared )
     }
   }
   else {
+    Write0( __func__ ); Space; WriteNum( va ); Space; WriteNum( pa ); Space; WriteNum( size ); Space; Write0( shared ? " shared" : " not shared" ); NewLine;
     for (;;) { asm ( "bkpt 102" ); }
   }
 

@@ -16,11 +16,6 @@
 #include "inkernel.h"
 
 
-// This is the only mode supported at the moment. Search for it to find
-// places to modify to cope with more. It's also referenced in modules.c,
-// at the moment.
-mode_selector_block const only_one_mode = { .mode_selector_flags = 1, .xres = 1920, .yres = 1080, .log2bpp = 5, .frame_rate = 60, { { -1, 0 } } };
-
 bool Kernel_Error_UnknownSWI( svc_registers *regs )
 {
   static error_block error = { 0x1e6, "Unknown SWI" }; // Could be "SWI name not known", or "SWI &3333 not known"
@@ -242,13 +237,16 @@ static bool do_OS_ReadUnsigned( svc_registers *regs )
     if (d >= 'a') d -= ('a' - 'A');
     if (d > 'Z') break;
     if (d > '9' && d < 'A') break;
-    if (d > '9') d -= ('A' - '0' + 10);
+    if (d <= '9') d -= '0';
+    else d -= ('A' - 10);
     if (d > base) break;
     result = (result * base) + d;
     c++;
   }
   regs->r[1] = (uint32_t) c;
   regs->r[2] = result;
+
+WriteNum( result ); NewLine;
 
   return true;
 }
@@ -636,6 +634,7 @@ static bool do_OS_RemoveTickerEvent( svc_registers *regs )
   return true;
 }
 
+mode_selector_block const only_one_mode = { .mode_selector_flags = 1, .xres = only_one_mode_xres, .yres = only_one_mode_yres, .log2bpp = 5, .frame_rate = 60, { { -1, 0 } } };
 
 
 static bool do_OS_InstallKeyHandler( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
@@ -741,6 +740,7 @@ static bool do_OS_ReadRAMFsLimits( svc_registers *regs )
 
 static bool do_OS_ClaimDeviceVector( svc_registers *regs )
 {
+Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); NewLine;
   uint32_t device = regs->r[0];
   void (*code) = (void*) regs->r[1];
   uint32_t r12 = regs->r[2];
@@ -935,7 +935,7 @@ static const uint32_t SysInfo[] = {
   [OSRSI6_BgEcfOraEor]                             = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws.BgEcfOraEor, // Used by SpriteExtend
   [OSRSI6_DebuggerSpace]                           = 0xbaad0000 | 74,
   [OSRSI6_DebuggerSpace_Size]                      = 0xbaad0000 | 75,
-  [OSRSI6_CannotReset]                             = 0xbaad0000 | 76,
+  [OSRSI6_CannotReset]                             = 0xbad00000 | 76, // Used by FileCore
   [OSRSI6_MetroGnome]                              = 0xbaad0000 | 77, // OS_ReadMonotonicTime
   [OSRSI6_CLibCounter]                             = (uint32_t) &workspace.vectors.zp.CLibCounter,
   [OSRSI6_RISCOSLibWord]                           = (uint32_t) &workspace.vectors.zp.RISCOSLibWord,
@@ -1149,7 +1149,7 @@ Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->r[1] )
   return true;
 }
 
-static bool do_OS_Pointer( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_Pointer( svc_registers *regs ) { Write0( __func__ ); NewLine; return true; }
 
 static bool do_OS_ScreenMode( svc_registers *regs )
 {
@@ -1227,6 +1227,7 @@ static bool do_OS_Hardware( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
   WriteNum( regs->r[8] ); NewLine; // R8?!
+  WriteNum( regs->r[9] ); NewLine; // R8?!
   return Kernel_Error_UnimplementedSWI( regs );
 }
 
@@ -1731,10 +1732,17 @@ static bool Plot( svc_registers *regs )
 static bool RestoreDefaultWindows( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
-  workspace.vectors.zp.vdu_drivers.ws.GWLCol = 0;
-  workspace.vectors.zp.vdu_drivers.ws.GWBRow = 0;
-  workspace.vectors.zp.vdu_drivers.ws.GWRCol = only_one_mode.xres * 2; // os_units FIXME
-  workspace.vectors.zp.vdu_drivers.ws.GWTRow = only_one_mode.yres * 2; // os_units FIXME
+
+  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+
+  ws->GWLCol = 0;
+  ws->GWBRow = 0;
+  ws->GWRCol = only_one_mode.xres-1; // Internal units.
+  ws->GWTRow = only_one_mode.yres-1;
+
+  ws->OrgX = 0;
+  ws->OrgY = 0;
+
   return true;
 }
 
@@ -1745,8 +1753,8 @@ static bool SetGraphicsOrigin( svc_registers *regs )
   int32_t y = int16_at( &params[2] );
 
   VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
-  workspace.vectors.zp.vdu_drivers.ws.OrgX = x >> ws->XEigFactor;
-  workspace.vectors.zp.vdu_drivers.ws.OrgY = y >> ws->YEigFactor;
+  ws->OrgX = x >> ws->XEigFactor;
+  ws->OrgY = y >> ws->YEigFactor;
 
   return true;
 }
@@ -1764,7 +1772,7 @@ static bool do_OS_VduCommand( svc_registers *regs )
   // Always called with the right number of parameter bytes, honest!
 
   switch (regs->r[0]) {
-  case 0: asm ( "bkpt 1" ); break; // do nothing, surely shouldn't be called
+  case 0: break; // do nothing, surely shouldn't be called
   case 1: WriteNum( regs->lr ); asm ( "bkpt 1" ); break; // Send next character to printer if enabled, ignore next char otherwise
   case 2: asm ( "bkpt 1" ); break; // "enable printer"
   case 3: return true; break; // do nothing, "disable printer"

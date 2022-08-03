@@ -371,6 +371,43 @@ void __attribute__(( noinline )) save_context( Task *running, svc_registers *reg
 #endif
 }
 
+static const handler default_handlers[17] = {
+  { 0, 0, 0 },                // RAM Limit for program (0x8000 + amount of RAM)
+  { 0xbadf00d1, 0, 0 },       // Undefined instruction
+  { 0xbadf00d2, 0, 0 },       // Prefetch abort
+  { 0xbadf00d3, 0, 0 },       // Data abort
+  { 0xbadf00d4, 0, 0 },       // Address exception
+  { 0xbadf00d5, 0, 0 },       // Other exceptions
+  { 0xbadf00d6, 0, 0 },       // Error
+  { 0xbadf00d7, 0, 0 },       // CallBack
+  { 0xbadf00d8, 0, 0 },       // Breakpoint
+  { 0xbadf00d9, 0, 0 },       // Escape
+  { 0xbadf00da, 0, 0 },       // Event
+  { ExitHandler, 0, 0 },       // Exit
+  { 0xbadf00dc, 0, 0 },       // Unused SWI
+  { 0xbadf00dd, 0, 0 },       // Exception registers
+  { 0, 0, 0 },                // Application space (When does this not = RAM Limit?)
+  { 0xbadf00df, 0, 0 },       // Currently Active Object
+  { ignore_event, 0, 0 }        // UpCall handler
+};
+
+bool do_OS_ReadDefaultHandler( svc_registers *regs )
+{
+  if (regs->r[0] > number_of( default_handlers )) {
+    static error_block error = { 0x999, "Handler number out of range" };
+    regs->r[0] = (uint32_t) &error;
+    return false;
+  }
+
+  handler h = default_handlers[ regs->r[0] ];
+
+  regs->r[1] = h.code;
+  regs->r[2] = h.private_word;
+  regs->r[3] = 0; // Only relevant for Error, CallBack, BreakPoint. These will probably have to be associated with Task Slots...?
+
+  return true;
+}
+
 // Which comes first, the slot or the task? Privileged (module?) tasks don't need a slot.
 TaskSlot *TaskSlot_new( char const *command_line, svc_registers *regs )
 {
@@ -412,26 +449,6 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
   }
 
   workspace.task_slot.running = new_task;
-
-  static const handler default_handlers[17] = {
-    { 0, 0, 0 },                // RAM Limit for program (0x8000 + amount of RAM)
-    { 0xbadf00d1, 0, 0 },       // Undefined instruction
-    { 0xbadf00d2, 0, 0 },       // Prefetch abort
-    { 0xbadf00d3, 0, 0 },       // Data abort
-    { 0xbadf00d4, 0, 0 },       // Address exception
-    { 0xbadf00d5, 0, 0 },       // Other exceptions
-    { 0xbadf00d6, 0, 0 },       // Error
-    { 0xbadf00d7, 0, 0 },       // CallBack
-    { 0xbadf00d8, 0, 0 },       // Breakpoint
-    { 0xbadf00d9, 0, 0 },       // Escape
-    { 0xbadf00da, 0, 0 },       // Event
-    { ExitHandler, 0, 0 },       // Exit
-    { 0xbadf00dc, 0, 0 },       // Unused SWI
-    { 0xbadf00dd, 0, 0 },       // Exception registers
-    { 0, 0, 0 },                // Application space (When does this not = RAM Limit?)
-    { 0xbadf00df, 0, 0 },       // Currently Active Object
-    { ignore_event, 0, 0 }        // UpCall handler
-  };
 
   for (int i = 0; i < number_of( result->handlers ); i++) {
     assert( i < number_of( default_handlers ) );

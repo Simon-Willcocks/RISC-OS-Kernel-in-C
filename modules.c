@@ -81,9 +81,9 @@ struct module {
   module_header *header;
   uint32_t *private_word;       // Points to either the local_private_word, below, or the shared local_private_word
   uint32_t local_private_word;
-  uint32_t instance;
-  module *next;  // Simple singly-linked list
-  module *next_instance;  // Simple singly-linked list
+  module *next;         // Simple singly-linked list
+  module *instances;    // Simple singly-linked list of instances. Instance number is how far along the list the module is, not a constant.
+  module *base;
   char postfix[];
 };
 
@@ -103,13 +103,16 @@ static inline uint32_t mp_aware( module_header *header )
   return 0 != (2 & flags);
 }
 
-static inline bool run_initialisation_code( const char *env, module *m )
+static inline bool run_initialisation_code( const char *env, module *m, uint32_t instance )
 {
+  Write0( "Initialisation code at " ); WriteNum( m->header->offset_to_initialisation ); NewLine;
+  Write0( "Initialisation code at " ); WriteNum( m->header ); NewLine;
   uint32_t init_code = m->header->offset_to_initialisation + (uint32_t) m->header;
+  Write0( "Initialisation code at " ); WriteNum( init_code ); NewLine;
 
   register uint32_t non_kernel_code asm( "r14" ) = init_code;
   register uint32_t *private_word asm( "r12" ) = m->private_word;
-  register uint32_t instance asm( "r11" ) = m->instance;
+  register uint32_t _instance asm( "r11" ) = instance;
   register const char *environment asm( "r10" ) = env;
 
   // These will be passed to old-style modules as well, but they'll ignore them
@@ -122,7 +125,7 @@ static inline bool run_initialisation_code( const char *env, module *m )
       :
       : "r" (non_kernel_code)
       , "r" (private_word)
-      , "r" (instance)
+      , "r" (_instance)
       , "r" (environment)
       , "r" (this_core)
       , "r" (number_of_cores)
@@ -245,6 +248,9 @@ if (svc == 0x41b40 || svc == 0x61b40) {
   return (regs->spsr & VF) == 0;
 }
 
+#ifdef DEBUG__SHOW_VECTORS_VERBOSE
+#define DEBUG__SHOW_VECTORS
+#endif
 #ifdef DEBUG__SHOW_VECTORS
 vector do_nothing;
 #endif
@@ -357,25 +363,56 @@ bool do_module_swi( svc_registers *regs, uint32_t svc )
   return run_swi_handler_code( regs, svc, m );
 }
 
-static inline int riscoscmp( const char *left, const char *right, bool space_terminates )
+// Case insensitive, nul, cr, lf, space, or % terminates.
+// So "abc" matches "abc def", "abc%ghi", etc.
+static inline bool module_name_match( char const *left, char const *right )
 {
-  int result = 0;
-  while (result == 0) {
+  int diff = 0;
+
+  while (diff == 0) {
     char l = *left++;
     char r = *right++;
 
-    if ((l == 0 || l == 10 || l == 13 || (space_terminates && l == ' '))
-     && (r == 0 || r == 10 || r == 13 || (space_terminates && r == ' '))) break;
-
-    result = l - r;
-    if (result == 'a'-'A') {
-      if (l >= 'a' && l <= 'z') result = 0;
+    if ((l == 0 || l == 10 || l == 13 || l == ' ' || l == '%')
+     && (r == 0 || r == 10 || r == 13 || r == ' ' || r == '%')) {
+      return true;
     }
-    else if (result == 'A'-'a') {
-      if (r >= 'a' && r <= 'z') result = 0;
+
+    diff = l - r;
+
+    if (diff == 'a'-'A') {
+      if (l >= 'a' && l <= 'z') diff = 0;
+    }
+    else if (diff == 'A'-'a') {
+      if (r >= 'a' && r <= 'z') diff = 0;
     }
   }
-  return result;
+
+  return false;
+}
+
+// Case insensitive, nul, cr, lf, or space terminate
+static inline bool riscoscmp( char const *left, char const *right )
+{
+  int diff = 0;
+
+  while (diff == 0) {
+    char l = *left++;
+    char r = *right++;
+
+    if ((l == 0 || l == 10 || l == 13 || l == ' ')
+     && (r == 0 || r == 10 || r == 13 || r == ' ')) return true;
+
+    diff = l - r;
+    if (diff == 'a'-'A') {
+      if (l >= 'a' && l <= 'z') diff = 0;
+    }
+    else if (diff == 'A'-'a') {
+      if (r >= 'a' && r <= 'z') diff = 0;
+    }
+  }
+
+  return false;
 }
 
 static inline void describe_service_call( svc_registers *regs )
@@ -585,7 +622,7 @@ Write0( "Looking for " ); Write0( name );
 #endif
   module *m = workspace.kernel.module_list_head;
   int number = 0;
-  while (m != 0 && 0 != riscoscmp( title_string( m->header ), name, true )) {
+  while (m != 0 && !module_name_match( title_string( m->header ), name )) {
 #ifdef DEBUG__SHOW_MODULE_LOOKUPS
 Write0( ", not " ); Write0( title_string( m->header ) );
 #endif
@@ -607,10 +644,212 @@ Write0( __func__ ); for (;;) {};
   return Unknown_OS_Module_call( regs );
 }
 
+// Warning: Only works when file exists
+static uint32_t read_file_size( const char *name )
+{
+  register uint32_t os_file_code asm( "r0" ) = 17;
+  register const char *filename asm( "r1" ) = name;
+  register uint32_t object_type asm( "r0" );
+  register uint32_t word1 asm( "r2" );
+  register uint32_t word2 asm( "r3" );
+  register uint32_t file_size asm( "r4" );
+  register uint32_t attributes asm( "r5" );
+  asm volatile ( "svc %[swi]" 
+      : "=r" (file_size) 
+      , "=r" (object_type)
+      , "=r" (word1)
+      , "=r" (word2)
+      , "=r" (attributes)
+      : [swi] "i" (OS_File)
+      , "r" (os_file_code)
+      , "r" (filename)
+      : "lr" );
+  return file_size;
+}
+
+// Reads the size, allocates space, then loads the file after a word containing the size plus 4
+uint32_t *read_module_into_memory( const char *name )
+{
+  uint32_t file_size = read_file_size( name );
+Write0( "File size = " ); WriteNum( file_size ); NewLine;
+  void *mem = rma_allocate( file_size + 4 );
+Write0( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
+
+  if (mem != 0)
+  {
+    uint32_t *words = mem;
+    words[0] = file_size + 4;
+
+    // FIXME: what happens if the file expands between asking its size and loading it?
+
+    register uint32_t os_file_code asm( "r0" ) = 16;
+    register const char *filename asm( "r1" ) = name;
+    register void *load_address asm( "r2" ) = words + 1;
+    register uint32_t load_at_r2 asm( "r3" ) = 0;
+    asm volatile ( "svc %[swi]" : : [swi] "i" (OS_File), "r" (os_file_code), "r" (filename), "r" (load_address), "r" (load_at_r2) : "r4", "r5", "lr" );
+  }
+
+  return mem;
+}
+
+static module *new_module( module *base, module_header *m, const char *postfix )
+{
+  int len = postfix == 0 ? 1 : strlen( postfix ) + 1;
+  module *instance = rma_allocate( sizeof( module ) + len );
+
+  assert( base == 0 || base->header == m );
+
+  if (instance != 0) {
+    instance->header = m;
+    instance->private_word = &instance->local_private_word;
+    instance->local_private_word = 0;
+
+    instance->next = 0;
+    instance->base = base;
+    instance->instances = 0;
+
+    if (base != 0) {
+      module **p = &base->instances;
+      while (*p != 0) { p = &(*p)->next; }
+      *p = instance;
+    }
+
+    if (len == 1) {
+      instance->postfix[0] = 0;
+    }
+    else {
+      for (int i = 0; i < len; i++) {
+        instance->postfix[i] = postfix[i];
+      }
+    }
+  }
+
+  return instance;
+}
+
+static void pre_init_service( uint32_t *size_ptr )
+{
+  module_header *m = (void*) (size_ptr+1);
+  svc_registers serviceregs = { .r = { [0] = (uint32_t) m, [1] = 0xb9, [2] = *size_ptr, [7] = 0x11111111 } };
+  do_OS_ServiceCall( &serviceregs );
+}
+
+static void post_init_service( uint32_t *size_ptr )
+{
+  module_header *m = (void*) (size_ptr+1);
+  svc_registers serviceregs = { .r = { [0] = (uint32_t) m, [1] = 0xda, [2] = (uint32_t) title_string( m ), [7] = 0x22222222 } };
+  do_OS_ServiceCall( &serviceregs );
+}
+
+static bool initialise_module( svc_registers *regs, uint32_t *memory, char const* parameters )
+{
+  // regs are only used to return errors. TODO
+
+  uint32_t size_plus_four = *memory;
+  module_header *new_mod = (void*) (memory+1);
+
+  if (0 != new_mod->offset_to_initialisation & (1 << 31)) {
+    Write0( "Is this module squashed? I can't cope with that." ); asm ( "bkpt 1" );
+  }
+
+  // "During initialisation, your module is not on the active module list, and
+  // so you cannot call SWIs in your own SWI chunk."
+
+  module *instance;
+  module *shared_instance = 0;
+  bool success = true;
+
+  if (0 != new_mod->offset_to_initialisation) {
+    // FIXME Does this still make sense? Does anyone patch ROM modules any more?
+    pre_init_service( memory );
+  }
+  bool mp_module = mp_aware( new_mod );
+
+  if (mp_module) {
+    claim_lock( &shared.kernel.mp_module_init_lock );
+
+    Write0( "MP" );
+    shared_instance = shared.kernel.module_list_head;
+    while (shared_instance != 0 && shared_instance->header != new_mod) {
+      shared_instance = shared_instance->next;
+    }
+
+    if (shared_instance == 0) {
+      // No core has initialised this module, yet.
+      // Store a copy in the shared list.
+      shared_instance = new_module( 0, new_mod, 0 );
+
+      if (shared_instance != 0) {
+        if (shared.kernel.module_list_tail == 0) {
+          shared.kernel.module_list_head = shared_instance;
+        }
+        else {
+          shared.kernel.module_list_tail->next = shared_instance;
+        }
+
+        shared.kernel.module_list_tail = shared_instance;
+      }
+      else {
+        success = error_nomem( regs );
+      }
+    }
+  }
+
+  if (success) {
+    instance = new_module( 0, new_mod, 0 );
+    success = instance != 0; 
+
+    if (success && shared_instance != 0) {
+      instance->private_word = shared_instance->private_word;
+      while (instance->private_word != &shared_instance->local_private_word) {
+        asm ( "bkpt 86" );
+      }
+    }
+
+    if (success && 0 != new_mod->offset_to_initialisation) {
+      success = run_initialisation_code( parameters, instance, 0 );
+    }
+
+    if (success) {
+      if (workspace.kernel.module_list_tail == 0) {
+        workspace.kernel.module_list_head = instance;
+      }
+      else {
+        workspace.kernel.module_list_tail->next = instance;
+      }
+
+      workspace.kernel.module_list_tail = instance;
+    }
+  }
+
+  if (mp_module) {
+    release_lock( &shared.kernel.mp_module_init_lock );
+  }
+
+  if (success && 0 != new_mod->offset_to_initialisation) {
+    // "This means that any SWIs etc provided by the module are available
+    // (in contrast, during any service calls issued by the module’s own
+    // initialisation code, the module is not yet linked into the chain)."
+    post_init_service( memory );
+  }
+
+  return success;
+}
+
 static bool do_Module_Load( svc_registers *regs )
 {
-Write0( __func__ ); for (;;) {};
-  return Unknown_OS_Module_call( regs );
+  uint32_t r1 = regs->r[1];
+  uint32_t r2 = regs->r[2];
+
+  char const *command = (void*) regs->r[1];
+  uint32_t *memory = read_module_into_memory( command );
+  if (memory == 0) { asm ( "bkpt 1" ); }
+
+  char const *parameters = command;
+  while (*++parameters > ' ') {}
+  while (*parameters == ' ') { parameters++; }
+  
+  return initialise_module( regs, memory, parameters );
 }
 
 static bool do_Module_Enter( svc_registers *regs )
@@ -827,128 +1066,21 @@ Write0( __func__ ); for (;;) {};
   return Unknown_OS_Module_call( regs );
 }
 
-static void pre_init_service( module_header *m, uint32_t size_plus_4 )
+static uint32_t instance_number( module *m )
 {
-  svc_registers serviceregs = { .r = { [0] = (uint32_t) m, [1] = 0xb9, [2] = size_plus_4, [7] = 0x11111111 } };
-  do_OS_ServiceCall( &serviceregs );
-}
+  if (m->base == 0) return 0;
+  uint32_t result = 1;
+  module *i = m->instances;
+  while (i != 0 && i != m) { i = i->next; result++; }
 
-static void post_init_service( module_header *m, uint32_t size_plus_4 )
-{
-  svc_registers serviceregs = { .r = { [0] = (uint32_t) m, [1] = 0xda, [2] = (uint32_t) title_string( m ), [7] = 0x22222222 } };
-  do_OS_ServiceCall( &serviceregs );
-}
+  assert (i == 0); // Not an instance of its base?
 
-static module *new_instance( module_header *m, svc_registers *regs, const char *postfix )
-{
-  int len = postfix == 0 ? 1 : strlen( postfix ) + 1;
-  module *instance = rma_allocate( sizeof( module ) + len );
-
-  if (instance != 0) {
-    instance->header = m;
-    instance->private_word = &instance->local_private_word;
-    instance->local_private_word = 0;
-    instance->instance = 0;
-    instance->next = 0;
-    if (len == 1) {
-      instance->postfix[0] = 0;
-    }
-    else {
-      for (int i = 0; i < len; i++) {
-        instance->postfix[i] = postfix[i];
-      }
-    }
-  }
-
-  return instance;
+  return result;
 }
 
 static bool do_Module_InsertFromMemory( svc_registers *regs )
 {
-  module_header *new_mod = (void*) regs->r[1];
-
-  // "During initialisation, your module is not on the active module list, and
-  // so you cannot call SWIs in your own SWI chunk."
-
-  module *instance;
-  module *shared_instance = 0;
-  bool success = true;
-
-  if (0 != new_mod->offset_to_initialisation) {
-    // FIXME Does this still make sense? Does anyone patch ROM modules any more?
-    pre_init_service( new_mod, ((uint32_t*) new_mod)[-1] );
-  }
-  bool mp_module = mp_aware( new_mod );
-
-  if (mp_module) {
-    claim_lock( &shared.kernel.mp_module_init_lock );
-
-    Write0( "MP" );
-    shared_instance = shared.kernel.module_list_head;
-    while (shared_instance != 0 && shared_instance->header != new_mod) {
-      shared_instance = shared_instance->next;
-    }
-
-    if (shared_instance == 0) {
-      // No core has initialised this module, yet.
-      // Store a copy in the shared list.
-      shared_instance = new_instance( new_mod, regs, 0 );
-
-      if (shared_instance != 0) {
-        if (shared.kernel.module_list_tail == 0) {
-          shared.kernel.module_list_head = shared_instance;
-        }
-        else {
-          shared.kernel.module_list_tail->next = shared_instance;
-        }
-
-        shared.kernel.module_list_tail = shared_instance;
-      }
-      else {
-        success = error_nomem( regs );
-      }
-    }
-  }
-
-  if (success) {
-    instance = new_instance( new_mod, regs, 0 );
-    success = instance != 0; 
-
-    if (success && shared_instance != 0) {
-      instance->private_word = shared_instance->private_word;
-      while (instance->private_word != &shared_instance->local_private_word) {
-        asm ( "bkpt 86" );
-      }
-    }
-
-    if (success && 0 != new_mod->offset_to_initialisation) {
-      success = run_initialisation_code( "", instance );
-    }
-
-    if (success) {
-      if (workspace.kernel.module_list_tail == 0) {
-        workspace.kernel.module_list_head = instance;
-      }
-      else {
-        workspace.kernel.module_list_tail->next = instance;
-      }
-
-      workspace.kernel.module_list_tail = instance;
-    }
-  }
-
-  if (mp_module) {
-    release_lock( &shared.kernel.mp_module_init_lock );
-  }
-
-  if (success && 0 != new_mod->offset_to_initialisation) {
-    // "This means that any SWIs etc provided by the module are available
-    // (in contrast, during any service calls issued by the module’s own
-    // initialisation code, the module is not yet linked into the chain)."
-    post_init_service( new_mod, ((uint32_t*) new_mod)[-1] );
-  }
-
-  return success;
+  return initialise_module( regs, (void*) (regs->r[1] - 4), "" );
 }
 
 static bool do_Module_InsertAndRelocateFromMemory( svc_registers *regs )
@@ -970,22 +1102,37 @@ static bool do_Module_ExtractModuleInfo( svc_registers *regs )
   }
 
   int instance = regs->r[2];
-  while (instance-- > 0 && m != 0) {
-    m = m->next_instance;
-  }
 
-  if (m == 0) {
-    return Kernel_Error_NoMoreIncarnations( regs );
-  }
+  if (m->instances != 0) {
+    module *base = m;
 
-  regs->r[1] ++;
-  if (regs->r[2] != 0) {
-    regs->r[2] ++;
+    if (instance > 0) {
+      m = m->instances;
+Write0( "Instance " ); WriteNum( instance ); Space; WriteNum( m ); NewLine;
+      while (--instance > 0 && m != 0) {
+        m = m->next;
+WriteNum( instance ); Space; WriteNum( m ); NewLine;
+      }
+    }
+
+    if (m == 0) {
+      return Kernel_Error_NoMoreIncarnations( regs );
+    }
+
+    if (m->next == 0) {
+      regs->r[2] = 0;
+    }
+    else {
+      regs->r[2] ++;
+    }
+  }
+  else {
+    regs->r[1] ++;
   }
 
   regs->r[3] = (uint32_t) m->header;
   regs->r[4] = *m->private_word;
-  regs->r[5] = (uint32_t) m->postfix;
+  regs->r[5] = (uint32_t) (m->postfix[0] == '\0' ? "Base" : &m->postfix);
 
   return true;
 }
@@ -1008,18 +1155,70 @@ static bool do_Module_ExtendBlock( svc_registers *regs )
 static bool do_Module_CreateNewInstantiation( svc_registers *regs )
 {
   // I have a feeling these will have to be MP aware modules...
-#if 0
-  char const *name = (void*) regs->r[1];
-  while (*name != '%' && *name > ' ') name++;
-  if (*name != '%') {
+  // NO! This is totally the wrong way around.
+  // Most legacy modules expect to be the only copy of themselves on the system.
+  // That's the only way they will work.
+  // The FileSystem protection system should be extended to regular modules. 
+  // We need a generic delegate_operation
+  // On the other hand, while SINGLE_CORE is defined, this will do, I think.
+
+  char const *module_name = (void*) regs->r[1];
+
+  module *m = find_module( module_name );
+
+  if (m == 0) {
     asm ( "bkpt 1" );
   }
-  new_instance( m, regs, ++name );
+Write0( __func__ ); Space; Write0( title_string( m->header ) ); NewLine;
+Write0( __func__ ); Space; Write0( module_name ); NewLine;
+Write0( __func__ ); Space; WriteNum( module_name ); NewLine;
+
+  char const *extension = module_name;
+  while (*extension != '%' && *extension > ' ') extension++;
+
+  if (*extension != '%') {
+    asm ( "bkpt 1" );
+  }
+
+Write0( __func__ ); Space; Write0( extension ); NewLine;
+Write0( __func__ ); Space; WriteNum( extension ); NewLine;
+  extension ++;
+
+  char const *parameters = extension;
+  while (*parameters > ' ') { parameters++; } // FIXME Tabs?
+  while (*parameters == ' ') { parameters++; } // FIXME Tabs?
+
+Write0( __func__ ); Space; Write0( parameters ); NewLine;
+Write0( __func__ ); Space; WriteNum( parameters ); NewLine;
+
+  module *instance = new_module( m, m->header, extension );
+
+  bool success = (instance != 0);
+
+  if (success && 0 != instance->header->offset_to_initialisation) {
+#if 1
+    Write0( "Passing parameters " ); Write0( parameters ); Write0( " to new instance" ); NewLine;
 #endif
-Write0( __func__ ); 
-Write0( regs->r[1] );
-for (;;) {};
-  return Unknown_OS_Module_call( regs );
+    success = run_initialisation_code( parameters, instance, instance_number( instance ) );
+  }
+  else {
+#if 1
+    Write0( "Not passing parameters " ); Write0( parameters ); Write0( " to new instance" ); NewLine;
+#endif
+  }
+
+  if (success) {
+    if (workspace.kernel.module_list_tail == 0) {
+      workspace.kernel.module_list_head = instance;
+    }
+    else {
+      workspace.kernel.module_list_tail->next = instance;
+    }
+
+    workspace.kernel.module_list_tail = instance;
+  }
+
+  return success;
 }
 
 static bool do_Module_RenameInstantiation( svc_registers *regs )
@@ -1048,17 +1247,41 @@ Write0( __func__ ); Write0( " " ); Write0( regs->r[1] );
 #endif
 
   // Initially called by Wimp during init, just to find ROM location
+  // Checking the whole module name, including any extension.
 
   const char *name = (void*) regs->r[1];
+  const char *extension = name;
+  char c;
+  do {
+    c = *extension++;
+  } while (c != '%' && c > ' ');
+  if (c != '%') extension = 0;
+
   // Not calling find_module, want the number as well...
   module *m = workspace.kernel.module_list_head;
   int number = 0;
-  while (m != 0 && 0 != riscoscmp( title_string( m->header ), name, true )) {
+  while (m != 0 && !module_name_match( title_string( m->header ), name )) {
 #ifdef DEBUG__SHOW_MODULE_LOOKUPS
 Write0( ", not " ); Write0( title_string( m->header ) );
 #endif
     m = m->next;
     number++;
+  }
+
+  uint32_t instance = 0;
+
+  if (m != 0 && m->instances != 0) {
+    if (extension != 0 && !riscoscmp( "Base", extension )) {
+      instance++; // First non-base instance is number 1
+      m = m->instances;
+      while (m != 0 && !riscoscmp( m->postfix, extension )) {
+#ifdef DEBUG__SHOW_MODULE_LOOKUPS
+Write0( ", not " ); Write0( title_string( m->header ) ); Write0( "%" ); Write0( m->postfix );
+#endif
+        m = m->next;
+        instance++;
+      }
+    }
   }
 
   if (m == 0) {
@@ -1070,7 +1293,7 @@ Write0( __func__ ); Write0( " " ); Write0( regs->r[1] );
   }
   else {
     regs->r[1] = number;
-    regs->r[2] = m->instance;
+    regs->r[2] = instance;
     regs->r[3] = (uint32_t) m->header;
     regs->r[4] = (uint32_t) m->private_word;
     regs->r[5] = m->postfix[0] == '\0' ? 0 : (uint32_t) &m->postfix;
@@ -1353,7 +1576,7 @@ static module_header *find_rom_module( const char *name )
   while (0 != *rom_module) {
     module_header *header = (void*) (rom_module+1);
     register const char *title = title_string( header );
-    if (0 == strcmp( title, name )) {
+    if (module_name_match( title, name )) {
       return (void*) (rom_module+1); // Header without size
     }
     rom_module += (*rom_module)/4; // Includes size of length field
@@ -1423,15 +1646,13 @@ bool excluded( const char *name )
                                   , "VCHIQ"             //  "
                                   , "BCMSound"          // ???
 
-                                  // , "DeviceFS"          // Calls ChangeEnvironment before there's a TaskSlot
-
 // Probably don't work, I can't be bothered to see if their problems are solved already
                                   , "SoundDMA"          // Uses OS_Memory
                                   , "SoundChannels"     // ???
                                   , "SoundScheduler"    // Sound_Tuning
                                   // , "TaskManager"       // Initialisation returns an error
                                   , "BCMVideo"          // Tries to use OS_MMUControl
-                                  , "FilterManager"     // Uses Wimp_ReadSysInfo 
+                                  // , "FilterManager"     // Uses Wimp_ReadSysInfo 
                                   , "WaveSynth"         // throws exception
                                   , "StringLib"         // ?
                                   , "Percussion"         // ?
@@ -1446,7 +1667,7 @@ bool excluded( const char *name )
                                   , "SDCMOS"              // 0x8600003f
                                   //, "ColourPicker"      // 0x8600003f
                      //             , "BootCommands"      // 0x8600003f
-                                  , "WindowScroll"      // 0x8600003f OS_Pointer not yet supported
+                                  // , "WindowScroll"      // 0x8600003f OS_Pointer not yet supported
                                   , "Internet"          // 0x8600003f
                                   , "Resolver"          // 0x8600003f
                                   , "Net"               // 0x8600003f
@@ -1460,46 +1681,39 @@ bool excluded( const char *name )
                                   , "EtherGENET"
                                   , "EtherUSB"
                                   , "DHCP"
-                     //             , "!Edit"
-                     //             , "!Draw"
-                     //             , "!Paint"
-                     //             , "!Alarm"
-                     //             , "!Chars"
-                     //             , "!Help"
-                                  , "Toolbox"           // Tries to RMLoad System:FilterManager
-                                  , "Window"            // Requires Toolbox
-                                  , "ToolAction"        // Requires Window
-                                  , "Menu"
-                                  , "Iconbar"
-                                  , "ColourDbox"
-                                  , "ColourMenu"
-                                  , "DCS"
-                                  , "FileInfo"
-                                  , "FontDbox"
-                                  , "FontMenu"
-                                  , "PrintDbox"
-                                  , "ProgInfo"
-                                  , "SaveAs"
-                                  , "Scale"
-                                  , "TextGadgets"
+                                  // , "Toolbox"           // Tries to RMLoad System:FilterManager
+                                  // , "Window"            // Requires Toolbox
+                                  // , "ToolAction"        // Requires Window
+                                  // , "Menu"
+                                  // , "Iconbar"
+                                  // , "ColourDbox"
+                                  // , "ColourMenu"
+                                  //  , "DCS" // WTH is this?
+                                  // , "FileInfo"
+                                  // , "FontDbox"
+                                  // , "FontMenu"
+                                  // , "PrintDbox"
+                                  // , "ProgInfo"
+                                  // , "SaveAs"
+                                  // , "Scale"
+                                  // , "TextGadgets"
                                   , "CDFSDriver"
                                   , "CDFSSoftSCSI"
                                   , "CDFS"
                                   , "CDFSFiler"
-                                  , "UnSqueezeAIF"
+                                  // , "UnSqueezeAIF"
                                   , "GPIO"
 
                                   , "DMAManager"        // Calls OS_Hardware
                                   , "BBCEconet"         // Data abort
-                                  , "RamFS"             // Unknown dynamic area
                                   , "FSLock"            // Writes CMOS not yet supported
                                   , "FPEmulator"        // OS_ClaimProcessorVector
 
                                   , "MbufManager"       // 0xe200004d
 
-                                  , "DragASprite"       // Doesn't return, afaics
-                                  , "RamFS"             // Tries to use OS_MMUControl
-                                  , "Filer"             // Doesn't return, afaics
+                                  // , "DragASprite"       // Doesn't return, afaics
+                                  , "RamFS"
+                                  // , "Filer"             // Doesn't return, afaics
                                   , "VFPSupport"        // Tries to claim processor vector
                                   , "Hourglass"        // OS_ReadPalette
                                   , "InternationalKeyboard" // Probably because there isn't one?
@@ -1524,6 +1738,7 @@ bool excluded( const char *name )
   //REPLACEMENT( FontManager );
   REPLACEMENT( Portable );
   REPLACEMENT( VFPSupport );
+  REPLACEMENT( FPEmulator );
 
   for (int i = 0; i < number_of( excludes ); i++) {
     if (0 == strcmp( name, excludes[i] ))
@@ -2426,7 +2641,7 @@ static error_block *run_module_command( const char *command )
   Write0( sep ); sep = ", "; Write0( cmd );
 #endif
       int len = strlen( cmd );
-      if (0 == riscoscmp( cmd, command, true )) {
+      if (riscoscmp( cmd, command )) {
         struct {
           uint32_t code_offset;
           uint32_t info_word;
@@ -2636,7 +2851,7 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
     // WindowManager runs FontInstall but is initialised before FontManager
     // and ROMFonts. Let this one go... (and re-order the modules)
     static const char exception[] = "FontInstall";
-    if (0 != riscoscmp( command, exception, true ))
+    if (!module_name_match( command, exception ))
       asm( "bkpt 51" );
 #endif
     }
@@ -2678,11 +2893,12 @@ void __attribute__(( naked )) default_os_upcall()
   // are included.
   asm ( "push { r0-r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
 
-Write0( __func__ ); Space; WriteNum( regs ); NewLine;
+//Write0( __func__ ); Space; WriteNum( regs ); NewLine;
   do_UpCall( regs );
 
+//Write0( "Done: " ); Space; WriteNum( regs ); NewLine;
+
   asm ( "mov %[regs], sp" : [regs] "=r" (regs) );
-Write0( "Done: " ); Space; WriteNum( regs ); NewLine;
 
   asm ( "pop { r0-r12, pc }" );
 }
@@ -2718,7 +2934,7 @@ vector default_GraphicsV = { .next = &do_nothing, .code = (uint32_t) MOSGraphics
 vector default_IrqV = { .next = 0, .code = (uint32_t) default_irq, .private_word = 0 };
 vector default_TickerV = { .next = 0, .code = (uint32_t) default_ticker, .private_word = 0 };
 
-static vector *default_handler( int number )
+static vector *default_vector( int number )
 {
   switch (number) {
   case 0x02: return &default_IrqV;
@@ -2735,16 +2951,6 @@ static vector *default_handler( int number )
   default:
     return &do_nothing;
   }
-}
-
-bool do_OS_ReadDefaultHandler( svc_registers *regs )
-{
-  vector *v = default_handler( regs->r[0] );
-
-  regs->r[1] = v->code;
-  regs->r[2] = v->private_word;
-  regs->r[3] = 0; // Only relevant for Error, CallBack, BreakPoint. These will probably have to be associated with Task Slots...?
-  return true;
 }
 
 bool do_OS_SWINumberFromString( svc_registers *regs )
@@ -2845,8 +3051,6 @@ static void allocate_legacy_scratch_space()
   MMU_map_at( (void*) 0xfff00000, for_something_else, 4096 );
 }
 
-extern mode_selector_block only_one_mode;
-
 static void set_up_legacy_zero_page()
 {
   // For default PaletteV code
@@ -2917,8 +3121,8 @@ static void set_up_legacy_zero_page()
   static const uint32_t vduvars[45] = {
     0x0,                                // 0x80
     0x0,
-    (1920 << eigen) - 1,
-    (1080 << eigen) - 1,
+    only_one_mode_xres - 1, // XWindLimit
+    only_one_mode_yres - 1, // YWindLimit
     0,
     0x86,
     0xef,
@@ -3081,7 +3285,7 @@ static void set_up_legacy_zero_page()
 static void setup_OS_vectors()
 {
   for (int i = 0; i < number_of( workspace.kernel.vectors ); i++) {
-    workspace.kernel.vectors[i] = default_handler( i );
+    workspace.kernel.vectors[i] = default_vector( i );
   }
 }
 
@@ -3235,802 +3439,3 @@ void Boot()
   __builtin_unreachable();
 }
 
-#if 0
-// None of the following will remain in the kernel, it is experimental user
-// mode code.
-
-/*
-// Damnit, this breaks simple stuff...
-#undef Write0
-// ss is there in case the s parameter is even slightly complicated
-#define Write0( s ) do { const char *ss = s; register const char *string asm( "r0" ) = ss; asm ( "svc 2" : : "r" (string) ); } while (false)
-*/
-
-// The following routines are designed for user mode, so they don't have to save lr.
-static inline uint32_t open_file_to_read( const char *name )
-{
-  // OS_Find
-  register uint32_t os_find_code asm( "r0" ) = 0x43 | (1 << 3);
-  register const char *filename asm( "r1" ) = name;
-  register uint32_t file_handle asm( "r0" );
-  asm volatile ( "svc 0x0d" : "=r" (file_handle) : "r" (os_find_code), "r" (filename) ); // Doesn't corrupt lr because running usr
-
-  return file_handle;
-}
-
-static uint32_t read_file_size( const char *name )
-{
-  register uint32_t os_file_code asm( "r0" ) = 17;
-  register const char *filename asm( "r1" ) = name;
-  register uint32_t object_type asm( "r0" );
-  register uint32_t word1 asm( "r2" );
-  register uint32_t word2 asm( "r3" );
-  register uint32_t file_size asm( "r4" );
-  register uint32_t attributes asm( "r5" );
-  asm volatile ( "svc %[swi]" 
-      : "=r" (file_size) 
-      , "=r" (object_type)
-      , "=r" (word1)
-      , "=r" (word2)
-      , "=r" (attributes)
-      : [swi] "i" (OS_File)
-      , "r" (os_file_code)
-      , "r" (filename) );
-  return file_size;
-}
-
-static void *claim_rma_memory( uint32_t size )
-{
-  register uint32_t reason asm( "r0" ) = 6;
-  register uint32_t amount asm( "r3" ) = size;
-  register void *mem asm ( "r2" );
-
-  asm volatile ( "svc %[swi]" : "=r" (mem) : [swi] "i" (OS_Module), "r" (reason), "r" (amount) );
-
-  return mem;
-}
-
-void *read_file_into_memory( const char *name )
-{
-  uint32_t file_size = read_file_size( name );
-Write0( "File size = " ); WriteNum( file_size ); NewLine;
-  void *mem = claim_rma_memory( file_size );
-Write0( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
-
-  if (mem != 0)
-  {
-    register uint32_t os_file_code asm( "r0" ) = 16;
-    register const char *filename asm( "r1" ) = name;
-    register void *load_address asm( "r2" ) = mem;
-    register uint32_t load_at_r2 asm( "r3" ) = 0;
-    asm volatile ( "svc %[swi]" : : [swi] "i" (OS_File), "r" (os_file_code), "r" (filename), "r" (load_address), "r" (load_at_r2) : "r4", "r5" );
-  }
-
-  return mem;
-}
-
-#if 0
-static void dump_zero_page()
-{
-  Write0( "\"Zero page\"" ); NewLine;
-  // Dump "zero page"
-  uint32_t *p = (void*)0xffff0000;
-  while (p < (uint32_t*) 0xffff4000) {
-    NewLine;
-    Write0( "Address  :     3 2 1 0     7 6 5 4     B A 9 8     F E D C     3 2 1 0     7 6 5 4     B A 9 8     F E D C :            ASCII Data" );
-    NewLine;
-    for (int o = 0; o < 16; o++) { // 128 words, 8 to a line, 16 lines
-      WriteNum( (uint32_t) p );
-      Write0( " :" );
-      for (int w = 0; w < 32/4; w++) {
-        Write0( "    " );
-        WriteNum( p[w] );
-      }
-      Write0( " : " );
-      char *a = (void*) p;
-      for (int c = 0; c < 32; c++) {
-        char s[] = ".";
-        if (a[c] >= ' ') s[0] = a[c];
-        Write0( s );
-      }
-      NewLine;
-      p += 8; // words
-    }
-  }
-}
-
-static uint32_t *core_lock()
-{
-  return (uint32_t *) 0x8000; // core-local lock
-}
-#endif
-
-static bool claim_core_lock(  )
-{
-#if 1
-  // The kernel should be able to do this alone without error.
-  // It should be possible to avoid it in usr32 mode, but that
-  // comes later...
-  register uint32_t code asm( "r0" ) = 6;
-  register uint32_t lock asm( "r1" ) = 0x8000;
-  register bool already_owner asm( "r0" );
-  // Without volatile, this is "optimized" away...
-  asm volatile ( "svc %[swi]"
-      : "=r" (already_owner)
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (code)
-      , "r" (lock)
-      : "lr" );
-  return already_owner;
-#else
-  uint32_t failed;
-  uint32_t value;
-
-  do {
-    asm volatile ( "ldrex %[value], [%[lock]]"
-                   : [value] "=&r" (value)
-                   : [lock] "r" (core_lock()) );
-
-    // Usage note: if a routine needs to claim a lock which may already
-    // be claimed by the same task, it should remember the return value
-    // so as not to release it prematurely.
-    if (value == code) return true;
-
-    if (value == 0) {
-      // Inline asm note:
-      // The failed and lock registers are not allowed to be the same, so
-      // pretend to gcc that the lock may be written as well as read.
-      // That requires an l-value to be passed in, hence:
-      uint32_t *lock = core_lock();
-
-      asm volatile ( "strex %[failed], %[value], [%[lock]]"
-                     : [failed] "=&r" (failed)
-                     , [lock] "+r" (lock)
-                     : [value] "r" (code) );
-    }
-    else {
-      asm ( "clrex" );
-      Sleep( 0 ); // This is not the ideal implementation yet. Need to mark the lock as being wanted and block the thread until it is released. (The release function will have to check for the mark.)
-      failed = true;
-    }
-  } while (failed);
-  asm ( "dmb sy" );
-
-  return false;
-#endif
-}
-
-static void release_core_lock()
-{
-#if 1
-  // The kernel should be able to do this alone without error.
-  // It should be possible to avoid it in usr32 mode, but that
-  // comes later...
-  register uint32_t code asm( "r0" ) = 7;
-  register uint32_t lock asm( "r1" ) = 0x8000;
-  asm ( "svc %[swi]"
-      :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (code)
-      , "r" (lock)
-      : "lr" );
-#else
-  // Ensure that any changes made while holding the lock are visible before the lock is seen to have been released
-  asm ( "dmb sy" );
-  *core_lock() = 0;
-#endif
-}
-
-static void __attribute__(( noreturn, noinline )) spin( uint32_t code, uint32_t x, uint32_t y, bool clockwise )
-{
-  register uint32_t now asm( "r0" );
-  asm ( "svc %[swi]" : "=r" (now) : [swi] "i" (OS_MSTime) );
-
-  Sleep( (now + 0xfff) & ~0xfff );
-
-static uint32_t path1[] = {
- 0x00000002, 0x00000400, 0xffff7400,
- 0x00000008, 0x00006900, 0xffff9e00,
- 0x00000008, 0x00009300, 0x00000400,
- 0x00000008, 0x00006900, 0x00006900,
- 0x00000008, 0x00000400, 0x00009300,
- 0x00000008, 0xffff9e00, 0x00006900,
- 0x00000008, 0xffff7400, 0x00000400,
- 0x00000008, 0xffff9e00, 0xffff9e00,
- 0x00000008, 0x00000400, 0xffff7400,
- 0x00000005,
-
- 0x00000002, 0x00000300, 0xfffed000,
- 0x00000006, 0xfffff900, 0xfffed000, 0xffffee00, 0xfffed100, 0xffffe400, 0xfffed200,
- 0x00000008, 0xffffe100, 0xfffed200,
- 0x00000008, 0xffffcd00, 0xffff3e00,
- 0x00000008, 0xffffc700, 0xffff4000,
- 0x00000006, 0xffffba00, 0xffff4400, 0xffffad00, 0xffff4900, 0xffffa200, 0xffff4f00,
- 0x00000008, 0xffff9e00, 0xffff5100,
- 0x00000008, 0xffff4400, 0xffff1300,
- 0x00000008, 0xffff4000, 0xffff1600,
- 0x00000006, 0xffff3100, 0xffff2300, 0xffff2300, 0xffff3100, 0xffff1600, 0xffff4000,
- 0x00000008, 0xffff1300, 0xffff4400,
- 0x00000008, 0xffff5100, 0xffff9e00,
- 0x00000008, 0xffff4f00, 0xffffa200,
- 0x00000006, 0xffff4900, 0xffffad00, 0xffff4400, 0xffffba00, 0xffff4000, 0xffffc700,
- 0x00000008, 0xffff3e00, 0xffffcd00,
- 0x00000008, 0xfffed200, 0xffffe100,
- 0x00000008, 0xfffed200, 0xffffe400,
- 0x00000006, 0xfffed100, 0xffffee00, 0xfffed000, 0xfffff900, 0xfffed000, 0x00000300,
- 0x00000006, 0xfffed000, 0x00000e00, 0xfffed100, 0x00001900, 0xfffed200, 0x00002300,
- 0x00000008, 0xfffed200, 0x00002600,
- 0x00000008, 0xffff3e00, 0x00003a00,
- 0x00000008, 0xffff4000, 0x00004000,
- 0x00000006, 0xffff4400, 0x00004d00, 0xffff4900, 0x00005a00, 0xffff4f00, 0x00006500,
- 0x00000008, 0xffff5200, 0x00006900,
- 0x00000008, 0xffff1300, 0x0000c300,
- 0x00000008, 0xffff1600, 0x0000c700,
- 0x00000006, 0xffff2300, 0x0000d600, 0xffff3100, 0x0000e400, 0xffff4000, 0x0000f100,
- 0x00000008, 0xffff4400, 0x0000f400,
- 0x00000008, 0xffff9e00, 0x0000b600,
- 0x00000008, 0xffffa200, 0x0000b800,
- 0x00000006, 0xffffad00, 0x0000be00, 0xffffba00, 0x0000c300, 0xffffc700, 0x0000c700,
- 0x00000008, 0xffffcd00, 0x0000c900,
- 0x00000008, 0xffffe100, 0x00013500,
- 0x00000008, 0xffffe400, 0x00013500,
- 0x00000006, 0xffffee00, 0x00013600, 0xfffff900, 0x00013700, 0x00000300, 0x00013700,
- 0x00000006, 0x00000e00, 0x00013700, 0x00001900, 0x00013600, 0x00002300, 0x00013500,
- 0x00000008, 0x00002600, 0x00013500,
- 0x00000008, 0x00003a00, 0x0000c900,
- 0x00000008, 0x00004000, 0x0000c700,
- 0x00000006, 0x00004d00, 0x0000c300, 0x00005a00, 0x0000be00, 0x00006500, 0x0000b800,
- 0x00000008, 0x00006900, 0x0000b600,
- 0x00000008, 0x0000c300, 0x0000f400,
- 0x00000008, 0x0000c700, 0x0000f100,
- 0x00000006, 0x0000d600, 0x0000e400, 0x0000e400, 0x0000d600, 0x0000f100, 0x0000c700,
- 0x00000008, 0x0000f400, 0x0000c300,
- 0x00000008, 0x0000b600, 0x00006900,
- 0x00000008, 0x0000b800, 0x00006500,
- 0x00000006, 0x0000be00, 0x00005a00, 0x0000c300, 0x00004d00, 0x0000c700, 0x00004000,
- 0x00000008, 0x0000c900, 0x00003a00,
- 0x00000008, 0x00013500, 0x00002600,
- 0x00000008, 0x00013500, 0x00002300,
- 0x00000006, 0x00013600, 0x00001900, 0x00013700, 0x00000e00, 0x00013700, 0x00000400,
- 0x00000006, 0x00013700, 0xfffff900, 0x00013600, 0xffffee00, 0x00013500, 0xffffe400,
- 0x00000008, 0x00013500, 0xffffe100,
- 0x00000008, 0x0000c900, 0xffffcd00,
- 0x00000008, 0x0000c700, 0xffffc700,
- 0x00000006, 0x0000c300, 0xffffba00, 0x0000be00, 0xffffad00, 0x0000b800, 0xffffa200,
- 0x00000008, 0x0000b600, 0xffff9e00,
- 0x00000008, 0x0000f400, 0xffff4400,
- 0x00000008, 0x0000f100, 0xffff4000,
- 0x00000006, 0x0000e400, 0xffff3100, 0x0000d600, 0xffff2300, 0x0000c700, 0xffff1600,
- 0x00000008, 0x0000c300, 0xffff1300,
- 0x00000008, 0x00006900, 0xffff5100,
- 0x00000008, 0x00006500, 0xffff4f00,
- 0x00000006, 0x00005a00, 0xffff4900, 0x00004d00, 0xffff4400, 0x00004000, 0xffff4000,
- 0x00000008, 0x00003a00, 0xffff3e00,
- 0x00000008, 0x00002600, 0xfffed200,
- 0x00000008, 0x00002300, 0xfffed200,
- 0x00000006, 0x00001900, 0xfffed100, 0x00000e00, 0xfffed000, 0x00000300, 0xfffed000,
- 0x00000005, 0x00000000 };
-
-static uint32_t path2[] = {
- 0x00000002, 0x00012d00, 0x00002100,
- 0x00000008, 0x0000c200, 0x00003500,
- 0x00000008, 0x0000d000, 0x00004100,
- 0x00000008, 0x00013c00, 0x00002c00,
- 0x00000008, 0x00012d00, 0x00002100,
- 0x00000005,
-
- 0x00000002, 0x00006300, 0x00006300,
- 0x00000008, 0x00008b00, 0x00000300,
- 0x00000008, 0x00006300, 0xffffa400,
- 0x00000008, 0x00000300, 0xffff7c00,
- 0x00000008, 0xffffa400, 0xffffa400,
- 0x00000008, 0xffff9800, 0xffff9800,
- 0x00000008, 0x00000300, 0xffff6c00,
- 0x00000008, 0x00006f00, 0xffff9800,
- 0x00000008, 0x00009b00, 0x00000300,
- 0x00000008, 0x00006f00, 0x00006f00,
- 0x00000008, 0x00006300, 0x00006300,
- 0x00000005,
-
- 0x00000002, 0x0000fe00, 0x0000c400,
- 0x00000008, 0x0000eb00, 0x0000c100,
- 0x00000008, 0x0000ea00, 0x0000c200,
- 0x00000006, 0x0000de00, 0x0000d100, 0x0000d100, 0x0000de00, 0x0000c200, 0x0000ea00,
- 0x00000008, 0x0000c100, 0x0000eb00,
- 0x00000008, 0x00006700, 0x0000ad00,
- 0x00000008, 0x00006100, 0x0000b000,
- 0x00000008, 0x00006100, 0x0000b000,
- 0x00000008, 0x00006100, 0x0000b000,
- 0x00000006, 0x00005600, 0x0000b700, 0x00004a00, 0x0000bc00, 0x00003e00, 0x0000bf00,
- 0x00000008, 0x00003500, 0x0000c200,
- 0x00000008, 0x00004100, 0x0000d000,
- 0x00000008, 0x00004300, 0x0000cf00,
- 0x00000006, 0x00004d00, 0x0000cc00, 0x00005700, 0x0000c800, 0x00006000, 0x0000c400,
- 0x00000008, 0x00006000, 0x0000c400,
- 0x00000008, 0x00006000, 0x0000c400,
- 0x00000008, 0x00006800, 0x0000bf00,
- 0x00000008, 0x0000c400, 0x0000fe00,
- 0x00000008, 0x0000cc00, 0x0000f700,
- 0x00000006, 0x0000dc00, 0x0000ea00, 0x0000ea00, 0x0000dc00, 0x0000f700, 0x0000cc00,
- 0x00000008, 0x0000fe00, 0x0000c400,
- 0x00000005,
-
- 0x00000002, 0x00002c00, 0x00013c00,
- 0x00000008, 0x00002100, 0x00012d00,
- 0x00000008, 0x00001300, 0x00012e00,
- 0x00000006, 0x00000e00, 0x00012f00, 0x00000900, 0x00012f00, 0x00000300, 0x00012f00,
- 0x00000006, 0xfffffe00, 0x00012f00, 0xfffff900, 0x00012f00, 0xfffff400, 0x00012e00,
- 0x00000008, 0xffffe600, 0x00012d00,
- 0x00000008, 0xffffd200, 0x0000c200,
- 0x00000008, 0xffffc900, 0x0000bf00,
- 0x00000006, 0xffffbd00, 0x0000bc00, 0xffffb100, 0x0000b700, 0xffffa600, 0x0000b000,
- 0x00000008, 0xffffa600, 0x0000b000,
- 0x00000008, 0xffffa600, 0x0000b000,
- 0x00000008, 0xffffa000, 0x0000ad00,
- 0x00000008, 0xffff4600, 0x0000eb00,
- 0x00000008, 0xffff4500, 0x0000ea00,
- 0x00000006, 0xffff3600, 0x0000de00, 0xffff2900, 0x0000d100, 0xffff1d00, 0x0000c200,
- 0x00000008, 0xffff1c00, 0x0000c100,
- 0x00000008, 0xffff5a00, 0x00006700,
- 0x00000008, 0xffff5700, 0x00006100,
- 0x00000006, 0xffff5000, 0x00005600, 0xffff4b00, 0x00004a00, 0xffff4800, 0x00003e00,
- 0x00000008, 0xffff4800, 0x00003e00,
- 0x00000008, 0xffff4800, 0x00003e00,
- 0x00000008, 0xffff4500, 0x00003500,
- 0x00000008, 0xfffeda00, 0x00002100,
- 0x00000008, 0xfffed900, 0x00001300,
- 0x00000006, 0xfffed800, 0x00000e00, 0xfffed800, 0x00000900, 0xfffed800, 0x00000400,
- 0x00000006, 0xfffed800, 0xfffffe00, 0xfffed800, 0xfffff900, 0xfffed900, 0xfffff400,
- 0x00000008, 0xfffeda00, 0xffffe600,
- 0x00000008, 0xfffecb00, 0xffffdb00,
- 0x00000008, 0xfffeca00, 0xffffe300,
- 0x00000006, 0xfffec900, 0xffffee00, 0xfffec800, 0xfffff900, 0xfffec800, 0x00000400,
- 0x00000006, 0xfffec800, 0x00000e00, 0xfffec900, 0x00001900, 0xfffeca00, 0x00002400,
- 0x00000008, 0xfffecb00, 0x00002c00,
- 0x00000008, 0xffff3700, 0x00004100,
- 0x00000008, 0xffff3800, 0x00004300,
- 0x00000008, 0xffff3800, 0x00004300,
- 0x00000008, 0xffff3800, 0x00004300,
- 0x00000006, 0xffff3b00, 0x00004d00, 0xffff3f00, 0x00005700, 0xffff4300, 0x00006000,
- 0x00000008, 0xffff4800, 0x00006800,
- 0x00000008, 0xffff0900, 0x0000c400,
- 0x00000008, 0xffff1000, 0x0000cc00,
- 0x00000006, 0xffff1d00, 0x0000dc00, 0xffff2b00, 0x0000ea00, 0xffff3b00, 0x0000f700,
- 0x00000008, 0xffff4300, 0x0000fe00,
- 0x00000008, 0xffff9f00, 0x0000bf00,
- 0x00000008, 0xffffa700, 0x0000c400,
- 0x00000008, 0xffffa700, 0x0000c400,
- 0x00000008, 0xffffa700, 0x0000c400,
- 0x00000006, 0xffffb000, 0x0000c800, 0xffffba00, 0x0000cc00, 0xffffc400, 0x0000cf00,
- 0x00000008, 0xffffc600, 0x0000d000,
- 0x00000008, 0xffffdb00, 0x00013c00,
- 0x00000008, 0xffffe300, 0x00013d00,
- 0x00000006, 0xffffee00, 0x00013f00, 0xfffff900, 0x00013f00, 0x00000300, 0x00013f00,
- 0x00000006, 0x00000e00, 0x00013f00, 0x00001900, 0x00013f00, 0x00002400, 0x00013d00,
- 0x00000008, 0x00002c00, 0x00013c00,
- 0x00000005,
-
- 0x00000002, 0xffff4500, 0xffffd200,
- 0x00000008, 0xffff4800, 0xffffc900,
- 0x00000006, 0xffff4b00, 0xffffbd00, 0xffff5000, 0xffffb100, 0xffff5700, 0xffffa600,
- 0x00000008, 0xffff5700, 0xffffa600,
- 0x00000008, 0xffff5700, 0xffffa600,
- 0x00000008, 0xffff5a00, 0xffffa000,
- 0x00000008, 0xffff1c00, 0xffff4600,
- 0x00000008, 0xffff0900, 0xffff4300,
- 0x00000008, 0xffff4800, 0xffff9f00,
- 0x00000008, 0xffff4300, 0xffffa700,
- 0x00000008, 0xffff4300, 0xffffa700,
- 0x00000008, 0xffff4300, 0xffffa700,
- 0x00000006, 0xffff3f00, 0xffffb000, 0xffff3b00, 0xffffba00, 0xffff3800, 0xffffc400,
- 0x00000008, 0xffff3700, 0xffffc600,
- 0x00000008, 0xffff4500, 0xffffd200,
- 0x00000005,
-
- 0x00000002, 0xffffd200, 0xffff4500,
- 0x00000008, 0xffffe600, 0xfffeda00,
- 0x00000008, 0xffffdb00, 0xfffecb00,
- 0x00000008, 0xffffc600, 0xffff3700,
- 0x00000008, 0xffffd200, 0xffff4500,
- 0x00000005, 0x00000000 };
-
-static uint32_t path3[] = {
- 0x00000002, 0x0000c200, 0x00003500,
- 0x00000008, 0x0000d000, 0x00004100,
- 0x00000008, 0x0000cf00, 0x00004300,
- 0x00000008, 0x0000cf00, 0x00004300,
- 0x00000008, 0x0000cf00, 0x00004300,
- 0x00000006, 0x0000cc00, 0x00004d00, 0x0000c800, 0x00005700, 0x0000c400, 0x00006000,
- 0x00000008, 0x0000bf00, 0x00006800,
- 0x00000008, 0x0000fe00, 0x0000c400,
- 0x00000008, 0x0000eb00, 0x0000c100,
- 0x00000008, 0x0000ad00, 0x00006700,
- 0x00000008, 0x0000b000, 0x00006100,
- 0x00000006, 0x0000b700, 0x00005600, 0x0000bc00, 0x00004a00, 0x0000bf00, 0x00003e00,
- 0x00000008, 0x0000bf00, 0x00003e00,
- 0x00000008, 0x0000bf00, 0x00003e00,
- 0x00000008, 0x0000c200, 0x00003500,
- 0x00000005,
-
- 0x00000002, 0xffffa400, 0xffffa400,
- 0x00000008, 0xffff7c00, 0x00000400,
- 0x00000008, 0xffffa400, 0x00006300,
- 0x00000008, 0x00000300, 0x00008b00,
- 0x00000008, 0x00006300, 0x00006300,
- 0x00000008, 0x00006f00, 0x00006f00,
- 0x00000008, 0x00000300, 0x00009b00,
- 0x00000008, 0xffff9800, 0x00006f00,
- 0x00000008, 0xffff6c00, 0x00000400,
- 0x00000008, 0xffff9800, 0xffff9800,
- 0x00000008, 0xffffa400, 0xffffa400,
- 0x00000005,
-
- 0x00000002, 0xfffeda00, 0xffffe600,
- 0x00000008, 0xffff4500, 0xffffd200,
- 0x00000008, 0xffff3700, 0xffffc600,
- 0x00000008, 0xfffecb00, 0xffffdb00,
- 0x00000008, 0xfffeda00, 0xffffe600,
- 0x00000005,
-
- 0x00000002, 0xffff1c00, 0xffff4600,
- 0x00000008, 0xffff1d00, 0xffff4500,
- 0x00000006, 0xffff2900, 0xffff3600, 0xffff3600, 0xffff2900, 0xffff4500, 0xffff1d00,
- 0x00000008, 0xffff4600, 0xffff1c00,
- 0x00000008, 0xffffa000, 0xffff5a00,
- 0x00000008, 0xffffa600, 0xffff5700,
- 0x00000006, 0xffffb100, 0xffff5000, 0xffffbd00, 0xffff4b00, 0xffffc900, 0xffff4800,
- 0x00000008, 0xffffc900, 0xffff4800,
- 0x00000008, 0xffffc900, 0xffff4800,
- 0x00000008, 0xffffd200, 0xffff4500,
- 0x00000008, 0xffffc600, 0xffff3700,
- 0x00000008, 0xffffc400, 0xffff3800,
- 0x00000008, 0xffffc400, 0xffff3800,
- 0x00000008, 0xffffc400, 0xffff3800,
- 0x00000006, 0xffffba00, 0xffff3b00, 0xffffb000, 0xffff3f00, 0xffffa700, 0xffff4300,
- 0x00000008, 0xffff9f00, 0xffff4800,
- 0x00000008, 0xffff4300, 0xffff0900,
- 0x00000008, 0xffff3b00, 0xffff1000,
- 0x00000006, 0xffff2b00, 0xffff1d00, 0xffff1d00, 0xffff2b00, 0xffff1000, 0xffff3b00,
- 0x00000008, 0xffff0900, 0xffff4300,
- 0x00000008, 0xffff1c00, 0xffff4600,
- 0x00000005,
-
- 0x00000002, 0xffffe600, 0xfffeda00,
- 0x00000008, 0xfffff400, 0xfffed900,
- 0x00000006, 0xfffff900, 0xfffed800, 0xfffffe00, 0xfffed800, 0x00000300, 0xfffed800,
- 0x00000006, 0x00000900, 0xfffed800, 0x00000e00, 0xfffed800, 0x00001300, 0xfffed900,
- 0x00000008, 0x00002100, 0xfffeda00,
- 0x00000008, 0x00003500, 0xffff4500,
- 0x00000008, 0x00003e00, 0xffff4800,
- 0x00000008, 0x00003e00, 0xffff4800,
- 0x00000008, 0x00003e00, 0xffff4800,
- 0x00000006, 0x00004a00, 0xffff4b00, 0x00005600, 0xffff5000, 0x00006100, 0xffff5700,
- 0x00000008, 0x00006700, 0xffff5a00,
- 0x00000008, 0x0000c100, 0xffff1c00,
- 0x00000008, 0x0000c200, 0xffff1d00,
- 0x00000006, 0x0000d100, 0xffff2900, 0x0000de00, 0xffff3600, 0x0000ea00, 0xffff4500,
- 0x00000008, 0x0000eb00, 0xffff4600,
- 0x00000008, 0x0000ad00, 0xffffa000,
- 0x00000008, 0x0000b000, 0xffffa600,
- 0x00000008, 0x0000b000, 0xffffa600,
- 0x00000008, 0x0000b000, 0xffffa600,
- 0x00000006, 0x0000b700, 0xffffb100, 0x0000bc00, 0xffffbd00, 0x0000bf00, 0xffffc900,
- 0x00000008, 0x0000c200, 0xffffd200,
- 0x00000008, 0x00012d00, 0xffffe600,
- 0x00000008, 0x00012e00, 0xfffff400,
- 0x00000006, 0x00012e00, 0xfffff900, 0x00012f00, 0xfffffe00, 0x00012f00, 0x00000400,
- 0x00000006, 0x00012f00, 0x00000900, 0x00012e00, 0x00000e00, 0x00012e00, 0x00001300,
- 0x00000008, 0x00012d00, 0x00002100,
- 0x00000008, 0x00013c00, 0x00002c00,
- 0x00000008, 0x00013d00, 0x00002400,
- 0x00000006, 0x00013e00, 0x00001900, 0x00013f00, 0x00000e00, 0x00013f00, 0x00000400,
- 0x00000006, 0x00013f00, 0xfffff900, 0x00013e00, 0xffffee00, 0x00013d00, 0xffffe300,
- 0x00000008, 0x00013c00, 0xffffdb00,
- 0x00000008, 0x0000d000, 0xffffc600,
- 0x00000008, 0x0000cf00, 0xffffc400,
- 0x00000006, 0x0000cc00, 0xffffba00, 0x0000c800, 0xffffb000, 0x0000c400, 0xffffa700,
- 0x00000008, 0x0000c400, 0xffffa700,
- 0x00000008, 0x0000c400, 0xffffa700,
- 0x00000008, 0x0000bf00, 0xffff9f00,
- 0x00000008, 0x0000fe00, 0xffff4300,
- 0x00000008, 0x0000f700, 0xffff3b00,
- 0x00000006, 0x0000ea00, 0xffff2b00, 0x0000dc00, 0xffff1d00, 0x0000cc00, 0xffff1000,
- 0x00000008, 0x0000c400, 0xffff0900,
- 0x00000008, 0x00006800, 0xffff4800,
- 0x00000008, 0x00006000, 0xffff4300,
- 0x00000006, 0x00005700, 0xffff3f00, 0x00004d00, 0xffff3b00, 0x00004300, 0xffff3800,
- 0x00000008, 0x00004300, 0xffff3800,
- 0x00000008, 0x00004300, 0xffff3800,
- 0x00000008, 0x00004100, 0xffff3700,
- 0x00000008, 0x00002c00, 0xfffecb00,
- 0x00000008, 0x00002400, 0xfffeca00,
- 0x00000006, 0x00001900, 0xfffec800, 0x00000e00, 0xfffec800, 0x00000300, 0xfffec800,
- 0x00000006, 0xfffff900, 0xfffec800, 0xffffee00, 0xfffec800, 0xffffe300, 0xfffeca00,
- 0x00000008, 0xffffdb00, 0xfffecb00,
- 0x00000008, 0xffffe600, 0xfffeda00,
- 0x00000005,
-
- 0x00000002, 0x00004100, 0x0000d000,
- 0x00000008, 0x00002c00, 0x00013c00,
- 0x00000008, 0x00002100, 0x00012d00,
- 0x00000008, 0x00003500, 0x0000c200,
- 0x00000008, 0x00004100, 0x0000d000,
- 0x00000005, 0x00000000 };
-
-  int32_t matrix[6] = { 0, 0, 0, 0, x << 8, y << 8 };
-
-  // Re-start after 45 degree turn (octagonal cog)
-  int angle = clockwise ? 22 : 0; // Starting angle
-  int step = 2;
-
-  claim_core_lock( ); // Claimed, except while sleeping
-  for (int loop = 0;; loop++) {
-    register uint32_t start asm( "r0" );
-    asm ( "svc %[swi]" : "=r" (start) : [swi] "i" (OS_MSTime) );
-
-    matrix[0] =  draw_cos( angle );
-    matrix[1] =  draw_sin( angle );
-    matrix[2] = -draw_sin( angle );
-    matrix[3] =  draw_cos( angle );
-
-    SetColour( 0, 0x00990000 );
-    Draw_Fill( path1, matrix );
-    SetColour( 0, 0x00e50000 );
-    Draw_Fill( path2, matrix );
-    SetColour( 0, 0x004c0000 );
-    Draw_Fill( path3, matrix );
-    release_core_lock();
-
-    // asm volatile ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) : "cc" ); // lr is not corrupted in USR mode
-
-    register uint32_t done asm( "r0" );
-    asm ( "svc %[swi]" : "=r" (done) : [swi] "i" (OS_MSTime) );
-
-    Sleep( 20 - (done - start) );
-
-    claim_core_lock();
-    SetColour( 0, 0x00000000 );
-//    Draw_Fill( path1, matrix ); // Not needed for small changes in angle
-    Draw_Fill( path2, matrix );
-    Draw_Fill( path3, matrix );
-
-    if (clockwise) {
-      angle += step;
-      if (angle >= 45) angle -= 45;
-    }
-    else {
-      angle -= step;
-      if (angle < 0) angle += 45;
-    }
-  }
-  release_core_lock();
-  __builtin_unreachable();
-}
-
-void user_thread( uint32_t thread, uint32_t x, uint32_t y, bool clockwise )
-{
-  Write0( "Task running" ); NewLine;
-  uint32_t sp;
-  asm volatile ( "mov %[sp], sp" : [sp] "=r" (sp) );
-  WriteNum( sp ); Write0( " " ); WriteNum( thread ); Write0( " " ); WriteNum( x ); Write0( " " ); WriteNum( y ); Write0( " " ); WriteNum( clockwise ); NewLine;
-  spin( thread, x, y, clockwise );
-}
-
-void producer_thread( uint32_t thread, uint32_t pipe )
-{
-  Write0( "Producer task running" ); NewLine;
-  WriteNum( pipe ); NewLine;
-
-  PipeSpace space;
-
-  int n = 125; // Sort-of semi random number of bytes to write in one go
-  char c = 'A';
-  uint32_t total = 0;
-
-  // This is an inefficient use of the PipeOp SWIs.
-  // After the initial PipeOp_WaitForSpace, the code could
-  // loop until it has filled all the available data before
-  // calling PipeOp_SpaceFilled and then PipeOp_WaitForSpace
-  // again.
-  for (;;) {
-    if (--n == 73) n = 125;
-    space = PipeOp_WaitForSpace( pipe, n );
-    if (space.error != 0) {
-      asm ( "bkpt 1" );
-    }
-    else {
-      char *p = space.location;
-      // Write to the pipe
-      for (int i = 0; i < n; i++) {
-        p[i] = c;
-        if (c == 'Z') c = 'A'; else c++;
-      }
-
-      PipeOp_SpaceFilled( pipe, n );
-      total += n;
-      //WriteNum( total ); NewLine;
-    }
-  }
-}
-
-void consumer_thread( uint32_t thread, uint32_t pipe )
-{
-  Write0( "Consumer task running" ); NewLine;
-  WriteNum( pipe ); NewLine;
-
-  uint32_t total = 0;
-
-  PipeSpace data;
-
-  // Read 26 characters at a time, check they're A-Z
-  uint8_t top_byte = 0;
-
-  for (;;) {
-    data = PipeOp_WaitForData( pipe, 26 );
-    if (data.error != 0) {
-      asm ( "bkpt 1" );
-    }
-
-    // This loop is one example.
-    // Alternatives would be
-    //  1. not to loop here and leave it to PipeOp_WaitForData
-    //     to update the data variable.
-    //  2. Not to call PipeOp_DataConsumed inside the loop,
-    //     remembering how many bytes have been processed, then
-    //     call it when there are no more whole blocks to process
-    //
-    // 1. Calls both SWIs for each block.
-    // 2. Is the most efficient, but slightly more error-prone,
-    //    and the sender may be blocked waiting for that space.
-    while (data.available >= 26) {
-      char volatile *p = data.location;
-      for (int i = 0; i < 26; i++) {
-        char c = p[i];
-        if (c != 'A' + i) {
-          Write0( "Expected " ); register uint32_t nc asm ( "r0" ) = 'A'+i; asm volatile ( "swi 0" : : "r" (nc) );
-          Write0( " read " ); nc = c; asm ( "swi 0" : : "r" (nc) );
-          Write0( " instead " ); asm volatile ( "swi 0xff" ); nc = p[i]; asm volatile ( "swi 0" : : "r" (nc) );
-          Write0( " at " ); WriteNum( (uint32_t) p+i ); NewLine;
-          WriteNum( total ); NewLine;
-          if (p[i] == c)
-            asm volatile ( "bkpt 1" );
-        }
-      }
-      // asm ( "svc 256 + 'T'" );
-      total += 26;
-      if (top_byte != (total >> 24)) {
-        WriteNum( total ); NewLine;
-        top_byte = (total >> 24);
-      }
-      data = PipeOp_DataConsumed( pipe, 26 );
-    }
-  }
-}
-
-static uint32_t create_producer_thread( uint32_t pipe )
-{
-  // CreateThread
-  // Registers 3-8 are passed to the code as arguments (r1-r6)
-  // FIXME: compatible with aapcs?
-  // Argument 1 is the handle for the thread
-
-  uint32_t stack = 0x9000 - 0x100 * 8;
-
-  register uint32_t request asm ( "r0" ) = 0; // Create Thread
-  register void *code asm ( "r1" ) = producer_thread;
-  register uint32_t stack_top asm ( "r2" ) = stack;
-  register uint32_t write_pipe asm ( "r3" ) = pipe;
-
-  register uint32_t handle asm ( "r0" );
-
-  asm volatile ( "svc %[swi]"
-      : "=r" (handle) 
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      , "r" (code)
-      , "r" (stack_top)
-      , "r" (write_pipe) );
-
-  return handle;
-}
-
-static uint32_t create_consumer_thread( uint32_t pipe )
-{
-  // CreateThread
-  // Registers 3-8 are passed to the code as arguments (r1-r6)
-  // FIXME: compatible with aapcs?
-  // Argument 1 is the handle for the thread
-
-  uint32_t stack = 0x9000 - 0x100 * 9;
-
-  register uint32_t request asm ( "r0" ) = 0; // Create Thread
-  register void *code asm ( "r1" ) = consumer_thread;
-  register uint32_t stack_top asm ( "r2" ) = stack;
-  register uint32_t read_pipe asm ( "r3" ) = pipe;
-
-  register uint32_t handle asm ( "r0" );
-
-  asm volatile ( "svc %[swi]"
-      : "=r" (handle) 
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      , "r" (code)
-      , "r" (stack_top)
-      , "r" (read_pipe) );
-
-  return handle;
-}
-
-static void user_mode_code( int core_number )
-{
-  Write0( "In USR32 mode" ); NewLine;
-  WriteNum( core_number ); NewLine;
-
-//  *(uint32_t*) 0x8000 = 0; // Reset the lock
-
-  //OSCLI( "Modules" );
-  if (core_number == 0) {
-    register void *file asm( "r0" ) = resources;
-    asm volatile ( "svc 0x41b40" : : "r" (file) ); // ResourceFS_RegisterFiles
-
-    {
-    register uint32_t reason asm ( "r0" ) = 5;
-    register void *dir asm ( "r1" ) = "Resources:$";
-    asm volatile ( "svc 0x20029" : : "r" (reason), "r" (dir) ); // OS_FSControl 5 Catalogue a directory
-    }
-
-    OSCLI( "Resources:$.!Boot" );
-  }
-
-  uint32_t pipe = PipeOp_CreateForTransfer( 4096 ); // N.B. Currently the only size supported!
-
-  if (pipe == 0) {
-    asm ( "bkpt 1" );
-  }
-
-  PipeSpace data;
-
-  // Block forever
-  // data = PipeOp_WaitForData( pipe, 26 );
-
-  // Initially, the creating task is the sender and receiver associated with a
-  // pipe. It must give up that association when handing off the pipe to another
-  // task. The replacement owner may either be 0 or another task handle.
-  // Since a started thread may begin to execute before its handle is returned
-  // to the creator, we have to detatch from the pipe before we create the tasks
-  // that may use them. Doing that one at a time means that at least one of the
-  // three tasks is associated with the pipe at all times.
-  PipeOp_PassingOver( pipe, 0 );
-  create_producer_thread( pipe );
-  PipeOp_PassingOff( pipe, 0 );
-  create_consumer_thread( pipe );
-
-  for (int i = 0;;i++) {
-    Sleep( 60000 ); // 1 minute
-    WriteNum( i ); Write0( " " ); WriteNum( 0xffffffff & timer_now() ); NewLine;
-  }
-
-  __builtin_unreachable();
-}
-
-// Four graphics contexts, one for each core.
-// Wimp will have one claimed at all times. Always the same one? Maybe the one
-// for the core the Wimp Task is running on.
-// Later, the contexts should be independent of cores and not use fixed
-// workspace.
-// Access is through an OS_PipeOp pipe. (Oh, so can be one core's.)
-// A thread listens on the pipe and calls the appropriate legacy routines.
-// What happens when a legacy app has its output redirected? *spool or { > }
-// newlib programs should not close pipes they're given as stdin/out/err, but
-// return ownership to the parent task.
-// Files that are opened should be closed on exit.
-// Most files are unidirectional, read or write, and not random access, but
-// there has to be support for that. How do you communicate with the other
-// end of the pipe?
-// Seek SWI (PTR#X=...) gets FS to empty pipe, then set the pointer?
-// Programs in ResourceFS, starting with !Boot.
-// Only modern progams and the Wimp will have to be aware of claiming contexts.
-// Screen redraw threads will have to stop on asynchronous command and report
-// that they have (or block the caller of a service call until they're ready)?
-
-#endif

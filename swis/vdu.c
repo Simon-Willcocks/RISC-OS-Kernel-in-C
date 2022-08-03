@@ -241,8 +241,8 @@ static bool ReadRO5SpriteModeVariable( uint32_t selector, uint32_t var, uint32_t
     struct __attribute__(( packed )) {
       uint32_t one:1;
       uint32_t three_zeros:3;
-      uint32_t xdpi:2;
-      uint32_t ydpi:2;
+      uint32_t xeig:2;
+      uint32_t yeig:2;
       uint32_t flags:8;
       uint32_t zeros:4;
       uint32_t type:7;
@@ -252,9 +252,23 @@ static bool ReadRO5SpriteModeVariable( uint32_t selector, uint32_t var, uint32_t
     uint32_t raw;
   } specifier = { .raw = selector };
 
-asm( "bkpt 40" : : "r" (specifier) );
+  switch (var) {
+  case 0: *val = (selector & 0x0000ff00); return true;
+  case 1: *val = 0; return true;
+  case 2: *val = 0; return true;
+  case 3: *val = 0xffffffff; return true;
+  case 4: *val = specifier.xeig; return true;
+  case 5: *val = specifier.yeig; return true;
+  case 6: *val = 0; return true;
+  case 7: *val = 0; return true;
+  case 8: *val = 0; return true;
+  case 9: *val = 0; return true;
+  case 10: *val = 0; return true;
+  case 11: *val = 0; return true;
+  case 12: *val = 0; return true;
+  }
 
-  return false;
+  return true;
 }
 
 static bool ReadEigFromDPI( uint32_t dpi, uint32_t *val )
@@ -347,6 +361,7 @@ Write0( __func__ ); Write0( " " ); WriteNum( selector ); Write0( " " ); WriteNum
 
 static bool ReadSpriteAreaModeVariable( uint32_t selector, uint32_t var, uint32_t *val )
 {
+Write0( __func__ ); Space; WriteNum( selector ); Space; WriteNum( var ); NewLine;
 asm( "bkpt 40" );
   return false;
 }
@@ -386,6 +401,9 @@ bool do_OS_ReadModeVariable( svc_registers *regs )
     }
   }
 
+#ifdef DEBUG__SHOW_MODE_VARIABLE_READS
+  if (success) { Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->r[1] ); NewLine; }
+#endif
   if (success)
     regs->spsr &= ~CF;
   else
