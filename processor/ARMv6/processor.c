@@ -279,11 +279,42 @@ void *memcpy(void *d, const void *s, uint32_t n)
 
 
 
-// Temporarily in C file for tracing in QEMU
+// Change the word at `word' to the value `to' if it contained `from'.
+// Returns the original content of word (= from if changed successfully)
+uint32_t change_word_if_equal( uint32_t volatile *word, uint32_t from, uint32_t to )
+{
+  uint32_t failed;
+  uint32_t value;
 
+  do {
+    asm volatile ( "ldrex %[value], [%[word]]"
+                   : [value] "=&r" (value)
+                   : [word] "r" (word) );
+
+    if (value == from) {
+      // The failed and word registers are not allowed to be the same, so
+      // pretend to gcc that the word may be written as well as read.
+
+      asm volatile ( "strex %[failed], %[value], [%[word]]"
+                     : [failed] "=&r" (failed)
+                     , [word] "+r" (word)
+                     : [value] "r" (to) );
+    }
+    else {
+      asm ( "clrex" );
+      break;
+    }
+  } while (failed);
+  asm ( "dmb sy" );
+
+  return value;
+}
+
+// Temporarily in C file for tracing in QEMU
 
 bool claim_lock( uint32_t volatile *lock )
 {
+  // TODO: return 0 != change_word_if_equal( lock, 0, workspace.core_number + 1 );
   uint32_t failed;
   uint32_t value;
   uint32_t core = workspace.core_number+1;

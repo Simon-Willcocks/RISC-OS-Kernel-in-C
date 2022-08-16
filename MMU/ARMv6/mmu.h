@@ -54,13 +54,18 @@ static inline bool naturally_aligned( uint32_t location )
 
 // An instance of this struct will be in the core workspace, called mmu:
 struct MMU_workspace {
-  uint32_t *l1tt_pa;
-  uint32_t *l2tt_pa; // 4 tables, of 256 entries each, bottom, top MiB, top two MiB of TaskSlot (as needed)
+  struct Level_two_translation_table *zero_page_l2tt;
+  struct Level_two_translation_table *kernel_l2tt;
 };
 
 struct MMU_shared_workspace {
   uint32_t lock;
-  uint32_t pipes_tt[1024];
+  struct Level_one_translation_table *global_l1tt; // Physical address, mapped to Global_L1TT
+  struct Level_two_translation_table *physical_l2tts;
+  struct Level_two_translation_table *global_l2tt;
+
+  // Virtual address:
+  struct Level_two_translation_table *kernel_l2tt;
 };
 
 // This routine is a service to the MMU code from the Kernel. It returns
@@ -77,8 +82,7 @@ void MMU_switch_to( TaskSlot *slot );
 // Kernel memory mapping routines
 void MMU_map_at( void *va, uint32_t pa, uint32_t size );
 void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size );
-void MMU_map_device_at( void *va, uint32_t pa, uint32_t size );
-void MMU_map_device_shared_at( void *va, uint32_t pa, uint32_t size );
+void MMU_map_device_at( void *va, uint32_t pa, uint32_t size ); // Devices always shared
 
 // Map the block twice into virtual memory (where? who decides?)
 // The reason is that that allows the readers and writers to see
@@ -94,4 +98,4 @@ void BOOT_finished_allocating( uint32_t core, volatile startup *startup );
 
 // MMU_enter allocates raw memory (not multi-processor safe), calls BOOT_finished_allocating when it's done, builds
 // an environment where the ROM, etc. are mapped into virtual memory, and calls Kernel_start, when it has.
-void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, volatile startup *startup );
+void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, startup *startup );

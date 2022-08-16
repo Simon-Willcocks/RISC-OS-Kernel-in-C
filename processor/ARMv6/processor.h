@@ -171,6 +171,10 @@ bool claim_lock( uint32_t volatile *lock );
 
 void release_lock( uint32_t volatile *lock );
 
+// Change the word at `word' to the value `to' if it contained `from'.
+// Returns the original content of word (= from if changed successfully)
+uint32_t change_word_if_equal( uint32_t volatile *word, uint32_t from, uint32_t to );
+
 static inline void flush_location( void *va )
 {
   // DCCMVAC

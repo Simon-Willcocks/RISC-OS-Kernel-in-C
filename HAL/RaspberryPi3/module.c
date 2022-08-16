@@ -1077,7 +1077,7 @@ static void timer_interrupt_task( struct core_workspace *ws, int device )
 
 static void start_timer_interrupt_task( struct core_workspace *ws, int device )
 {
-  uint64_t *stack = (&ws->ticker_stack)+1;
+  uint64_t *stack = (void*) (&ws->ticker_stack)+1;
 
   register uint32_t request asm ( "r0" ) = 0; // Create Thread
   register void *code asm ( "r1" ) = timer_interrupt_task;
@@ -1120,6 +1120,19 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   workspace->uart = map_device_page( 0x3f201000 );
   workspace->qa7 = map_device_page( 0x40000000 );
 
+if (0 && this_core == 0) {
+  uint32_t volatile *gpio = workspace->gpio; // 0xfff00000;
+  gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6);
+  asm volatile ( "dsb" );
+  for (int n = 0; n < 10; n++) {
+  for (int i = 0; i < 0x10000000; i++) asm ( "" );
+  gpio[0x28/4] = (1 << 22); // Clr
+  asm volatile ( "dsb" );
+  for (int i = 0; i < 0x30000000; i++) asm ( "" );
+  gpio[0x1c/4] = (1 << 22); // Set
+  asm volatile ( "dsb" );
+  }
+}
   if (first_entry) {
     uint32_t *gpio = workspace->gpio;
     gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6); // Output, pin 22
@@ -1127,7 +1140,18 @@ void init( uint32_t this_core, uint32_t number_of_cores )
 
     workspace->fb_physical_address = initialise_frame_buffer( workspace );
   }
-
+if (0) {
+  uint32_t volatile *gpio = workspace->gpio; // 0xfff00000;
+  asm volatile ( "dsb" );
+  for (int n = 0; n < 10; n++) {
+  for (int i = 0; i < 0x30000000; i++) asm ( "" );
+  gpio[0x28/4] = (1 << 22); // Clr
+  asm volatile ( "dsb" );
+  for (int i = 0; i < 0x10000000; i++) asm ( "" );
+  gpio[0x1c/4] = (1 << 22); // Set
+  asm volatile ( "dsb" );
+  }
+}
   workspace->frame_buffer = map_screen_into_memory( workspace->fb_physical_address );
 
   workspace->core_specific[this_core].shared = workspace;

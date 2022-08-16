@@ -1636,6 +1636,10 @@ bool excluded( const char *name )
   // These modules fail on init, at the moment.
   static const char *excludes[] = { "PCI"               // Data abort fc01ff04 prob. pci_handles
 
+                                  , "ScreenModes"       // Writes to ROM? 0xfc20d210 0xfc14d97c
+                                  , "Squash"            // Writes to ROM? In CopyLibStatics in RISCOS_Lib/s/initmodule
+                                  , "ColourPicker"      // Same problem
+
                                   , "Debugger"
                                   , "BCMSupport"        // Unknown dynamic area
                                   , "Portable"          // Uses OS_MMUControl
@@ -3047,8 +3051,8 @@ static void allocate_legacy_scratch_space()
 
   // IDK what uses memory here, but it played havoc with my translation tables!
   // Might be Squash.
-  uint32_t for_something_else = Kernel_allocate_pages( 4096, 4096 );
-  MMU_map_at( (void*) 0xfff00000, for_something_else, 4096 );
+  //uint32_t for_something_else = Kernel_allocate_pages( 4096, 4096 );
+  //MMU_map_at( (void*) 0xfff00000, for_something_else, 4096 );
 }
 
 static void set_up_legacy_zero_page()

@@ -19,16 +19,19 @@ SECTIONS
 {
   minimum_ram = 256 << 20 ; /* Boot configuration. */
 
-  /* Virtual addresses */
+  /* Memory map, virtual addresses, see also MMU/... */
   free_pool             = 0xc0000000 ; /* This will hopefully disappear (Wimp Sprites?) */
   va_base               = 0xfc000000 ;
   shared                = 0xfffe0000 ; /* Make sure it doesn't overlap the workspace */
-  workspace             = 0xffff0000 ;
-  translation_tables    = 0xfff40000 ; /* Something writes near 0xfff00000 */
+  workspace             = 0xffff0000 ; /* This one can't be moved, it starts with the hardware vectors */
+  l1_translation_tables = 0xfff20000 ; /* Something writes near 0xfff00000 */
+  l2_translation_tables = 0xfff30000 ; /* L2TT pool */
+  tt_limit              = 0xfff70000 ; /* 20KiB/core, +20KiB global, extendible */
   task_slots            = 0xfff70000 ; /* probably needs more space */
   tasks                 = 0xfff80000 ; /* probably needs more space */
   devices               = 0xfff90000 ;
   pipes_top             = 0x00100000 ; /* FIXME: This area is only sensible for early testing */
+  app_memory_limit      = 0x20000000 ; /* Must be a MiB boundary */
   rma_base              = 0x20000000 ;
   rma_heap              = 0x20000000 ;
   frame_buffer          = 0xef000000 ;

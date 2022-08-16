@@ -270,6 +270,7 @@ uint32_t pre_mmu_allocate_physical_memory( uint32_t size, uint32_t alignment, vo
     result = allocate_physical_memory( size, alignment, (ram_block*) &startup->ram_blocks[block++] );
   }
 
+if (result == 0) asm (  "bkpt 8" );
   return result;
 }
 

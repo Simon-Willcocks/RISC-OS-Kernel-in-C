@@ -1909,7 +1909,7 @@ bool do_OS_MapDevicePages( svc_registers *regs )
     shared.memory.device_pages[i].page_number = pa >> 12;
   }
 
-  MMU_map_device_shared_at( (void*) va, pa, 4096 * shared.memory.device_pages[i].pages );
+  MMU_map_device_at( (void*) va, pa, 4096 * shared.memory.device_pages[i].pages );
 
   regs->r[0] = va;
 
