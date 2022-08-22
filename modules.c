@@ -105,10 +105,7 @@ static inline uint32_t mp_aware( module_header *header )
 
 static inline bool run_initialisation_code( const char *env, module *m, uint32_t instance )
 {
-  Write0( "Initialisation code at " ); WriteNum( m->header->offset_to_initialisation ); NewLine;
-  Write0( "Initialisation code at " ); WriteNum( m->header ); NewLine;
   uint32_t init_code = m->header->offset_to_initialisation + (uint32_t) m->header;
-  Write0( "Initialisation code at " ); WriteNum( init_code ); NewLine;
 
   register uint32_t non_kernel_code asm( "r14" ) = init_code;
   register uint32_t *private_word asm( "r12" ) = m->private_word;
@@ -1636,10 +1633,31 @@ bool excluded( const char *name )
   // These modules fail on init, at the moment.
   static const char *excludes[] = { "PCI"               // Data abort fc01ff04 prob. pci_handles
 
+                                  // RISC_OSLib ROM modules
+#if 0
                                   , "ScreenModes"       // Writes to ROM? 0xfc20d210 0xfc14d97c
-                                  , "Squash"            // Writes to ROM? In CopyLibStatics in RISCOS_Lib/s/initmodule
+                                  , "Squash"            // Writes to ROM? In CopyLibStatics in RISC_OSLib/s/initmodule
                                   , "ColourPicker"      // Same problem
-
+                                  , "DrawFile"
+                                  , "BootCommands"
+                                  , "WindowScroll"
+                                  , "Toolbox"
+                                  , "Window"
+                                  , "ToolAction"
+                                  , "Menu"
+                                  , "Iconbar"
+                                  , "ColourDbox"
+                                  , "ColourMenu"
+                                  , "DCS"
+                                  , "FileInfo"
+                                  , "FontDbox"
+                                  , "FontMenu"
+                                  , "PrintDbox"
+                                  , "ProgInfo"
+                                  , "SaveAs"
+                                  , "Scale"
+                                  // , "TextGadgets"
+#endif
                                   , "Debugger"
                                   , "BCMSupport"        // Unknown dynamic area
                                   , "Portable"          // Uses OS_MMUControl

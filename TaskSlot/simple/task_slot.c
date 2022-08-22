@@ -619,7 +619,9 @@ char const *TaskSlot_Command( TaskSlot *slot )
 
 static void CallHandler( uint32_t *regs, int number )
 {
+#ifdef DEBUG__SHOW_UPCALLS
 Write0( __func__ ); Space; WriteNum( number ); Space; WriteNum( regs[0] ); Space; WriteNum( workspace.task_slot.running->slot->handlers[16].code ); NewLine;
+#endif
 
   Task *running = workspace.task_slot.running;
   TaskSlot *slot = running->slot;
@@ -634,7 +636,9 @@ Write0( __func__ ); Space; WriteNum( number ); Space; WriteNum( regs[0] ); Space
     , "r" (code)
     : "r0", "r1", "r2", "r3", "r4", "r5", "r6" );
 
+#ifdef DEBUG__SHOW_UPCALLS
 Write0( __func__ ); Space; WriteNum( r12 ); NewLine;
+#endif
 }
 
 void __attribute__(( noinline )) do_UpCall( uint32_t *regs )
@@ -935,21 +939,37 @@ void __attribute__(( naked )) task_exit()
 bool __attribute__(( optimize( "O4" ) )) do_OS_ThreadOp( svc_registers *regs )
 {
   enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, LockClaim, LockRelease,
-         WaitForInterrupt = 256, InterruptIsOff };
+         WaitForInterrupt = 32, InterruptIsOff, NumberOfInterruptSources };
 
   error_block *error = 0;
-
-  if ((regs->spsr & 0x1f) != 0x10
-   && regs->r[0] != Start) {
-    WriteNum( regs->spsr ); NewLine;
-    static error_block error = { 0x999, "OS_ThreadOp only supported from usr mode, so far." };
-    regs->r[0] = (uint32_t) &error;
-    return false;
-  }
 
   Task *running = workspace.task_slot.running;
   assert ( running != 0 );
   Task *next = running->next;
+
+  if (regs->r[0] == NumberOfInterruptSources) {
+    // Allowed from any mode, but only once.
+    assert( shared.task_slot.irq_tasks == 0 );
+    uint32_t count = regs->r[1];
+    shared.task_slot.number_of_interrupt_sources = count;
+    shared.task_slot.irq_tasks = rma_allocate( sizeof( Task * ) * count );
+    for (int i = 0; i < count; i++) {
+      shared.task_slot.irq_tasks[i] = 0;
+    }
+    return true;
+  }
+
+  if (regs->r[0] == WaitForInterrupt || regs->r[0] == InterruptIsOff) {
+    // Allowed from irq32 mode.
+  }
+
+  if ((regs->spsr & 0x1f) != 0x10
+   && regs->r[0] != Start) {
+    WriteNum( regs->lr ); Space; WriteNum( regs->spsr ); NewLine;
+    static error_block error = { 0x999, "OS_ThreadOp only supported from usr mode, so far." };
+    regs->r[0] = (uint32_t) &error;
+    return false;
+  }
 
   if (next == 0 && regs->r[0] == Sleep && regs->r[1] == 0) {
     return true; // Yield, but no other threads on this core.

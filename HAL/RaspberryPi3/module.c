@@ -1019,6 +1019,7 @@ static void __attribute__(( naked )) IrqV_handler()
   // IrqV contains no information in the registers on entry, except r12
   asm ( "push { r0, r1, r2, r3, r12 }" );
   register struct core_workspace *workspace asm( "r12" );
+  asm ( "bkpt 8" );
   C_IrqV_handler( workspace );
   // Intercepting call (pops pc from the stack)
   asm ( "pop { r0, r1, r2, r3, r12, pc }" );
@@ -1034,11 +1035,28 @@ static inline void memory_read_barrier()
   asm ( "dsb sy" );
 }
 
+// FIXME Share this more neatly!
 #define OS_ThreadOp 0xf9
+enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, LockClaim, LockRelease,
+       WaitForInterrupt = 32, InterruptIsOff, NumberOfInterruptSources };
+
+
+static void register_interrupt_sources( uint32_t count )
+{
+  register uint32_t request asm ( "r0" ) = NumberOfInterruptSources;
+  register uint32_t number asm ( "r1" ) = count;
+
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (number)
+      : "lr" );
+}
 
 static void wait_for_interrupt( uint32_t device )
 {
-  register uint32_t request asm ( "r0" ) = 256; // WaitForInterrupt
+  register uint32_t request asm ( "r0" ) = WaitForInterrupt;
   register uint32_t dev asm ( "r1" ) = device;
 
   asm volatile ( "svc %[swi]"
@@ -1051,6 +1069,14 @@ static void wait_for_interrupt( uint32_t device )
 
 static void timer_interrupt_task( struct core_workspace *ws, int device )
 {
+  int this_core = core( ws );
+
+  memory_write_barrier(); // About to write to QA7
+
+  // Let the generic ARM timer interrupt this core
+  ws->shared->qa7->Core_timers_Interrupt_control[this_core] = 1; // nCNTPSIRQ IRQ control
+
+  asm ( "bkpt 7" );
   uint32_t ticks_per_interval = ws->shared->ticks_per_interval;
 
   do {
@@ -1192,7 +1218,40 @@ if (0) {
     WriteS( "HAL obtained MouseV\\n\\r" );
   }
 
+#define QEMU
+  workspace->qa7->timer_prescaler = 0x06AAAAAB;
+
+  // Enable timer, no interrupts yet. (It is shared between all cores.)
+
+#ifdef QEMU
+  const uint32_t clock_frequency = 62500000;
+#else
+  const uint32_t clock_frequency = 1000000; // Pi3 with default prescaler - 1MHz (checked manually over 60s)
+#endif
+  // For information only. CNTFRQ
+  asm volatile ( "mcr p15, 0, %[bits], c14, c0, 0" : : [bits] "r" (clock_frequency) );
+
+  // No event stream, EL0 accesses not trapped to undefined: CNTHCTL
+  asm volatile ( "mcr p15, 0, %[config], c14, c1, 0" : : [config] "r" (0x303) );
+  // Enable timer and interrupts from it: CNTKCTL
+  asm volatile ( "mcr p15, 0, %[config], c14, c2, 1" : : [config] "r" (1) );
+
   if (first_entry) {
+    workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
+
+#ifdef QEMU
+    const int slower = 1000;
+    Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
+    workspace->ticks_per_interval = workspace->ticks_per_interval * slower;
+#endif
+    Write0( "Timer ticks per interval: " ); WriteNum( workspace->ticks_per_interval ); NewLine;
+
+    timer_set_countdown( workspace->ticks_per_interval );
+
+    Write0( "Wating for interrupts" ); NewLine;
+
+    register_interrupt_sources( 72 ); // 64 GPU, 8 ARM peripherals (BCM2835-ARM-Peripherals.pdf)
+
     memory_write_barrier(); // About to write to QA7
     workspace->qa7->GPU_interrupts_routing = this_core;
     workspace->qa7->Core_IRQ_Source[this_core] = 0xffd;
@@ -1201,55 +1260,15 @@ if (0) {
     workspace->qa7->Core_IRQ_Source[this_core] = 0xd;
   }
 
-  // The interrupt that's triggered by the generic ARM timer
-  workspace->qa7->Core_timers_Interrupt_control[this_core] = 1; // nCNTPSIRQ IRQ control
-
-  {
+  { // OS_ClaimDeviceVector TODO why did I do this?
     register uint32_t dev asm ( "r0" ) = 1; // Generic Timer
-    //register void (*code) asm ( "r1" ) = timer_tick; Doesn't use ADR
+    //register void (*code) asm ( "r1" ) = timer_tick; Doesn't use ADR: see asm instruction.
     register struct core_workspace *r12 asm ( "r2" ) = &workspace->core_specific[this_core];
 
     asm volatile ( "adr r1, timer_tick\n  svc %[swi]" : : [swi] "i" (0x4b), "r" (dev), "r" (r12) : "r1" );
   }
   
   start_timer_interrupt_task( &workspace->core_specific[this_core], 44 );
-
-#define QEMU
-  {
-    // Establish 1ms timer, using generic timer
-
-    Write0( "Default timer prescaler " ); WriteNum( workspace->qa7->timer_prescaler ); NewLine;
-
-    workspace->qa7->timer_prescaler = 0x06AAAAAB;
-
-    Write0( "Timer prescaler " ); WriteNum( workspace->qa7->timer_prescaler ); NewLine;
-
-#ifdef QEMU
-    const uint32_t clock_frequency = 62500000;
-#else
-    const uint32_t clock_frequency = 1000000; // Pi3 with default prescaler - 1MHz (checked manually over 60s)
-#endif
-    asm volatile ( "mcr p15, 0, %[bits], c14, c0, 0" : : [bits] "r" (clock_frequency) );
-
-    // No event stream, EL0 accesses not trapped to undefined
-    asm volatile ( "mcr p15, 0, %[config], c14, c1, 0" : : [config] "r" (0x303) );
-    // Enable timer and interrupts from it
-    asm volatile ( "mcr p15, 0, %[config], c14, c2, 1" : : [config] "r" (1) );
-
-    if (first_entry) {
-      workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
-#ifdef QEMU
-      const int slower = 1000;
-      Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
-      workspace->ticks_per_interval = workspace->ticks_per_interval * slower;
-#endif
-      Write0( "Timer ticks per interval: " ); WriteNum( workspace->ticks_per_interval ); NewLine;
-    }
-
-    timer_set_countdown( workspace->ticks_per_interval );
-
-    Write0( "Wating for interrupts" ); NewLine;
-  }
 
   if (first_entry) {
     register void *callback asm( "r0" ) = start_display;

@@ -68,5 +68,8 @@ struct TaskSlot_shared_workspace {
 
   Task *runnable;       // Tasks that may run on any core
   Task **core_runnable; // Array of Tasks that may run on that core
+
+  uint32_t number_of_interrupt_sources;
+  Task **irq_tasks;     // Array of tasks handling interrupts
 };
 

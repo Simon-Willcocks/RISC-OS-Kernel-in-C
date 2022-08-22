@@ -181,9 +181,9 @@ static Level_two_translation_table *find_table_from_l1tt_entry( l1tt_entry l1 )
 
 static bool fault_on_existing_section( uint32_t address, uint32_t type )
 {
-  Write0( "Fault on existing section, " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
   uint32_t *p;
-  asm ( "mov %[p], sp" : [p] "=r" (p) );
+  asm ( "push { r4-r11 }\n  mov %[p], sp" : [p] "=r" (p) );
+  Write0( "Fault on existing section, " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
   for (int i = 0; i < 32; i++) { WriteNum( p[i] ); if (0 == (i & 3)) NewLine; else Space; }
   asm ( "bkpt 1" );
   return false;
@@ -512,8 +512,31 @@ static bool check_global_l1tt( uint32_t address, uint32_t type )
   return false;
 }
 
+static bool allocate_memory_for_SharedCLib( uint32_t address, uint32_t type )
+{
+  // For SharedCLib, see https://www.riscosopen.org/forum/forums/9/topics/16166?page=5
+  arm32_ptr pointer = { .raw = address };
+
+  assert( pointer.section == 0xfff );
+  assert( pointer.page == 0 );
+  assert( workspace.mmu.kernel_l2tt->entry[0].handler == allocate_memory_for_SharedCLib );
+
+  workspace.mmu.kernel_l2tt->entry[0] = l2_prw;
+  workspace.mmu.kernel_l2tt->entry[0].raw |= Kernel_allocate_pages( 4096, 4096 );
+
+  return true;
+}
+
 static bool check_global_l2tt( uint32_t address, uint32_t type )
 {
+#ifdef DEBUG__BREAK_ON_UNEXPECTED_FAULT
+  uint32_t *p;
+  asm ( "push { r4-r11 }\n  mov %[p], sp" : [p] "=r" (p) );
+  Write0( "Check global l2tt, " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
+  for (int i = 0; i < 32; i++) { WriteNum( p[i] ); if (0 == (i & 3)) NewLine; else Space; }
+  asm ( "bkpt 1" );
+#endif
+
   arm32_ptr pointer = { .raw = address };
 
   assert( pointer.section == 0xfff );
@@ -608,7 +631,9 @@ if (shared->physical_l2tts == 0) asm ( "bkpt 9" );
   MiB.raw |= (uint32_t) high_table;
   l1tt->entry[0xfff] = MiB; // Top MiB page-addressable
 
-  for (int i = 0; i < number_of( high_table->entry ); i++) {
+  high_table->entry[0].handler = allocate_memory_for_SharedCLib;
+
+  for (int i = 1; i < number_of( high_table->entry ); i++) {
     high_table->entry[i].handler = check_global_l2tt;
   }
 
@@ -712,10 +737,12 @@ if (ws->core_number >= 1) {
 
   ws->mmu.kernel_l2tt = &L2TTs[l2tt - shared->physical_l2tts];
 
-l2tt->entry[0] = l2_device;
-l2tt->entry[0].raw |= 0x3f200000;
-
 if (0 && ws->core_number == 0) {
+  // This breaks RISC_OSLib; it accesses the page at 0xfff00000
+  l2tt->entry[0] = l2_device;
+  l2tt->entry[0].raw |= 0x3f200000;
+
+  // Pre MMU:
   uint32_t volatile *gpio = 0x3f200000;
   gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6);
   asm volatile ( "dsb" );
