@@ -1005,13 +1005,12 @@ void __attribute__(( naked )) timer_tick()
   asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
-static void __attribute__(( noinline )) C_IrqV_handler( struct core_workspace *workspace )
+static int __attribute__(( noinline )) C_IrqV_handler( struct core_workspace *workspace )
 {
   // This is where we will use the hardware to identify which devices have tried to
   // interrupt the processor.
 
-  // This call goes direct, avoiding the claimed devices
-  do_timer_tick( workspace );
+  return 44;
 }
 
 static void __attribute__(( naked )) IrqV_handler()
@@ -1019,8 +1018,8 @@ static void __attribute__(( naked )) IrqV_handler()
   // IrqV contains no information in the registers on entry, except r12
   asm ( "push { r0, r1, r2, r3, r12 }" );
   register struct core_workspace *workspace asm( "r12" );
-  asm ( "bkpt 8" );
-  C_IrqV_handler( workspace );
+  register uint32_t *sp asm( "sp" );
+  *sp = C_IrqV_handler( workspace );
   // Intercepting call (pops pc from the stack)
   asm ( "pop { r0, r1, r2, r3, r12, pc }" );
 }
@@ -1067,21 +1066,31 @@ static void wait_for_interrupt( uint32_t device )
       : "lr" );
 }
 
-static void timer_interrupt_task( struct core_workspace *ws, int device )
+static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, int device )
 {
   int this_core = core( ws );
 
+  Write0( "Timer task not entering loop" ); WriteNum( handle ); NewLine;
+
   memory_write_barrier(); // About to write to QA7
 
+  // asm ( "bkpt 7" );
   // Let the generic ARM timer interrupt this core
   ws->shared->qa7->Core_timers_Interrupt_control[this_core] = 1; // nCNTPSIRQ IRQ control
 
-  asm ( "bkpt 7" );
   uint32_t ticks_per_interval = ws->shared->ticks_per_interval;
 
+  NewLine;
+  NewLine;
+  NewLine;
+  NewLine;
+  asm ( "mov r0, #66\n  svc 0" : : : "r0" );
+
+  Write0( "Timer task entering loop" ); WriteNum( handle ); NewLine;
+
   do {
-    wait_for_interrupt( device );
-    // Running in IRQ32 mode
+    wait_for_interrupt( device ); // FIXME: returns a number of missed interrupts, but it will only be one because the timer doesn't re-initialise itself (hence timer_set_countdown)
+    // Running with interrupts disabled
 
     // This is officially a signed value, but any value greater than
     // ticks_per_interval is out of range.
@@ -1096,14 +1105,14 @@ static void timer_interrupt_task( struct core_workspace *ws, int device )
 
     timer_set_countdown( timer );
 
-    // interrupt_is_off( device ); // If we wanted to drop to USR32 mode
+    // interrupt_is_off( device ); // If we wanted to enable interrupts
     // Call TickerV
   } while (true); // Could check a flag in ws, in case of shutdown
 }
 
-static void start_timer_interrupt_task( struct core_workspace *ws, int device )
+static uint32_t start_timer_interrupt_task( struct core_workspace *ws, int device )
 {
-  uint64_t *stack = (void*) (&ws->ticker_stack)+1;
+  uint64_t *stack = (void*) ((&ws->ticker_stack)+1);
 
   register uint32_t request asm ( "r0" ) = 0; // Create Thread
   register void *code asm ( "r1" ) = timer_interrupt_task;
@@ -1121,6 +1130,8 @@ static void start_timer_interrupt_task( struct core_workspace *ws, int device )
       , "r" (stack_top)
       , "r" (workspace)
       , "r" (dev) );
+
+  return handle;
 }
 
 void init( uint32_t this_core, uint32_t number_of_cores )
@@ -1146,9 +1157,16 @@ void init( uint32_t this_core, uint32_t number_of_cores )
   workspace->uart = map_device_page( 0x3f201000 );
   workspace->qa7 = map_device_page( 0x40000000 );
 
-if (0 && this_core == 0) {
-  uint32_t volatile *gpio = workspace->gpio; // 0xfff00000;
-  gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6);
+  if (first_entry) {
+    asm volatile ( "dsb" );
+  //for (int i = 0; i < 0x10000000; i++) asm ( "" );
+    workspace->fb_physical_address = initialise_frame_buffer( workspace );
+
+if (0) {
+    uint32_t *gpio = workspace->gpio;
+    gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6); // Output, pin 22
+    asm volatile ( "dsb" );
+
   asm volatile ( "dsb" );
   for (int n = 0; n < 10; n++) {
   for (int i = 0; i < 0x10000000; i++) asm ( "" );
@@ -1157,14 +1175,9 @@ if (0 && this_core == 0) {
   for (int i = 0; i < 0x30000000; i++) asm ( "" );
   gpio[0x1c/4] = (1 << 22); // Set
   asm volatile ( "dsb" );
-  }
 }
-  if (first_entry) {
-    uint32_t *gpio = workspace->gpio;
-    gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6); // Output, pin 22
-    asm volatile ( "dsb" );
+}
 
-    workspace->fb_physical_address = initialise_frame_buffer( workspace );
   }
 if (0) {
   uint32_t volatile *gpio = workspace->gpio; // 0xfff00000;
@@ -1237,7 +1250,8 @@ if (0) {
   asm volatile ( "mcr p15, 0, %[config], c14, c2, 1" : : [config] "r" (1) );
 
   if (first_entry) {
-    workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
+    workspace->ticks_per_interval = clock_frequency / 100000; // milliseconds
+    //workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
 
 #ifdef QEMU
     const int slower = 1000;
@@ -1268,7 +1282,10 @@ if (0) {
     asm volatile ( "adr r1, timer_tick\n  svc %[swi]" : : [swi] "i" (0x4b), "r" (dev), "r" (r12) : "r1" );
   }
   
-  start_timer_interrupt_task( &workspace->core_specific[this_core], 44 );
+  if (this_core == 1) {
+    uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 44 );
+    Write0( "Timer task: " ); WriteNum( handle ); NewLine;
+  }
 
   if (first_entry) {
     register void *callback asm( "r0" ) = start_display;

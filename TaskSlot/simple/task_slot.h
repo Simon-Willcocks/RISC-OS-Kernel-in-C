@@ -23,6 +23,8 @@ TaskSlot *TaskSlot_new( char const *command_line, svc_registers *regs );
 void TaskSlot_new_application( char const *command, char const *args );
 Task *Task_new( TaskSlot *slot );
 
+TaskSlot *TaskSlot_now();
+
 uint32_t TaskSlot_Himem( TaskSlot *slot );
 char const *TaskSlot_Command( TaskSlot *slot );
 char const *TaskSlot_Tail( TaskSlot *slot );
@@ -43,7 +45,6 @@ struct Task {
   integer_registers regs; // WARNING Keep at start of struct
   TaskSlot *slot;
   Task *next;
-  int block_op;
 };
 
 struct TaskSlot_workspace {
@@ -51,6 +52,8 @@ struct TaskSlot_workspace {
   Task *runnable;       // The tasks that may only run on this core
   bool memory_mapped;   // Have the shared.task_slot.tasks_memory and shared.task_slot.slots_memory been mapped into this core's MMU?
   Task *sleeping;       // 0 or more sleeping tasks
+
+  Task **irq_tasks;     // Array of tasks handling interrupts 
 };
 
 struct TaskSlot_shared_workspace {
@@ -70,6 +73,5 @@ struct TaskSlot_shared_workspace {
   Task **core_runnable; // Array of Tasks that may run on that core
 
   uint32_t number_of_interrupt_sources;
-  Task **irq_tasks;     // Array of tasks handling interrupts
 };
 

@@ -217,6 +217,7 @@ static uint32_t physical_address( void *p )
   arm32_ptr pointer = { .rawp = p };
 
   l1tt_entry l1 = Local_L1TT->entry[pointer.section];
+
   switch (l1.type) {
   case 1: // Table
     {
@@ -249,7 +250,8 @@ static void map_l2tt_at_section_local( Level_two_translation_table *l2tt, uint32
   Local_L1TT->entry[section] = MiB;
 }
 
-static const l2tt_entry l2_device = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .TEX = 0, .unprivileged_access = 0, .read_only = 0, .AF = 1 };
+// FIXME Probably want either privileged and global or user and slot-specific.
+static const l2tt_entry l2_device = { .XN = 1, .small_page = 1, .B = 0, .C = 0, .TEX = 0, .unprivileged_access = 1, .read_only = 0, .AF = 1 };
 
 // static const l2tt_entry l2_write_back_cached = { .TEX = 0b101, .C = 0, .B = 1 };
 
@@ -266,6 +268,7 @@ static const l1tt_section_entry l1_urwx = {
         .AF = 1, // The MMU will not cause an exception the first time the memory is accessed
         .unprivileged_access = 1, .read_only = 0 };
 
+/*
 static const l1tt_section_entry l1_prwx = {
         .type2 = 2,
         .TEX = 0b101, .C = 0, .B = 1,
@@ -279,7 +282,7 @@ static const l1tt_section_entry l1_prw = {
         .XN = 0, .Domain = 0, .P = 0,
         .AF = 1, // The MMU will not cause an exception the first time the memory is accessed
         .unprivileged_access = 1, .read_only = 0, };
-
+*/
 static const l1tt_section_entry l1_rom_section = {
         .type2 = 2,
         .TEX = 0b101, .C = 0, .B = 1,
@@ -311,28 +314,16 @@ static void map_translation_table( Level_two_translation_table *l2tt, Level_one_
   }
 }
 
-static void map_global_l2tt( Level_two_translation_table *l2tt )
-{
-  uint32_t va = 0xff000 & (uint32_t) L2TTs;
-  uint32_t phys = (uint32_t) l2tt;
-
-  l2tt_entry entry = l2_prw;
-
-  for (int i = 0; i < 2; i++) {
-    l2tt->entry[(va >> 12) + i].raw = entry.raw | (phys + (i << 12));
-  }
-}
-
 // Map a privileged read-write page into the top 1MiB of virtual memory
 // Might be better with pages instead of addresses
 // Should be readable in usr32, but the new access permissions don't allow
 // for it. I hope it's not critical, or we have to make it all r/w! (Better
 // to handle read requests in exceptions to return the current values.)
-void __attribute__(( optimize (0) )) map_work_area( Level_two_translation_table *l2tt, struct core_workspace *physical )
+void map_work_area( Level_two_translation_table *l2tt, struct core_workspace *physical )
 {
   struct core_workspace *virtual = &workspace;
   uint32_t va = 0xff000 & (uint32_t) virtual;
-  uint32_t size = (sizeof( struct core_workspace ) + 0xfff) & ~0xfff;
+  uint32_t size_in_pages = (sizeof( struct core_workspace ) + 0xfff) >> 12;
   uint32_t phys = (uint32_t) physical;
 
   // Writable by (and visible to) this core only, only in privileged modes.
@@ -341,9 +332,9 @@ void __attribute__(( optimize (0) )) map_work_area( Level_two_translation_table 
   // Outer and Inner Write-Back, Read-Allocate Write-Allocate
   l2tt_entry entry = l2_prwx;
 
-  for (int i = 0; i < size >> 12; i++) {
+  for (int i = 0; i < size_in_pages; i++) {
     l2tt->entry[(va >> 12) + i].raw = entry.raw | (phys + (i << 12));
-    entry = l2_prw; // Just the first page is executable (for the hardware vectors)
+    entry = l2_prw; // Just the first page is executable (for the hardware vectors & fiq code)
   }
 }
 
@@ -443,6 +434,41 @@ static bool check_task_slot_l1( uint32_t address, uint32_t type )
   return false;
 }
 
+static bool allocate_legacy_workspace_as_needed( uint32_t address, uint32_t type )
+{
+  // FIXME What if Kernel_allocate_pages returns nothing? (Block the Task, find some memory)
+  arm32_ptr pointer = { .raw = address };
+
+  assert( Local_L1TT->entry[pointer.section].type == 1 );
+
+  Level_two_translation_table *l2tt = find_table_from_l1tt_entry( Local_L1TT->entry[pointer.section] );
+  l2tt->entry[pointer.page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
+
+  return true;
+}
+
+static bool random_legacy_kernel_workspace_l1( uint32_t address, uint32_t type )
+{
+  arm32_ptr pointer = { .raw = address };
+
+  Level_two_translation_table *l2tt = find_free_table();
+
+  for (int i = 0; i < number_of( l2tt->entry ); i++) {
+    l2tt->entry[i].handler = allocate_legacy_workspace_as_needed;
+  }
+
+  map_l2tt_at_section_local( l2tt, pointer.section );
+
+  // TODO Could call the allocate_legacy_workspace_as_needed routine for this address immediately,
+  // avoiding another data abort.
+  // Should the type field be modified?
+  // Does anything need the type field at this level?
+  //   These routines provide some RAM at the appropriate address in response to translation faults.
+  //   Permission faults could be reported to user code without calling any of these.
+
+  return true;
+}
+
 static bool check_task_slot_l2( uint32_t address, uint32_t type )
 {
   claim_lock( &shared.mmu.lock );
@@ -461,10 +487,17 @@ static bool check_task_slot_l2( uint32_t address, uint32_t type )
 static bool allocate_core_specific_zero_page_ram( uint32_t address, uint32_t type )
 {
   assert( address < (1 << 20) );
-  assert( type == 0x807 ); // From experience, not necessarily always the case
+  assert( type == 0x807 || type == 7); // From experience, not necessarily always the case. 0x800 => write
 
-  asm ( "bkpt 1" );
-  return false;
+  Write0( "Access " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
+  arm32_ptr pointer = { .raw = address };
+
+  assert( workspace.mmu.zero_page_l2tt != 0 );
+  assert( pointer.section == 0 );
+
+  workspace.mmu.zero_page_l2tt->entry[pointer.page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
+
+  return true;
 }
 
 static void initialise_l2tt_for_section( Level_two_translation_table *l2tt, int section )
@@ -495,6 +528,7 @@ static bool allocate_core_specific_zero_section( uint32_t address, uint32_t type
   assert( type == 0x805 ); // From experience, not necessarily always the case
   assert( workspace.mmu.zero_page_l2tt == 0 );
 
+Write0( __func__ ); Space; Write0( "Access " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
   // One-shot per core, claims a L2TT for the bottom MiB of RAM and initialises it.
   Level_two_translation_table *l2tt = find_free_table();
 
@@ -508,21 +542,19 @@ static bool allocate_core_specific_zero_section( uint32_t address, uint32_t type
 
 static bool check_global_l1tt( uint32_t address, uint32_t type )
 {
-  asm ( "bkpt 1" );
-  return false;
-}
+  Write0( "Check global l1tt, " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
 
-static bool allocate_memory_for_SharedCLib( uint32_t address, uint32_t type )
-{
-  // For SharedCLib, see https://www.riscosopen.org/forum/forums/9/topics/16166?page=5
+uint32_t *sp;
+asm ( "mov %[sp], sp" : [sp] "=r" (sp) );
+for (int i = 0; i < 20; i++) {
+  Write0( "Abort " ); WriteNum( sp[i] ); NewLine;
+}
   arm32_ptr pointer = { .raw = address };
 
-  assert( pointer.section == 0xfff );
-  assert( pointer.page == 0 );
-  assert( workspace.mmu.kernel_l2tt->entry[0].handler == allocate_memory_for_SharedCLib );
+  l1tt_entry global = Global_L1TT->entry[pointer.section];
+  Local_L1TT->entry[pointer.section] = global;
 
-  workspace.mmu.kernel_l2tt->entry[0] = l2_prw;
-  workspace.mmu.kernel_l2tt->entry[0].raw |= Kernel_allocate_pages( 4096, 4096 );
+  assert( global.handler != check_global_l1tt );
 
   return true;
 }
@@ -556,6 +588,9 @@ static l1tt_entry default_l1tt_entry( int section )
     result.handler = allocate_core_specific_zero_section;
   else if (section < (((uint32_t)&app_memory_limit) >> 20))
     result.handler = check_task_slot_l1;
+  else if (section == 0xfa6)
+    result.handler = random_legacy_kernel_workspace_l1;
+    // 0xfa600000 is used by the IF command. =GeneralMOSBuffer
   else if (section == 0xfff)
     result.handler = never_happens; // Overwritten almost immediately.
   else
@@ -599,12 +634,10 @@ void setup_global_translation_tables( volatile startup *startup )
   // Reminder: all pointers are physical.
 
   // Space for 64 level 2 translation tables (enough to start dozens of cores)
-  static const int initial_tables = 16; // 64;
+  static const int initial_tables = 64;
   static const int size = initial_tables * sizeof( Level_two_translation_table );
 
-  // pre_mmu_allocate_physical_memory doesn't support anything but 4k and 1m boundaries atm. FIXME
-  shared->physical_l2tts = (void*) pre_mmu_allocate_physical_memory( size, 4 << 10, startup );
-if (shared->physical_l2tts == 0) asm ( "bkpt 9" );
+  shared->physical_l2tts = (void*) pre_mmu_allocate_physical_memory( size, 64 << 10, startup );
 
   // FIXME: Allocate on 64k boundary and mark it as a Large Page G4-4866 
   //  shared->physical_l2tts = (void*) pre_mmu_allocate_physical_memory( size, 64 << 10, startup );
@@ -612,7 +645,9 @@ if (shared->physical_l2tts == 0) asm ( "bkpt 9" );
   Level_one_translation_table *l1tt = shared->global_l1tt;
   Level_two_translation_table *l2tt = shared->physical_l2tts;
 
-  for (int i = 0; i < initial_tables; i++) {
+  Level_two_translation_table *high_table = l2tt; // Take the first entry as the global kernel l2tt
+
+  for (int i = 1; i < initial_tables-1; i++) {
     l2tt[i].entry[0].handler = free_l2tt_table;
     //l2tt[i].entry[1].handler = &l2tt[i << 10]; // Physical address of free table
     // The rest of the table is left uninitialised, it will be cleared before use.
@@ -624,29 +659,162 @@ if (shared->physical_l2tts == 0) asm ( "bkpt 9" );
     l1tt->entry[i] = default_l1tt_entry( i );
   }
 
-  Level_two_translation_table *high_table = find_free_table_pre_mmu( shared );
-
   l1tt_entry MiB = { .table.type1 = 1, .table.NS = 0, .table.Domain = 0 };
 
   MiB.raw |= (uint32_t) high_table;
   l1tt->entry[0xfff] = MiB; // Top MiB page-addressable
 
-  high_table->entry[0].handler = allocate_memory_for_SharedCLib;
-
-  for (int i = 1; i < number_of( high_table->entry ); i++) {
+  for (int i = 0; i < number_of( high_table->entry ); i++) {
     high_table->entry[i].handler = check_global_l2tt;
   }
 
   // Map the global translation tables for all to share
   map_translation_table( high_table, l1tt, Global_L1TT );
-  map_global_l2tt( high_table );
+
+  uint32_t va = 0xff000 & (uint32_t) L2TTs;
+  uint32_t phys = (uint32_t) high_table;
+
+  l2tt_entry entry = l2_prw;
+
+  for (int i = 0; i < initial_tables / 4; i++) {
+    high_table->entry[(va >> 12) + i].raw = entry.raw | (phys + (i << 12));
+  }
 
   shared->global_l2tt = high_table;
   shared->kernel_l2tt = &L2TTs[high_table - shared->physical_l2tts];
 }
 
+static bool uninitialised_page_in_stack_section( uint32_t address, uint32_t type )
+{
+  // Access to page in stack section that isn't part of a stack
+  assert ( !__func__ );
+  return false;
+}
+
+static bool stack_underflow( uint32_t address, uint32_t type )
+{
+for (;;) asm ( "wfi" );
+  // Access to safety page above a system stack
+  assert ( !__func__ );
+  return false;
+}
+
+static bool allocate_stack_as_needed( uint32_t address, uint32_t type )
+{
+  // TODO this would be a good place to keep an eye on how much of each stack is used
+  // FIXME What if Kernel_allocate_pages returns nothing? (Block the Task, find some memory)
+  arm32_ptr pointer = { .raw = address };
+
+  assert( Local_L1TT->entry[pointer.section].type == 1 );
+
+  Level_two_translation_table *l2tt = find_table_from_l1tt_entry( Local_L1TT->entry[pointer.section] );
+  l2tt->entry[pointer.page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
+
+  return true;
+}
+
+static void initialise_l2tt_for_system_stack( Level_two_translation_table *l2tt )
+{
+  for (int i = 0; i < number_of( l2tt->entry ); i++) {
+    l2tt->entry[i].handler = uninitialised_page_in_stack_section;
+  }
+}
+
+static void setup_stack_pages( uint32_t *top, uint32_t *lim )
+{
+  // Allocates two pages per privileged stack, one at the top, the other at the bottom.
+
+  uint32_t limit = (uint32_t) lim;
+  uint32_t mask = ~(limit - 1);
+  uint32_t base = ((uint32_t) top) & mask;
+
+  arm32_ptr top_ptr = { .rawp = top };
+  arm32_ptr base_ptr = { .rawp = base };
+
+  assert ( top_ptr.section == base_ptr.section );
+
+  l1tt_entry section = Local_L1TT->entry[top_ptr.section];
+
+  Level_two_translation_table *l2tt;
+
+  switch (section.type) {
+  case 0: // Unused
+    {
+      l2tt = find_free_table();
+
+      initialise_l2tt_for_system_stack( l2tt );
+
+      l1tt_entry MiB = { .table.type1 = 1, .table.NS = 1, .table.Domain = 0 };
+
+      MiB.raw |= physical_address( l2tt );
+
+      Local_L1TT->entry[top_ptr.section] = MiB;
+    }
+    break;
+  case 1: // Existing table
+    asm ( "bkpt 666" ); // Untested, should allow multiple stacks in one section, e.g. 124KiB each
+    l2tt = find_table_from_l1tt_entry( section );
+    break;
+  default:
+    assert ( !__func__ ); // Bad stack configuration
+  }
+
+  uint32_t page = top_ptr.page; // The page above the stack
+
+  l2tt->entry[page--].handler = stack_underflow; // Tried to pop too much, or possibly just a random address
+
+  l2tt->entry[page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
+
+  while (page > base_ptr.page) {
+    l2tt->entry[--page].handler = allocate_stack_as_needed;
+  }
+
+  if (top_ptr.page != base_ptr.page) {
+    // For the SharedCLibrary           FIXME needed? or just allocate_stack_as_needed?
+    l2tt->entry[base_ptr.page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
+  }
+}
+
+void Initialise_privileged_mode_stacks()
+{
+  extern uint32_t stack_limit; // Not really a pointer!
+  extern uint32_t svc_stack_top;
+  extern uint32_t undef_stack_top;
+  extern uint32_t abt_stack_top;
+  extern uint32_t irq_stack_top;
+  extern uint32_t fiq_stack_top;
+
+  // These require the l2tt tables to be directly mapped locally, there's no abort stack set up yet.
+  setup_stack_pages( &svc_stack_top, &stack_limit );
+  setup_stack_pages( &undef_stack_top, &stack_limit );
+  setup_stack_pages( &abt_stack_top, &stack_limit );
+  setup_stack_pages( &irq_stack_top, &stack_limit );
+  setup_stack_pages( &fiq_stack_top, &stack_limit );
+}
+
 static void __attribute__(( noreturn, noinline )) go_kernel()
 {
+#if 0
+if (0 && workspace.core_number == 0) {
+  uint32_t volatile *gpio = (void*) 0xfff00000;
+  gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6);
+  asm volatile ( "dsb" );
+  //gpio[0x28/4] = (1 << 22); // Clr
+  gpio[0x1c/4] = (1 << 22); // Set
+  asm volatile ( "dsb" );
+
+  for (int n = 0; n < 7; n++) {
+  for (int i = 0; i < 0x400000; i++) asm ( "" );
+  gpio[0x28/4] = (1 << 22); // Clr
+  asm volatile ( "dsb" );
+  for (int i = 0; i < 0x400000; i++) asm ( "" );
+  gpio[0x1c/4] = (1 << 22); // Set
+  asm volatile ( "dsb" );
+  }
+}
+else if (workspace.core_number > 0) { for (;;) asm  ( "wfi" ); }
+#endif
+
   // Break before make
   about_to_remap_memory();
 
@@ -654,7 +822,6 @@ static void __attribute__(( noreturn, noinline )) go_kernel()
   // We are running in virtual memory now, so adr and function addresses will match
 
   uint32_t rom = ((uint32_t) &va_base) >> 20;
-  uint32_t size = ((uint32_t) &rom_size) >> 20;
   uint32_t i = 0;
 
   while (Local_L1TT->entry[i].raw != Local_L1TT->entry[rom].raw) {
@@ -675,9 +842,13 @@ static void __attribute__(( noreturn, noinline )) go_kernel()
 
 void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, startup *startup )
 {
-if (ws->core_number >= 1) {
+#ifdef SINGLE_CORE
+if (ws->core_number > 0) { 
+#else
+if (ws->core_number > 3) {  // Max cores for HD display
+#endif
   BOOT_finished_allocating( ws->core_number, startup );
-  for (;;) {}
+  for (;;) { asm ( "wfi" ); }
 }
   shared_workspace *shared_memory = (void*) startup->shared_memory;
   struct MMU_shared_workspace *shared = &shared_memory->mmu;
@@ -723,12 +894,15 @@ if (ws->core_number >= 1) {
   // FIXME: permissions, caches, etc.
   l1tt_entry rom_sections = { .section = l1_rom_section };
 
+  int test = 0;
   for (int i = 0; i < (uint32_t) &rom_size; i+= (1 << 20)) {
     l1tt->entry[(start + i) >> 20].raw = rom_sections.raw | ((physical + i) & 0xfff00000);
 
     // Also where the code currently is...
     l1tt->entry[(physical + i) >> 20].raw = rom_sections.raw | ((physical + i) & 0xfff00000);
+    test++;
   }
+  assert ( test == 5 );
 
   // Our core-specific work areas, in our core-specific L2TT
   map_work_area( l2tt, ws );
@@ -737,20 +911,31 @@ if (ws->core_number >= 1) {
 
   ws->mmu.kernel_l2tt = &L2TTs[l2tt - shared->physical_l2tts];
 
-if (0 && ws->core_number == 0) {
-  // This breaks RISC_OSLib; it accesses the page at 0xfff00000
-  l2tt->entry[0] = l2_device;
-  l2tt->entry[0].raw |= 0x3f200000;
+  // FIXME Remove device page at 0xfff00000 pointing to gpio
+  // Wow! This line threw an exception because the compiler put the constant (0x33) into a ROM location
+  // then used a pointer to it to access it as raw (I guess), trying to access 0xfc018xxx, which is
+  // out of RAM. (This is only a problem before the MMU is activated and the code is running where we've
+  // told the compiler and linker it is.) This particular line will be removed soon, anyway.
+  //    *** Leave the comment here, just in case ***
+  // Symptom was the code getting stuck back in boot.c with the wrong address for `states'!
+  // l2tt->entry[0].raw = l2_device.raw | 0x3f200000;
+  l2tt_entry dev = l2_device;
+  l2tt->entry[0].raw = dev.raw | 0x3f200000;
 
+if (ws->core_number == 0) {
   // Pre MMU:
-  uint32_t volatile *gpio = 0x3f200000;
+  uint32_t volatile *gpio = (void*) 0x3f200000;
   gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6);
+}
+
+if (ws->core_number == 0) {
+  uint32_t volatile *gpio = (void*) 0x3f200000;
   asm volatile ( "dsb" );
   //gpio[0x28/4] = (1 << 22); // Clr
   gpio[0x1c/4] = (1 << 22); // Set
   asm volatile ( "dsb" );
 
-  for (int n = 0; n < 3; n++) {
+  for (int n = 0; n < 7; n++) {
   for (int i = 0; i < 0x100000; i++) asm ( "" );
   gpio[0x28/4] = (1 << 22); // Clr
   asm volatile ( "dsb" );
@@ -786,11 +971,13 @@ if (0 && ws->core_number == 0) {
       "\n  mcr p15, 0, %[sctlr], c1, c0, 0" 
       "\n  dsb"
       "\n  isb"
+      "\n  str %[bit], [%[gpio]]"
       "\n  mov sp, %[stack]"
       "\n  bx %[kernel]"
       :
       : [sctlr] "r" (sctlr)
       , [kernel] "r" (go_kernel) // Virtual (high memory) address
+      , [bit] "r" (1 << 22), [gpio] "r" (0xfff00028) // 28 = clr, 1c = set
       , [stack] "r" (sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack) );
 
   __builtin_unreachable();
@@ -864,9 +1051,15 @@ static bool __attribute__(( noinline )) handle_data_abort()
   uint32_t fa = fault_address();
   uint32_t ft = data_fault_type();
 
+  about_to_remap_memory();
+
   fault_handler handler = find_handler( fa );
 
-  return handler( fa, ft );
+  bool result = handler( fa, ft );
+
+  memory_remapped();
+
+  return result;
 }
 
 void __attribute__(( naked, optimize( 0 ), noreturn )) Kernel_default_data_abort()
@@ -905,9 +1098,25 @@ void MMU_switch_to( TaskSlot *slot )
   // two or possibly three sub-MiB translation tables for the first MiB (bottom_MiB_tt)
   // and the slot's top MiB (and possibly the one below it, in case a task regularly
   // modifies its memory by small amounts above and below a MiB boundary).
+
+  // TODO record which slot was last active, configure all translation table walks to cause an exception,
+  // then only clear the table if the slot is not the last active one.
+
+  Level_two_translation_table *l2tt;
+
+  l2tt = find_table_from_l1tt_entry( Local_L1TT->entry[0] );
+
   for (int i = 0x8000 >> 12; i < 0x100000 >> 12; i++) {
-    //bottom_MiB_tt[i] = 0; // FIXME: reproduce  check_task_slot_l2
+    l2tt->entry[i].handler = check_task_slot_l2;
   }
+
+  for (int i = 1; i < (((uint32_t)&app_memory_limit) >> 20); i++) {
+    if (Local_L1TT->entry[i].type == 1) {
+      asm ( "bkpt 1" ); // Free the l2tt.
+    }
+    Local_L1TT->entry[i].handler = check_task_slot_l1;
+  }
+
   // Set CONTEXTIDR
   asm ( "mcr p15, 0, %[asid], c13, c0, 1" : : [asid] "r" (TaskSlot_asid( slot )) );
   // FIXME: clear out L2TTs, or disable walks until one is needed, then clear them
@@ -919,6 +1128,7 @@ void MMU_switch_to( TaskSlot *slot )
 
 static void map_at( void *va, uint32_t pa, uint32_t size, bool shared ) 
 {
+// Too early Write0( __func__ ); Space; WriteNum( va ); Space; WriteNum( pa ); Space; WriteNum( size ); NewLine;
   arm32_ptr pointer = { .rawp = va };
   uint32_t section = pointer.section;
 
@@ -951,7 +1161,12 @@ static void map_at( void *va, uint32_t pa, uint32_t size, bool shared )
       {
         l2tt = find_free_table();
 
-        initialise_l2tt_for_section( l2tt, pointer.section );
+        initialise_l2tt_for_section( l2tt, section );
+
+        if (section == 0) {
+          assert( workspace.mmu.zero_page_l2tt == 0 );
+          workspace.mmu.zero_page_l2tt = l2tt;
+        }
 
         l1tt_entry MiB = { .table.type1 = 1, .table.NS = shared ? 1 : 0, .table.Domain = 0 };
 
@@ -965,7 +1180,9 @@ static void map_at( void *va, uint32_t pa, uint32_t size, bool shared )
       l2tt = find_table_from_l1tt_entry( l1tt->entry[section] );
       break;
     default: // Address already allocated to a MiB section (or supersection)
-      asm ( "bkpt 7" : : [x] "r" (l1tt->entry[section]) );
+      Write0( __func__ ); Write0( ", Address already allocated to a MiB section (or supersection) " ); WriteNum( pointer.raw ); NewLine;
+      asm ( "bkpt 17" : : [x] "r" (l1tt->entry[section]) );
+      __builtin_unreachable();
     }
 
     l2tt_entry old = l2tt->entry[pointer.page];

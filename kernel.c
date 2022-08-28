@@ -36,6 +36,11 @@ Drop support for: 26-bit modes
 
 void __attribute__(( noreturn, noinline )) Kernel_start()
 {
+  uint32_t volatile *gpio = 0xfff00000;
+  asm volatile ( "dsb" );
+  gpio[0x28/4] = (1 << 22); // Clr
+  asm volatile ( "dsb" );
+
   // Fail early, fail hard
   {
     // Problems occur when the shared and core workspaces overlap
@@ -47,22 +52,40 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
     if ((ws < sh) && (sh - ws) < sizeof( workspace )) asm ( "bkpt 1" );
   }
 
-  if (workspace.core_number == 0) {
+  // This is just an initial block until RAM has been reported to memory manager
+  // The core that was gifted the lock before the MMU was initialised will not block.
+  if (claim_lock( &shared.kernel.boot_lock )) {
     // Final use of the pre-mmu sequence's ram_blocks array, now read-only
 
     for (int i = 0; boot_data.ram_blocks[i].size != 0; i++) {
       Kernel_add_free_RAM( boot_data.ram_blocks[i].base >> 12, boot_data.ram_blocks[i].size >> 12 );
     }
-    if (boot_data.less_aligned.size != 0) {
-      Kernel_add_free_RAM( boot_data.less_aligned.base >> 12, boot_data.less_aligned.size >> 12 );
-    }
+
+{
+  uint32_t volatile *gpio = 0xfff00000;
+  // gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6);
+  asm volatile ( "dsb" );
+  //gpio[0x28/4] = (1 << 22); // Clr
+  gpio[0x1c/4] = (1 << 22); // Set
+  asm volatile ( "dsb" );
+
+  for (int n = 0; n < 7; n++) {
+  for (int i = 0; i < 0x400000; i++) asm ( "" );
+  gpio[0x28/4] = (1 << 22); // Clr
+  asm volatile ( "dsb" );
+  for (int i = 0; i < 0x100000; i++) asm ( "" );
+  gpio[0x1c/4] = (1 << 22); // Set
+  asm volatile ( "dsb" );
   }
-#ifndef SINGLE_CORE
-  // Real hardware display still doesn't come up without this:
-  else { for (int i = 0; i < 0x7000000; i++) { asm volatile ( "" ); } }
-#else
-  else { for (;;) { asm ( "wfi" ); } } // Uncomment when debugging to reduce distractions
-#endif
+}
+  }
+  // "Real hardware display still doesn't come up without this:" (I don't know if this is still true.)
+  else {
+    for (int i = 0; i < 0x7000000; i++) { asm volatile ( "" ); }
+  }
+
+  // Allow the others to continue, now the free RAM has been registered.
+  release_lock( &shared.kernel.boot_lock );
 
   int32_t vector_offset = ((uint32_t*) &workspace.vectors.reset_vec - &workspace.vectors.reset - 2) * 4;
 
@@ -85,11 +108,16 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
 
   Initialise_undefined_registers();
 
+  Initialise_privileged_mode_stacks();
   Initialise_privileged_mode_stack_pointers();
 
-  Initialise_system_DAs();
+  extern uint32_t svc_stack_top;
+
+  // Up until now, we've been running with the minimal boot stack set up in boot.c
+  asm volatile ( "mov sp, %[sp]" : : [sp] "r" (&svc_stack_top) );
 
   Boot();
 
   for (;;) { asm( "wfi" ); }
 }
+

@@ -20,8 +20,8 @@ struct Memory_manager_workspace {
 };
 
 typedef struct {
-  uint32_t base_page:16;
-  uint32_t size:16; // pages
+  uint32_t base_page;
+  uint32_t size; // pages
 } free_block;
 
 struct Memory_manager_shared_workspace {
@@ -31,7 +31,7 @@ struct Memory_manager_shared_workspace {
 
   uint32_t dynamic_areas_setup_lock; // This has to be separate from dynamic_areas_lock, because OS_Heap uses OS_DynamicArea
   uint32_t dynamic_areas_lock;
-  free_block free_blocks[16]; // This is the real free memory, not what we tell the applications!
+  free_block free_blocks[64]; // This is the real free memory, not what we tell the applications!
   DynamicArea *dynamic_areas;
   uint32_t rma_memory;  // Required before you can access the RMA dynamic areas
   uint32_t last_da_address;

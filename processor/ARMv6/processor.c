@@ -15,12 +15,17 @@
 
 #include "kernel.h"
 
+extern uint32_t undef_stack_top;
+extern uint32_t abt_stack_top;
+extern uint32_t irq_stack_top;
+extern uint32_t fiq_stack_top;
+
 void Initialise_privileged_mode_stack_pointers()
 {
-  asm ( "msr sp_und, %[stack]" : : [stack] "r" (sizeof( workspace.kernel.undef_stack ) + (uint32_t) &workspace.kernel.undef_stack) );
-  asm ( "msr sp_abt, %[stack]" : : [stack] "r" (sizeof( workspace.kernel.abt_stack ) + (uint32_t) &workspace.kernel.abt_stack) );
-  asm ( "msr sp_irq, %[stack]" : : [stack] "r" (sizeof( workspace.kernel.irq_stack ) + (uint32_t) &workspace.kernel.irq_stack) );
-  asm ( "msr sp_fiq, %[stack]" : : [stack] "r" (sizeof( workspace.kernel.fiq_stack ) + (uint32_t) &workspace.kernel.fiq_stack) );
+  asm ( "msr sp_und, %[stack]" : : [stack] "r" (&undef_stack_top) );
+  asm ( "msr sp_abt, %[stack]" : : [stack] "r" (&abt_stack_top) );
+  asm ( "msr sp_irq, %[stack]" : : [stack] "r" (&irq_stack_top) );
+  asm ( "msr sp_fiq, %[stack]" : : [stack] "r" (&fiq_stack_top) );
 }
 
 void Initialise_undefined_registers()

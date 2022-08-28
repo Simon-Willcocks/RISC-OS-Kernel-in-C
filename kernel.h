@@ -64,14 +64,7 @@ struct callback {
 
 // Stacks sizes need to be checked (or use the zp memory)
 struct Kernel_workspace {
-  uint32_t svc_stack[4*1024]; // Most likely to overflow; causes a data abort, for testing.
-  uint32_t undef_stack[640];
-  uint32_t abt_stack[640];
-  uint32_t irq_stack[640];
-  uint32_t fiq_stack[640];
-  const char *env;
-  uint64_t start_time;
-  // uint64_t monotonic_time;      // Use generic timer with a suitable divisor instead
+  uint32_t svc_stack[640]; // For use until SharedCLibrary-friendly stack set up.
 
   callback *callbacks_pool;
 
@@ -79,8 +72,6 @@ struct Kernel_workspace {
   module *module_list_tail;
   uint32_t DomainId;
   vector *vectors[64];   // https://www.riscosopen.org/wiki/documentation/show/Software%20Vector%20Numbers
-
-  Task *irq_task;
 
   // 0 -> disabled
   // There is no associated code, it will be listening for EventV.
@@ -118,6 +109,7 @@ struct VDU_workspace {
 typedef struct fs fs;
 
 struct Kernel_shared_workspace {
+  uint32_t boot_lock;
   fs *filesystems;
   uint32_t fscontrol_lock;
 

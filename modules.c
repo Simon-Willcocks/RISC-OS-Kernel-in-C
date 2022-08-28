@@ -1584,8 +1584,7 @@ static module_header *find_rom_module( const char *name )
 
 void init_module( const char *name )
 {
-  workspace.kernel.env = name;
-  workspace.kernel.start_time = 0x0101010101ull;
+  TaskSlot_new_application( name, "" );
 
 #ifdef DEBUG__SHOW_MODULE_INIT
   NewLine;
@@ -1774,20 +1773,18 @@ void init_modules()
   uint32_t *rom_modules = &_binary_AllMods_start;
   uint32_t *rom_module = rom_modules;
 
-  workspace.kernel.start_time = 0x0101010101ull;
-
   while (0 != *rom_module) {
     module_header *header = (void*) (rom_module+1);
 
-    workspace.kernel.env = title_string( header );
+    TaskSlot_new_application( title_string( header ), "" );
 
 #ifdef DEBUG__SHOW_MODULE_INIT
     NewLine;
     Write0( "INIT: " );
     WriteNum( rom_module ); Write0( " " );
-    Write0( workspace.kernel.env );
+    Write0( TaskSlot_Command( TaskSlot_now() ) );
 #endif
-    if (!excluded( workspace.kernel.env )) {
+    if (!excluded( title_string( header ) )) {
 #ifdef DEBUG__SHOW_MODULE_INIT
       {
       if (header->offset_to_service_call_handler != 0) {
@@ -3342,21 +3339,35 @@ void Boot()
 {
   setup_OS_vectors();
 
+  Initialise_system_DAs();
+
   TaskSlot *slot = TaskSlot_new( "Root", 0 );
+
+  // TODO I'm still not sure whether to have a TaskSlot for module tasks, or set it to zero.
 
   Task *task = Task_new( slot );
   assert (task->slot == slot);
 
   workspace.task_slot.running = task;
 
-  workspace.kernel.irq_task = Task_new( slot );
-
   allocate_legacy_scratch_space();
 
   set_up_legacy_zero_page();
 
+  Task *idle_task = Task_new( slot );
+
+    // Initial state
+  idle_task->regs.r[0] = workspace.core_number;
+  idle_task->regs.pc = (uint32_t) idle_thread;
+  idle_task->regs.psr = 0x10;
+
+  workspace.task_slot.running->next = idle_task;
+
   // Start the HAL, a multiprocessing-aware module that initialises essential features before
   // the boot sequence can start.
+  // It should register Resource:$.!Boot, which should perform the post-ROM module boot.
+  // TODO A code variable to read the current core number?
+
   {
     extern uint32_t _binary_Modules_HAL_start;
     register uint32_t code asm( "r0" ) = 10;
@@ -3415,15 +3426,6 @@ void Boot()
   Write0( "System slot: " ); WriteNum( slot ); NewLine;
 
   NewLine; Write0( "All modules initialised, starting idle thread" ); NewLine;
-
-  Task *idle_task = Task_new( slot );
-
-    // Initial state
-  idle_task->regs.r[0] = workspace.core_number;
-  idle_task->regs.pc = (uint32_t) idle_thread;
-  idle_task->regs.psr = 0x13;
-
-  workspace.task_slot.running->next = idle_task;
 
   if (0 == workspace.core_number) {
     // File declaring resources, ROM-based boot files.

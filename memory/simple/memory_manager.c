@@ -66,23 +66,10 @@ void Initialise_system_DAs()
 // While we're hacking like crazy, let's allocate far too much memory for RO kernel workspace...
 // See comments to GSTrans in swis.c
 
-// This is the mechanism used by Kernel SWIs to return to callers, not normal modules...
+  uint32_t memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
+  if (memory == 0xffffffff) asm ( "bkpt 1" );
 
-uint32_t memory;
-    // Forgot that there may not be any memory to allocate, yet...
-do {
-  for (int i = 0; i < 1000; i++) { asm ( "" ); }
-  memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
-} while (memory == 0xffffffff);
-
-MMU_map_at( (void*) 0xfaf00000, memory, natural_alignment );
-memset( (void*) 0xfaf00000, '\0', natural_alignment );
-uint32_t slvk[] = {     0xe38ee201, // orr     lr, lr, #0x10000000      SLVK_setV
-                        0x638ee201, // orrvs   lr, lr, #0x10000000      SLVK_testV
-                        0xe49df004  // pop     {pc} (ldr pc, [sp], #4)  SLVK
-                        };
-memcpy( (void*) 0xfaff3358, slvk, sizeof( slvk ) );
-
+#if 0
 // Now do it again for some other kernel workspace... (Specifically GSVarWSpace for GSTrans/GSRead/GSInit, fa645800)
 do {
   memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
@@ -90,6 +77,7 @@ do {
 
 MMU_map_at( (void*) 0xfa600000, memory, natural_alignment );
 memset( (void*) 0xfa600000, '\0', natural_alignment );
+#endif
 
 // How much workspace does the kernel need? Lots could be far more easily
 // and efficiently be placed on the stack. e.g. SysVarWorkSpace
@@ -880,6 +868,7 @@ uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment )
 
   if (p->size == 0) {
     // Find a big enough block to split, and take the aligned part off into another free block
+    // Note: p points to a free entry
 
     free_block *big = (free_block *) shared.memory.free_blocks;
     while (big->size != 0
@@ -909,6 +898,7 @@ uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment )
   }
 
   release_lock( &shared.memory.lock );
+if (result == -1) asm ( "wfi" );
   return result;
 }
 
@@ -946,6 +936,10 @@ clean_cache_to_PoU(); \
 
 void __attribute__(( naked, noreturn )) Kernel_default_prefetch()
 {
+  uint32_t *sp;
+  asm volatile ( "push {r0-r12, r14}\n  mov %[sp], sp" : [sp] "=r" (sp) );
+  Write0( __func__ ); NewLine;
+  for (int i = 0; i < 32; i++) { WriteNum( sp[i] ); if (0 == (i & 3)) NewLine; else Space; }
   // When providing proper implementation, ensure the called routine is __attribute__(( noinline ))
   // noinline attribute is required so that stack space is allocated for any local variables.
   BSOD( 0, Blue );

@@ -264,12 +264,14 @@ static void free_task_slot( TaskSlot *slot )
 
 static void allocate_taskslot_memory()
 {
-  // Only called when lock acquired
+  // Only called with lock acquired
   bool first_core = (shared.task_slot.slots_memory == 0);
 
   if (first_core) {
     shared.task_slot.slots_memory = Kernel_allocate_pages( 4096, 4096 );
     shared.task_slot.tasks_memory = Kernel_allocate_pages( 4096, 4096 );
+    if (shared.task_slot.slots_memory == 0) asm ( "bkpt 128" );
+    if (shared.task_slot.tasks_memory == 0) asm ( "bkpt 129" );
   }
 
   // No lazy address decoding for the kernel
@@ -401,7 +403,7 @@ bool do_OS_ReadDefaultHandler( svc_registers *regs )
 
   handler h = default_handlers[ regs->r[0] ];
 
-  regs->r[1] = h.code;
+  regs->r[1] = (uint32_t) h.code;
   regs->r[2] = h.private_word;
   regs->r[3] = 0; // Only relevant for Error, CallBack, BreakPoint. These will probably have to be associated with Task Slots...?
 
@@ -457,7 +459,7 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
   }
 
   // CAO unique to each TaskSlot, with luck, this should stop the Wimp from messing with Application memory space.
-  result->handlers[15].code = (uint32_t) result;
+  result->handlers[15].code = (void*) result;
 
   // Remove leading spaces and *'s
   while (command_line[0] == ' ' || command_line[0] == '*') command_line++;
@@ -607,6 +609,11 @@ uint32_t TaskSlot_Himem( TaskSlot *slot )
   return result;
 }
 
+TaskSlot *TaskSlot_now()
+{
+  return workspace.task_slot.running->slot;
+}
+
 void *TaskSlot_Time( TaskSlot *slot )
 {
   return &slot->start_time;
@@ -659,13 +666,12 @@ void __attribute__(( noinline )) do_FSControl( uint32_t *regs )
 
 void swi_returning_to_usr_mode( svc_registers *regs )
 {
-  if (workspace.kernel.irq_task->next != 0) {
-    Write0( "Wibble" ); NewLine; for (;;) {}
-  }
+  // Here is where tasks waiting for other tasks to finish a SWI would get scheduled, if I needed to...
 }
 
 static void __attribute__(( noinline )) c_default_ticker()
 {
+#if 0
   // Interrupts disabled, core-specific
   if (workspace.task_slot.sleeping != 0) {
 #ifdef DEBUG__SHOW_TASK_SWITCHES
@@ -690,7 +696,8 @@ NewLine;
       // Solution(?): queue them after the irq_task and wait for the SWI to complete
       // (or call OS_LeaveOS?)
 
-      Task **p = &workspace.kernel.irq_task->next;
+      // The current Task is the interrupt handler
+      Task **p = &workspace.task_slot.running->next;
       while ((*p) != 0) { p = &(*p)->next; } // In case any other tasks still waiting...
 
       Task *still_sleeping = workspace.task_slot.sleeping;
@@ -711,6 +718,9 @@ NewLine;
       }
     }
   }
+#else
+  asm ( "bkpt 200" );
+#endif
 }
 
 void __attribute__(( naked )) default_ticker()
@@ -936,6 +946,60 @@ void __attribute__(( naked )) task_exit()
   asm ( "bkpt 2" );
 }
 
+static int next_interrupt_source()
+{
+  // It is expected that the HAL will have claimed this vector and will return
+  // the number of the device the interrupt is for.
+  register vector *v asm( "r10" ) = workspace.kernel.vectors[2]; // IrqV - resurrected!
+  register uint32_t device asm( "r0" ); // Device ID returned by HAL
+
+  asm volatile (
+      "\n  adr r0, intercepted  // Interception address, to go onto stack"
+      "\n  push { r0 }"
+      "\n  mov r0, #0"
+      "\n0:"
+      "\n  ldr r14, [%[v], %[code]]"
+      "\n  ldr r12, [%[v], %[private]]"
+      "\n  blx r14"
+      "\n  ldr %[v], [%[v], %[next]]"
+      "\n  b 0b"
+      "\nintercepted:"
+      : "=r" (device)
+
+      : [v] "r" (v)
+
+      , [next] "i" ((char*) &((vector*) 0)->next)
+      , [private] "i" ((char*) &((vector*) 0)->private_word)
+      , [code] "i" ((char*) &((vector*) 0)->code) );
+
+  assert( device == -1 || (device >= 0 && device < shared.task_slot.number_of_interrupt_sources) );
+
+  return device;
+}
+
+static void schedule_next_irq_task( svc_registers *regs )
+{
+  Task *running = workspace.task_slot.running;
+  int device = next_interrupt_source();
+
+  if (device >= 0) {
+    Task *handler = workspace.task_slot.irq_tasks[device];
+    workspace.task_slot.irq_tasks[device] = 0; // Not waiting for interrupts
+
+#ifdef DEBUG__SHOW_TASK_SWITCHES
+  Write0( __func__ ); Space; WriteNum( running ); Space; WriteNum( handler ); Space; WriteNum( handler->next ); NewLine;
+#endif
+    assert( handler != 0 );
+    assert( handler->next == 0 );
+    assert( workspace.task_slot.running == running );
+
+    workspace.task_slot.running = handler;
+    handler->next = running;
+
+    save_and_resume( running, handler, regs );
+  }
+}
+
 bool __attribute__(( optimize( "O4" ) )) do_OS_ThreadOp( svc_registers *regs )
 {
   enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, LockClaim, LockRelease,
@@ -949,18 +1013,9 @@ bool __attribute__(( optimize( "O4" ) )) do_OS_ThreadOp( svc_registers *regs )
 
   if (regs->r[0] == NumberOfInterruptSources) {
     // Allowed from any mode, but only once.
-    assert( shared.task_slot.irq_tasks == 0 );
-    uint32_t count = regs->r[1];
-    shared.task_slot.number_of_interrupt_sources = count;
-    shared.task_slot.irq_tasks = rma_allocate( sizeof( Task * ) * count );
-    for (int i = 0; i < count; i++) {
-      shared.task_slot.irq_tasks[i] = 0;
-    }
+    assert( shared.task_slot.number_of_interrupt_sources == 0 );
+    shared.task_slot.number_of_interrupt_sources = regs->r[1];
     return true;
-  }
-
-  if (regs->r[0] == WaitForInterrupt || regs->r[0] == InterruptIsOff) {
-    // Allowed from irq32 mode.
   }
 
   if ((regs->spsr & 0x1f) != 0x10
@@ -1003,10 +1058,7 @@ bool __attribute__(( optimize( "O4" ) )) do_OS_ThreadOp( svc_registers *regs )
       new_task->next = running->next;
       running->next = new_task;
 
-      // The new thread will start with the same psr as the parent
-
-      asm volatile ( "mrs %[psr], spsr" : [psr] "=r" (new_task->regs.psr) );
-
+      new_task->regs.psr = 0x10; // Tasks always start in usr32 mode
       new_task->regs.pc = regs->r[1];
       new_task->regs.banked_lr = (uint32_t) task_exit;
       new_task->regs.banked_sp = regs->r[2];
@@ -1018,11 +1070,13 @@ bool __attribute__(( optimize( "O4" ) )) do_OS_ThreadOp( svc_registers *regs )
       new_task->regs.r[5] = regs->r[7];
       new_task->regs.r[6] = regs->r[8];
 
+      regs->r[0] = handle_from_task( new_task );
+
 #ifdef DEBUG__WATCH_TASK_SLOTS
       Write0( "Task created, may or may not start immediately " ); WriteNum( new_task ); WriteNum( slot ); NewLine;
 #endif
-      return true;
     }
+    break;
   case Sleep:
     {
       Task *running = workspace.task_slot.running;
@@ -1036,7 +1090,7 @@ Write0( "Sleeping " ); WriteNum( running ); Write0( ", waking " ); WriteNum( res
 #endif
 
       if (regs->r[1] == 0) {
-        if (resume == 0) return true; // Nothing to do, only one thread running
+        if (resume == 0) break; // Nothing to do, only one thread running
 
         // Yield
         Task *last = running;
@@ -1064,17 +1118,71 @@ Write0( "Sleeping " ); WriteNum( running ); Write0( ", waking " ); WriteNum( res
       }
 
       save_and_resume( running, resume, regs );
-
-      return true;
     }
+    break;
+
   case LockClaim:
     {
       error = Claim( regs );
     }
+    break;
+
   case LockRelease:
     {
       error = Release( regs );
     }
+    break;
+
+  case WaitForInterrupt:
+    {
+      Write0( "Wait for Interrupt" ); NewLine;
+
+      assert( regs->r[1] < shared.task_slot.number_of_interrupt_sources );
+
+      if (workspace.task_slot.irq_tasks == 0) {
+        int count = shared.task_slot.number_of_interrupt_sources;
+        workspace.task_slot.irq_tasks = rma_allocate( sizeof( Task * ) * count );
+        for (int i = 0; i < count; i++) {
+          workspace.task_slot.irq_tasks[i] = 0;
+        }
+      }
+
+      // Are we handling an interrupt, or not?
+      // Interrupts are enabled if it's the initial call or InterruptIsOff has been called
+      bool handling_interrupts = (0 != (regs->spsr & 0x80));
+
+      // When it returns, interrupts will be disabled
+      regs->spsr |= 0x80;
+
+      assert( workspace.task_slot.irq_tasks[regs->r[1]] == 0 );
+
+      workspace.task_slot.irq_tasks[regs->r[1]] = running;
+
+      if (handling_interrupts) {
+        // Any more interrupts incoming?
+        schedule_next_irq_task( regs );
+      }
+
+      if (!handling_interrupts
+       || (running == workspace.task_slot.running)) { // No more irqs
+        // Just schedule the next task
+        Task *next = running->next;
+        save_and_resume( running, next, regs );
+        running->next = 0;
+      }
+    }
+    break;
+
+  case InterruptIsOff: // Continue with interrupts enabled, but only when all IRQs have been dealt with
+    {
+      Write0( "Interrupt is off" ); NewLine;
+      regs->spsr &= ~0x80; // Enable interrupts
+
+      // We're always in the middle of handling interrupts when this is called
+      schedule_next_irq_task( regs );
+    }
+    break;
+
   default:
     {
       static error_block unknown_code = { 0x888, "Unknown code" };
@@ -1756,7 +1864,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
     assert( 0 == (void*) &((Task*) 0)->regs );
 
     // Need to be careful with this, that the compiler doesn't insert any code to
-    // set up lr using another register.
+    // set up lr using another register, corrupting it.
     register Task **running asm ( "lr" ) = &workspace.task_slot.running;
 
     asm volatile (
@@ -1780,6 +1888,18 @@ Write0( "IRQ: " ); Write0( "task " ); WriteNum( task ); Space; WriteNum( task->r
 }
 #endif
 
+  // We're now running without a task. Find all the interrupt tasks that should be
+  // resumed and put them in a queue (first at the head, since the HAL will return
+  // them in order of priority)
+  // OR
+  // Take the first one, run it until it is done with the immediate hardware problem
+  // (calls WaitForInterrupt or InterruptIsOff), at which point ask the HAL for the
+  // next IRQ.
+
+  // The latter is better, because it will allow the HAL to report higher priority
+  // interrupts that occur during interrupt handling.
+  // Interrupt Tasks that call InterruptIsOff will be scheduled after the last Task
+  // that's calling a SWI. (Can there be more than one?)
 
   // We're going to deal with the interrupt(s) now, with interrupts disabled,
   // generally resuming a task that will take care of anything time-consuming
@@ -1794,37 +1914,20 @@ Write0( "IRQ: " ); Write0( "task " ); WriteNum( task ); Space; WriteNum( task->r
     asm ( "bkpt 1" );
   }
 
-  workspace.kernel.irq_task->next = workspace.task_slot.running;
-  workspace.task_slot.running = workspace.kernel.irq_task;
+  Task *interrupted = workspace.task_slot.running;
+  int device = next_interrupt_source();
 
-  // It is expected that the HAL will have claimed this vector and will return
-  // the number of the device the interrupt is for.
-  register vector *v asm( "r10" ) = workspace.kernel.vectors[2]; // IrqV - resurrected!
-  register uint32_t device asm( "r0" ); // Device ID returned by HAL
+  if (device >= 0) {
+    Task *handler = workspace.task_slot.irq_tasks[device];
+    workspace.task_slot.irq_tasks[device] = 0; // Not waiting for interrupts
 
-  asm volatile (
-      "\n  adr r0, intercepted  // Interception address, to go onto stack"
-      "\n  push { r0 }"
-      "\n  mov r0, #0"
-      "\n0:"
-      "\n  ldr r14, [%[v], %[code]]"
-      "\n  ldr r12, [%[v], %[private]]"
-      "\n  blx r14"
-      "\n  ldr %[v], [%[v], %[next]]"
-      "\n  b 0b"
-      "\nintercepted:"
-      : "=r" (device)
+    assert( handler != 0 );
+    assert( handler->next == 0 );
+    assert( workspace.task_slot.running == interrupted );
 
-      : [v] "r" (v)
-
-      , [next] "i" ((char*) &((vector*) 0)->next)
-      , [private] "i" ((char*) &((vector*) 0)->private_word)
-      , [code] "i" ((char*) &((vector*) 0)->code) );
-
-  assert( workspace.task_slot.running == workspace.kernel.irq_task );
-
-  workspace.task_slot.running = workspace.kernel.irq_task->next;
-  workspace.kernel.irq_task->next = 0;
+    workspace.task_slot.running = handler;
+    handler->next = interrupted;
+  }
 
   {
     register Task **running asm ( "lr" ) = &workspace.task_slot.running;
@@ -1879,52 +1982,83 @@ void run_vector( svc_registers *regs, int vec )
 
 bool delegate_operation( svc_registers *regs, int operation )
 {
-  bool reclaimed = claim_lock( &shared.task_slot.filesystem_lock );
+  // This is a temporary solution. The tasks should block until woken, but
+  // they will instead busy-wait for the lock while yielding.
+  // Unfortunately, this tries to block callers from SVC modes, which isn't supported.
+  // In that case, simply loop, and allow interrupts to schedule other tasks?
+retry: {}
 
   Task *running = workspace.task_slot.running;
+  uint32_t handle = (uint32_t) running;
 
-  if (shared.task_slot.filesystem_owner == 0) {
-    shared.task_slot.filesystem_owner = running;
+  uint32_t old = change_word_if_equal( &shared.task_slot.filesystem_lock, 0, handle );
+  bool reclaimed = old == handle;
+
+  if (old == 0 || reclaimed) {
+    if (operation == 13 && (regs->r[0] >= 64 && regs->r[0] < 256)) {
+      Write0( "Open file " ); Write0( regs->r[1] ); NewLine;
+    }
+#ifdef DEBUG__SHOW_ALL_FS_VECTOR_CALLS
+    Write0( "Claimed lock" ); Space; if (reclaimed) Write0( " (reclaimed) " ); NewLine;
+    Write0( "Running vector " ); WriteNum( operation ); NewLine;
+    WriteNum( regs->r[0] ); Space;
+    WriteNum( regs->r[1] ); Space;
+    WriteNum( regs->r[2] ); Space;
+    WriteNum( regs->r[3] ); NewLine;
+    WriteNum( regs->r[4] ); Space;
+    WriteNum( regs->r[5] ); Space;
+    WriteNum( regs->r[6] ); Space;
+    WriteNum( regs->r[7] ); NewLine;
+#endif
+    run_vector( regs, operation );
+
+#ifdef DEBUG__SHOW_ALL_FS_VECTOR_CALLS
+    NewLine;
+    WriteNum( regs->r[0] ); Space;
+    WriteNum( regs->r[1] ); Space;
+    WriteNum( regs->r[2] ); Space;
+    WriteNum( regs->r[3] ); NewLine;
+    WriteNum( regs->r[4] ); Space;
+    WriteNum( regs->r[5] ); Space;
+    WriteNum( regs->r[6] ); Space;
+    WriteNum( regs->r[7] ); NewLine;
+#endif
+
+    if (!reclaimed) {
+      // There's no tasks queued, no need for anything clever with STREX etc.
+      shared.task_slot.filesystem_lock = 0;
+#ifdef DEBUG__SHOW_ALL_FS_VECTOR_CALLS
+      Write0( "Released lock" ); NewLine;
+#endif
+    }
+    else {
+#ifdef DEBUG__SHOW_ALL_FS_VECTOR_CALLS
+      Write0( "Keeping lock" ); NewLine;
+#endif
+    }
+    return true;
   }
-  else {
+  else if ((regs->spsr & 0xf) == 0) { // usr32 mode caller, allowed to be switched out
+    Write0( "Lock is held by " ); WriteNum( old ); NewLine;
+
+    regs->lr -= 4; // Yield in such a way that the task will re-try the SWI
+
     Task *next = running->next;
+
+    assert( next != 0 ); // There's always the idle task
 
     // Remove task from running queue
     save_and_resume( running, next, regs );
 
-    running->next = 0;
-
-    if (0 == shared.task_slot.filesystem_blocked_tail)
-      shared.task_slot.filesystem_blocked_tail = &shared.task_slot.filesystem_blocked_head;
-
-    *shared.task_slot.filesystem_blocked_tail = running;
-    shared.task_slot.filesystem_blocked_tail = &running->next;
-    running->block_op = operation;
-  }
-
-  // Handle recursion properly
-  if (!reclaimed) release_lock( &shared.task_slot.filesystem_lock );
-
-  // Now the current thread is the filesystem owner, or blocked
-
-  if (running == shared.task_slot.filesystem_owner) {
-    run_vector( regs, operation );
-
-    reclaimed = claim_lock( &shared.task_slot.filesystem_lock );
-    while (shared.task_slot.filesystem_blocked_head != 0) {
-      shared.task_slot.filesystem_owner = shared.task_slot.filesystem_blocked_head;
-      shared.task_slot.filesystem_blocked_head = shared.task_slot.filesystem_blocked_head->next;
-      if (!reclaimed) release_lock( &shared.task_slot.filesystem_lock );
-
-      save_and_resume( running, shared.task_slot.filesystem_owner, regs );
-      run_vector( regs, shared.task_slot.filesystem_owner->block_op );
-
-      reclaimed = claim_lock( &shared.task_slot.filesystem_lock );
+    Task *last = next;
+    while (last->next != 0) {
+      last = last->next;
     }
-    // Nothing left in the list
-    shared.task_slot.filesystem_owner = 0;
-    shared.task_slot.filesystem_blocked_tail = &shared.task_slot.filesystem_blocked_head;
-    if (!reclaimed) release_lock( &shared.task_slot.filesystem_lock );
+    last->next = running;
+    running->next = 0;
+  }
+  else {
+    goto retry;
   }
 
   return 0 == (regs->spsr & VF); // Result of the last operation, in the current thread

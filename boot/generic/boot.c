@@ -78,7 +78,7 @@ void __attribute__(( naked, section( ".text.init" ), noinline, noreturn )) _star
   // Assumes top_of_ram > 2 * size_of_rom and that the ROM
   // is loaded near the top or bottom of RAM.
   uint32_t volatile *states = (uint32_t*) (top_of_ram / 2);
-  uint32_t const tiny_stack_size = 256;
+  uint32_t const tiny_stack_size = 4096;
 
   // Allocate a tiny stack per core in RAM that is currently unused.
   asm volatile( "mov sp, %[stack]" : : [stack] "r" (states - core_number * tiny_stack_size) );
@@ -250,28 +250,70 @@ static uint32_t allocate_physical_memory( uint32_t size, uint32_t alignment, ram
   return result;
 }
 
+// Duplicated and modified from memory/simple/memory_manager.c
+// Later implementations are likely to be more complicated, but this is good enough for booting.
+static bool aligned( uint32_t b, uint32_t alignment )
+{
+  return 0 == (b & (alignment - 1));
+}
+
+static uint32_t misalignment( uint32_t b, uint32_t alignment )
+{
+  return alignment - (b & (alignment - 1));
+}
+
+static uint32_t allocate_pages( uint32_t size, uint32_t alignment, ram_block *blocks )
+{
+  uint32_t result = -1;
+
+  ram_block *p = blocks;
+
+  while (p->size != 0
+      && (!aligned( p->base, alignment )
+       || p->size < size)) {
+    p++;
+  }
+
+  if (p->size == 0) {
+    // Find a big enough block to split, and take the aligned part off into another free block
+    // Note: p points to a free entry
+
+    ram_block *big = blocks;
+    while (big->size != 0
+        && big->size < size + misalignment( big->base, alignment )) {
+      big++;
+    }
+
+    if (big->size != 0) {
+      uint32_t mis = misalignment( big->base, alignment );
+      p->size = big->size - mis;
+      p->base = big->base + mis;
+      big->size = mis;
+    }
+  }
+
+  if (p->size != 0) {
+    result = p->base;
+    p->base += size;
+    p->size -= size;
+
+    if (p->size == 0) {
+      do {
+        *p = *(p+1);
+        p++;
+      } while (p->size != 0);
+    }
+  }
+
+  return result;
+}
+
 uint32_t pre_mmu_allocate_physical_memory( uint32_t size, uint32_t alignment, volatile startup *startup )
 {
   // Always allocate a least one full page.
   if (0 != (size & 0xfff)) size = (size + 0xfff) & ~0xfff;
 
-  if (startup->less_aligned.size == 0 && 0 != (startup->ram_blocks[0].base & (alignment - 1))) {
-    uint32_t misalignment = alignment - (startup->ram_blocks[0].base & (alignment - 1));
-    startup->less_aligned.base = startup->ram_blocks[0].base;
-    startup->less_aligned.size = misalignment;
-    startup->ram_blocks[0].size -= misalignment;
-    startup->ram_blocks[0].base += misalignment;
-  }
-
-  uint32_t result = allocate_physical_memory( size, alignment, (ram_block*) &startup->less_aligned );
-  int block = 0;
-
-  while (0 != (result & 1) && 0 != startup->ram_blocks[block].size) {
-    result = allocate_physical_memory( size, alignment, (ram_block*) &startup->ram_blocks[block++] );
-  }
-
-if (result == 0) asm (  "bkpt 8" );
-  return result;
+  return allocate_pages( size, alignment, startup->ram_blocks );
 }
 
 void BOOT_finished_allocating( uint32_t core, volatile startup *startup )
@@ -293,6 +335,11 @@ void __attribute__(( noreturn, noinline )) pre_mmu_with_stacks( core_workspace *
   set_smp_mode();
 
   if (ws->core_number == 0) {
+    shared_workspace *shared_memory = (void*) startup->shared_memory;
+
+    // Block other cores from continuing until core 0 has enabled the MMU
+    shared_memory->kernel.boot_lock = 1; // lock is claimed by core 0 FIXME: knowledge of implementation of claim_lock
+
     for (int i = 1; i < max_cores; i++) {
       startup->core_to_enter_mmu = i;
       while (i != startup->core_entered_mmu) {}

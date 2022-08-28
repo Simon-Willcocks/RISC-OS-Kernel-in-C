@@ -95,6 +95,7 @@ void MMU_map_device_at( void *va, uint32_t pa, uint32_t size ); // Devices alway
 //void MMU_map_pipe( uint32_t phys, uint32_t size, uint32_t over );
 
 void BOOT_finished_allocating( uint32_t core, volatile startup *startup );
+void Initialise_privileged_mode_stacks(); // Must be called before any exceptions
 
 // MMU_enter allocates raw memory (not multi-processor safe), calls BOOT_finished_allocating when it's done, builds
 // an environment where the ROM, etc. are mapped into virtual memory, and calls Kernel_start, when it has.

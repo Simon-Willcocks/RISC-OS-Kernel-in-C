@@ -212,7 +212,7 @@ static bool do_OS_EnterOS( svc_registers *regs )
 static bool do_OS_LeaveOS( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
-  regs->spsr = (regs->spsr & ~15);
+  regs->spsr = (regs->spsr & ~7);
   return true;
 }
 
@@ -890,6 +890,8 @@ OSRSI6_ABTSTK                                  = 88,
 OSRSI6_PhysRamtableFormat                      = 89  // 0 = addresses are in byte units, 1 = addresses are in 4KB units
 };
 
+extern uint32_t undef_stack_top;
+
 // Testing. Is this read-only?
 // I don't think so, we need to update MetroGnome, don't we? Still, this will do as the initial values.
 // I just spent ages combing through code until I worked out that this was where the strange address came
@@ -910,8 +912,7 @@ static const uint32_t SysInfo[] = {
   [OSRSI6_IOSystemType]                            = 0xbaad0000 | 12,
   [OSRSI6_L1PT]                                    = 0xbaad0000 | 13,
   [OSRSI6_L2PT]                                    = 0xbaad0000 | 14,
-  [OSRSI6_UNDSTK]                                  = 
-        sizeof( workspace.kernel.undef_stack ) + (uint32_t) &workspace.kernel.undef_stack,
+  [OSRSI6_UNDSTK]                                  = (uint32_t) &undef_stack_top,
   [OSRSI6_SVCSTK]                                  = 0xbaad0000 | 0x73273273, // A trap! Why does FileSwitch need to know this?
         //sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack,
   [OSRSI6_SysHeapStart]                            = 0xbaad0000 | 17,

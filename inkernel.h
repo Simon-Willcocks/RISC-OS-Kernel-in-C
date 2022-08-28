@@ -42,7 +42,7 @@ static inline error_block *OSCLI( const char *command )
 
 // TEMPORARY!
 
-#define assert( x ) while (!(x)) { Write0( "Assertion failed: " ); Write0( __func__ ); WriteS( #x ); asm ( "bkpt 5" ); }
+#define assert( x ) while (!(x)) { Write0( "Assertion failed: " ); Write0( __func__ ); Write0( #x ); asm ( "bkpt 5" ); }
 
 extern const char hex[16];
 

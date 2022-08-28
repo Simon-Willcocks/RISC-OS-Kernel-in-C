@@ -38,6 +38,15 @@ SECTIONS
   system_heap           = 0x30000000 ; /* To match legacy expectations. Had proposed 0xffe00000 */
   dynamic_areas_base    = 0x31000000 ; /* Where DAs start from. */
 
+  /* Privileged mode stacks. The base has to be on a power-of-two boundary
+     which matches the SharedCLibrary code. */
+  stack_limit           = 0x00100000 ;
+  svc_stack_top         = 0xffdff000 ;
+  abt_stack_top         = 0xffcff000 ;
+  undef_stack_top       = 0xffbff000 ;
+  irq_stack_top         = 0xffaff000 ;
+  fiq_stack_top         = 0xff9ff000 ;
+
  . = va_base ;
  .text : {
   *(.text.init) ;

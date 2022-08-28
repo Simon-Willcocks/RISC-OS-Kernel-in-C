@@ -34,9 +34,8 @@ typedef struct {
   uint32_t core_workspaces;
   uint32_t shared_memory;
 
-  ram_block ram_blocks[4];
+  ram_block ram_blocks[8];
 
-  ram_block less_aligned;
   uint32_t core_to_enter_mmu;
   uint32_t core_entered_mmu;
 } startup;
