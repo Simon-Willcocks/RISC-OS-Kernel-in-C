@@ -29,13 +29,17 @@ enum { Create,
        NotListening   // I don't want any more data, thanks
        };
 
+#ifndef __KERNEL_H
 typedef struct {
   error_block *error;
   void *location;
   uint32_t available; 
 } PipeSpace;
 
-static uint32_t PipeOp_CreateForTransfer( uint32_t max_block )
+#define OS_PipeOp 0x200fa
+#endif
+
+static inline uint32_t PipeOp_CreateForTransfer( uint32_t max_block )
 {
   register uint32_t code asm ( "r0" ) = Create;
   register uint32_t max_block_size asm ( "r2" ) = max_block;
@@ -52,6 +56,7 @@ static uint32_t PipeOp_CreateForTransfer( uint32_t max_block )
         , "r" (max_block_size)
         , "r" (max_data)
         , "r" (allocated_mem)
+        : "lr"
         );
 
   return pipe;
@@ -91,6 +96,7 @@ static inline PipeSpace PipeOp_WaitForSpace( uint32_t write_pipe, uint32_t bytes
         , "r" (code)
         , "r" (pipe)
         , "r" (amount)
+        : "lr"
         );
 
   PipeSpace result = { .error = error, .location = location, .available = available };
@@ -127,6 +133,7 @@ static inline PipeSpace PipeOp_SpaceFilled( uint32_t write_pipe, uint32_t bytes 
         , "r" (code)
         , "r" (pipe)
         , "r" (amount)
+        : "lr"
         );
 
   PipeSpace result = { .error = error, .location = location, .available = available };
@@ -158,6 +165,7 @@ static inline PipeSpace PipeOp_WaitForData( uint32_t read_pipe, uint32_t bytes )
         , "r" (code)
         , "r" (pipe)
         , "r" (amount)
+        : "lr"
         );
 
   PipeSpace result = { .error = error, .location = location, .available = available };
@@ -193,6 +201,7 @@ static inline PipeSpace PipeOp_DataConsumed( uint32_t read_pipe, uint32_t bytes 
         , "r" (code)
         , "r" (pipe)
         , "r" (amount)
+        : "lr"
         );
 
   PipeSpace result = { .error = error, .location = location, .available = available };
@@ -220,6 +229,7 @@ static inline error_block *PipeOp_PassingOff( uint32_t read_pipe, uint32_t new_r
         , "r" (code)
         , "r" (pipe)
         , "r" (task)
+        : "lr"
         );
 
   return error;
@@ -245,6 +255,7 @@ static inline error_block *PipeOp_PassingOver( uint32_t write_pipe, uint32_t new
         , "r" (code)
         , "r" (pipe)
         , "r" (task)
+        : "lr"
         );
 
   return error;

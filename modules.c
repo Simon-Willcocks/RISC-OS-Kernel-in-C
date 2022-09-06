@@ -14,7 +14,6 @@
  */
 
 #include "inkernel.h"
-#include "include/pipeop.h"
 
 static void Sleep( uint32_t microseconds )
 {
@@ -572,6 +571,18 @@ default: WriteNum( regs->r[1] );
 NewLine;
 }
 
+static inline void show_module_commands( module_header *header )
+{
+  const char *cmd = (void*) (header->offset_to_help_and_command_keyword_table + (uint32_t) header);
+  while (cmd[0] != '\0') {
+    NewLine; Write0( cmd );
+    int len = strlen( cmd );
+    len = (len + 4) & ~3;
+    cmd = &cmd[len + 16];
+  }
+  NewLine;
+}
+
 bool do_OS_ServiceCall( svc_registers *regs )
 {
   bool result = true;
@@ -742,10 +753,12 @@ static bool initialise_module( svc_registers *regs, uint32_t *memory, char const
 {
   // regs are only used to return errors. TODO
 
-  uint32_t size_plus_four = *memory;
+  // uint32_t size_plus_four = *memory;
   module_header *new_mod = (void*) (memory+1);
 
-  if (0 != new_mod->offset_to_initialisation & (1 << 31)) {
+  TaskSlot_new_application( title_string( new_mod ), parameters );
+
+  if (0 != (new_mod->offset_to_initialisation & (1 << 31))) {
     Write0( "Is this module squashed? I can't cope with that." ); asm ( "bkpt 1" );
   }
 
@@ -835,9 +848,6 @@ static bool initialise_module( svc_registers *regs, uint32_t *memory, char const
 
 static bool do_Module_Load( svc_registers *regs )
 {
-  uint32_t r1 = regs->r[1];
-  uint32_t r2 = regs->r[2];
-
   char const *command = (void*) regs->r[1];
   uint32_t *memory = read_module_into_memory( command );
   if (memory == 0) { asm ( "bkpt 1" ); }
@@ -980,7 +990,7 @@ static bool IntoRMAHeapOp( svc_registers *regs )
 #endif
   }
   else {
-    asm ( "bkpt 88" ); // TODO stuff with extending and r2
+    asm ( "bkpt 78" ); // TODO stuff with extending and r2
     r2 = r2;
     result = error_nomem( regs );
   }
@@ -1077,6 +1087,17 @@ static uint32_t instance_number( module *m )
 
 static bool do_Module_InsertFromMemory( svc_registers *regs )
 {
+  module_header *header = (void*) regs->r[1];
+
+#ifdef DEBUG__SHOW_MODULE_INIT
+  NewLine;
+  Write0( "INIT: " );
+  Write0( title_string( header ) );
+#ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
+  show_module_commands( header );
+#endif
+#endif
+
   return initialise_module( regs, (void*) (regs->r[1] - 4), "" );
 }
 
@@ -1101,8 +1122,6 @@ static bool do_Module_ExtractModuleInfo( svc_registers *regs )
   int instance = regs->r[2];
 
   if (m->instances != 0) {
-    module *base = m;
-
     if (instance > 0) {
       m = m->instances;
 Write0( "Instance " ); WriteNum( instance ); Space; WriteNum( m ); NewLine;
@@ -1129,7 +1148,7 @@ WriteNum( instance ); Space; WriteNum( m ); NewLine;
 
   regs->r[3] = (uint32_t) m->header;
   regs->r[4] = *m->private_word;
-  regs->r[5] = (uint32_t) (m->postfix[0] == '\0' ? "Base" : &m->postfix);
+  regs->r[5] = (m->postfix[0] == '\0' ? (uint32_t) "Base" : (uint32_t) &m->postfix);
 
   return true;
 }
@@ -1546,18 +1565,6 @@ bool do_OS_RelinkApplication( svc_registers *regs )
   return Kernel_Error_UnknownSWI( regs );
 }
 
-static inline void show_module_commands( module_header *header )
-{
-  const char *cmd = (void*) (header->offset_to_help_and_command_keyword_table + (uint32_t) header);
-  while (cmd[0] != '\0') {
-    NewLine; Write0( cmd );
-    int len = strlen( cmd );
-    len = (len + 4) & ~3;
-    cmd = &cmd[len + 16];
-  }
-  NewLine;
-}
-
 // Transient callbacks are usually called when returning to USR mode,
 // but it's important to call them when a module has just been initialised
 // as well.
@@ -1584,27 +1591,14 @@ static module_header *find_rom_module( const char *name )
 
 void init_module( const char *name )
 {
-  TaskSlot_new_application( name, "" );
-
-#ifdef DEBUG__SHOW_MODULE_INIT
-  NewLine;
-  Write0( "INIT: " );
-  Write0( name );
-#endif
+  // TaskSlot_new_application( name, "" );
 
   module_header *header = find_rom_module( name );
 
   if (0 != header) {
-#ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
-    show_module_commands( header );
-#endif
-
     register uint32_t code asm( "r0" ) = 10;
     register module_header *module asm( "r1" ) = header;
     asm volatile ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
-
-    // Not in USR mode, but we are idling
-    run_transient_callbacks();
   }
 }
 
@@ -1613,7 +1607,7 @@ void init_module( const char *name )
     extern uint32_t _binary_Modules_##modname##_start; \
     module_header *header = find_rom_module( #modname ); \
     register uint32_t code asm( "r0" ) = 10; \
-    register uint32_t *module asm( "r1" ) = &_binary_Modules_##modname##_start; \
+    register uint32_t module asm( "r1" ) = 4 + (uint32_t) &_binary_Modules_##modname##_start; \
     register module_header *original asm ( "r2" ) = header; \
  \
     asm volatile ( "svc %[os_module]" \
@@ -1768,15 +1762,15 @@ bool excluded( const char *name )
   return false;
 }
 
+// Modified for usr mode...
 void init_modules()
 {
   uint32_t *rom_modules = &_binary_AllMods_start;
   uint32_t *rom_module = rom_modules;
 
   while (0 != *rom_module) {
+    Sleep( 0 );
     module_header *header = (void*) (rom_module+1);
-
-    TaskSlot_new_application( title_string( header ), "" );
 
 #ifdef DEBUG__SHOW_MODULE_INIT
     NewLine;
@@ -1813,9 +1807,6 @@ void init_modules()
       register module_header *module asm( "r1" ) = header;
 
       asm volatile ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
-
-      // Not in USR mode, but we are idling
-      run_transient_callbacks();
     }
     else {
 #ifdef DEBUG__SHOW_MODULE_INIT
@@ -2598,8 +2589,6 @@ static inline void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t 
   }
 }
 
-static void user_mode_code();
-
 static inline const char *discard_leading_characters( const char *command )
 {
   const char *c = command;
@@ -3052,6 +3041,7 @@ static void timer_interrupt_at( uint64_t then )
   asm volatile ( "mcrr p15, 2, %[lo], %[hi], c14" : : [hi] "r" (then >> 32), [lo] "r" (0xffffffff & then) : "memory" );
 }
 
+// TODO Remove, and rely on MMU to allocate on demand
 static void allocate_legacy_scratch_space()
 {
   // DrawMod uses ScratchSpace at 0x4000
@@ -3065,7 +3055,7 @@ static void allocate_legacy_scratch_space()
   MMU_map_at( (void*) 0x5000, for_eval2, 4096 );
 
   // IDK what uses memory here, but it played havoc with my translation tables!
-  // Might be Squash.
+  // Might be Squash. It was the SharedCLibrary! New MMU fixed that.
   //uint32_t for_something_else = Kernel_allocate_pages( 4096, 4096 );
   //MMU_map_at( (void*) 0xfff00000, for_something_else, 4096 );
 }
@@ -3335,6 +3325,20 @@ void __attribute__(( naked )) returned_to_root()
   asm ( "bkpt 0x7777" );
 }
 
+static int32_t timer_get_countdown()
+{
+  int32_t timer;
+  asm volatile ( "mrc p15, 0, %[t], c14, c2, 0" : [t] "=r" (timer) );
+  return timer;
+}
+
+static uint32_t timer_status()
+{
+  uint32_t bits;
+  asm volatile ( "mrc p15, 0, %[config], c14, c2, 1" : [config] "=r" (bits) );
+  return bits;
+}
+
 void Boot()
 {
   setup_OS_vectors();
@@ -3344,11 +3348,6 @@ void Boot()
   TaskSlot *slot = TaskSlot_new( "Root", 0 );
 
   // TODO I'm still not sure whether to have a TaskSlot for module tasks, or set it to zero.
-
-  Task *task = Task_new( slot );
-  assert (task->slot == slot);
-
-  workspace.task_slot.running = task;
 
   allocate_legacy_scratch_space();
 
@@ -3369,14 +3368,44 @@ void Boot()
   // TODO A code variable to read the current core number?
 
   {
-    extern uint32_t _binary_Modules_HAL_start;
-    register uint32_t code asm( "r0" ) = 10;
-    register uint32_t *module asm( "r1" ) = &_binary_Modules_HAL_start;
+#ifndef NO_DEBUG_OUTPUT
+    workspace.kernel.debug_pipe = PipeOp_CreateForTransfer( 4096 );
+    PipeOp_PassingOff( workspace.kernel.debug_pipe, 0 ); // The task doesn't exist yet
+#endif
+    Write0( "Kernel starting HAL" ); NewLine;
 
-    asm volatile ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
+    char args[] = "HAL ########";
+    uint32_t tmp = workspace.kernel.debug_pipe;
+    for (int i = 11; i >= 4; i--) {
+      args[i] = hex[tmp & 0xf]; tmp = tmp >> 4;
+    }
+    Write0( args ); NewLine; NewLine;
+
+    extern void _binary_Modules_HAL_start();
+    // Can't use OS_Module because it doesn't pass arguments to init
+    svc_registers regs = { 0 };
+    initialise_module( &regs, (void*) &_binary_Modules_HAL_start, args );
   }
   MMU_switch_to( slot ); // Only done so late so it shows up in the debug. TODO move just after creating the slot.
 
+  // The HAL will have ensured that no extraneous interrupts are occuring,
+  // so we can reset the SVC stack enable interrupts and drop to USR mode.
+  static uint32_t const root_stack_size = 1024;
+  uint32_t *stack = rma_allocate( root_stack_size * sizeof( uint32_t ) );
+  extern uint32_t svc_stack_top;
+
+  asm ( "mov sp, %[svc_stack_top]"
+    "\n  cpsie aif, #0x10"
+    "\n  mov sp, %[usr_sp]"
+    "\n  b UsrBoot"
+    :
+    : [svc_stack_top] "r" (&svc_stack_top)
+    , [usr_sp] "r" (&stack[root_stack_size])
+    : "sp", "lr" );
+}
+
+void __attribute__(( noreturn )) UsrBoot()
+{
 #ifdef BASIC_ONLY
   init_module( "FileSwitch" ); // needed by...
   init_module( "ResourceFS" ); // needed by...
@@ -3423,10 +3452,6 @@ void Boot()
     do_OS_ServiceCall( &regs );
   }
 
-  Write0( "System slot: " ); WriteNum( slot ); NewLine;
-
-  NewLine; Write0( "All modules initialised, starting idle thread" ); NewLine;
-
   if (0 == workspace.core_number) {
     // File declaring resources, ROM-based boot files.
     // This should probably be done in the HAL
@@ -3440,12 +3465,6 @@ void Boot()
     register void *dir asm ( "r1" ) = "Resources:$";
     asm volatile ( "svc 0x20029" : : "r" (reason), "r" (dir) ); // OS_FSControl 5 Catalogue a directory
     }
-
-    svc_registers regs = { .r[5] = 0x4444, .lr = (uint32_t) returned_to_root, .spsr = 0x1d0 };
-    TaskSlot *slot = TaskSlot_new( "BootSequence", &regs );
-    static const int initial_slot_size = 64 << 10;
-    physical_memory_block block = { .virtual_base = 0x8000, .physical_base = Kernel_allocate_pages( initial_slot_size, 4096 ), .size = initial_slot_size };
-    TaskSlot_add( slot, block );
 
     OSCLI( "Resources:$.!Boot" );
   }
@@ -3462,4 +3481,3 @@ void Boot()
 
   __builtin_unreachable();
 }
-

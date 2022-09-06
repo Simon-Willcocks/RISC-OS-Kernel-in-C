@@ -42,7 +42,8 @@ void __attribute__(( noinline )) do_FSControl( uint32_t *regs );
 void __attribute__(( noinline )) do_UpCall( uint32_t *regs );
 
 struct Task {
-  integer_registers regs; // WARNING Keep at start of struct
+  integer_registers regs; // WARNING: Keep at start of struct!
+  int32_t resumes;
   TaskSlot *slot;
   Task *next;
 };

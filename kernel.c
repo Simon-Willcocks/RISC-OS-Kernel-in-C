@@ -36,11 +36,6 @@ Drop support for: 26-bit modes
 
 void __attribute__(( noreturn, noinline )) Kernel_start()
 {
-  uint32_t volatile *gpio = 0xfff00000;
-  asm volatile ( "dsb" );
-  gpio[0x28/4] = (1 << 22); // Clr
-  asm volatile ( "dsb" );
-
   // Fail early, fail hard
   {
     // Problems occur when the shared and core workspaces overlap
@@ -60,28 +55,6 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
     for (int i = 0; boot_data.ram_blocks[i].size != 0; i++) {
       Kernel_add_free_RAM( boot_data.ram_blocks[i].base >> 12, boot_data.ram_blocks[i].size >> 12 );
     }
-
-{
-  uint32_t volatile *gpio = 0xfff00000;
-  // gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6);
-  asm volatile ( "dsb" );
-  //gpio[0x28/4] = (1 << 22); // Clr
-  gpio[0x1c/4] = (1 << 22); // Set
-  asm volatile ( "dsb" );
-
-  for (int n = 0; n < 7; n++) {
-  for (int i = 0; i < 0x400000; i++) asm ( "" );
-  gpio[0x28/4] = (1 << 22); // Clr
-  asm volatile ( "dsb" );
-  for (int i = 0; i < 0x100000; i++) asm ( "" );
-  gpio[0x1c/4] = (1 << 22); // Set
-  asm volatile ( "dsb" );
-  }
-}
-  }
-  // "Real hardware display still doesn't come up without this:" (I don't know if this is still true.)
-  else {
-    for (int i = 0; i < 0x7000000; i++) { asm volatile ( "" ); }
   }
 
   // Allow the others to continue, now the free RAM has been registered.

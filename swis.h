@@ -208,11 +208,6 @@ static inline void *rma_allocate( uint32_t size )
   return result;
 }
 
-typedef struct {
-  uint32_t code;
-  char desc[];
-} error_block;
-
 static inline bool error_nomem( svc_registers *regs )
 {
 asm ( "bkpt 12" );

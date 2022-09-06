@@ -938,8 +938,8 @@ void __attribute__(( naked, noreturn )) Kernel_default_prefetch()
 {
   uint32_t *sp;
   asm volatile ( "push {r0-r12, r14}\n  mov %[sp], sp" : [sp] "=r" (sp) );
-  Write0( __func__ ); NewLine;
-  for (int i = 0; i < 32; i++) { WriteNum( sp[i] ); if (0 == (i & 3)) NewLine; else Space; }
+  //Write0( __func__ ); NewLine;
+  //for (int i = 0; i < 32; i++) { WriteNum( sp[i] ); if (0 == (i & 3)) NewLine; else Space; }
   // When providing proper implementation, ensure the called routine is __attribute__(( noinline ))
   // noinline attribute is required so that stack space is allocated for any local variables.
   BSOD( 0, Blue );

@@ -13,6 +13,9 @@
  * limitations under the License.
  */
 
+#ifndef __KERNEL_H
+#define __KERNEL_H
+
 typedef unsigned long long uint64_t;
 typedef unsigned        uint32_t;
 typedef int             int32_t;
@@ -25,6 +28,17 @@ typedef unsigned        bool;
 #define false (0 != 0)
 
 #define number_of( arr ) (sizeof( arr ) / sizeof( arr[0] ))
+
+typedef struct {
+  uint32_t code;
+  char desc[];
+} error_block;
+
+typedef struct {
+  error_block *error;
+  void *location;
+  uint32_t available; 
+} PipeSpace;
 
 // For initial debug
 #include "trivial_display.h"
@@ -65,6 +79,9 @@ struct callback {
 // Stacks sizes need to be checked (or use the zp memory)
 struct Kernel_workspace {
   uint32_t svc_stack[640]; // For use until SharedCLibrary-friendly stack set up.
+
+  uint32_t debug_pipe;
+  PipeSpace debug_space;
 
   callback *callbacks_pool;
 
@@ -205,3 +222,4 @@ static inline char *strcpy( char *dest, const char *src )
   return result;
 }
 
+#endif

@@ -36,7 +36,19 @@ NO_swi_names;
 NO_swi_decoder;
 NO_messages_file;
 
+#define C_CLOBBERED "r0-r3,r12"
+
 const char title[] = "HAL";
+
+static inline void memory_write_barrier()
+{
+  asm ( "dsb sy" );
+}
+
+static inline void memory_read_barrier()
+{
+  asm ( "dsb sy" );
+}
 
 static inline void clear_VF()
 {
@@ -48,9 +60,16 @@ static inline void set_VF()
   asm ( "msr cpsr_f, #(1 << 28)" );
 }
 
+#define WriteS( string )
+#define Write0( string )
+#define NewLine 
+#define Space 
+#if 0
 #define WriteS( string ) asm ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "lr" )
 #define Write0( string ) { register uint32_t r0 asm( "r0" ) = (uint32_t) (string); asm ( "push { r0-r12, lr }\nsvc 2\n  pop {r0-r12, lr}" : : "r" (r0) ); }
 #define NewLine asm ( "svc 3\n" : : : "lr" )
+#define Space asm ( "svc 0x120\n" : : : "lr" )
+#endif
 
 static void WriteNum( uint32_t number )
 {
@@ -62,40 +81,43 @@ static void WriteNum( uint32_t number )
   }
 }
 
+typedef struct {
+  uint32_t       control;
+  uint32_t       res1;
+  uint32_t       timer_prescaler;
+  uint32_t       GPU_interrupts_routing;
+  uint32_t       Performance_Monitor_Interrupts_routing_set;
+  uint32_t       Performance_Monitor_Interrupts_routing_clear;
+  uint32_t       res2;
+  uint32_t       Core_timer_access_LS_32_bits; // Access first when reading/writing 64 bits.
+  uint32_t       Core_timer_access_MS_32_bits;
+  uint32_t       Local_Interrupt_routing0;
+  uint32_t       Local_Interrupts_routing1;
+  uint32_t       Axi_outstanding_counters;
+  uint32_t       Axi_outstanding_IRQ;
+  uint32_t       Local_timer_control_and_status;
+  uint32_t       Local_timer_write_flags;
+  uint32_t       res3;
+  uint32_t       Core_timers_Interrupt_control[4];
+  uint32_t       Core_Mailboxes_Interrupt_control[4];
+  uint32_t       Core_IRQ_Source[4];
+  uint32_t       Core_FIQ_Source[4];
+  struct {
+    uint32_t       Mailbox[4]; // Write only!
+  } Core_write_set[4];
+  struct {
+    uint32_t       Mailbox[4]; // Read/write
+  } Core_write_clear[4];
+} QA7;
+
+
 struct workspace {
   uint32_t lock;
   uint32_t *mbox;
 
   uint32_t *gpio;
   uint32_t *uart;
-  struct {
-    uint32_t       control;
-    uint32_t       res1;
-    uint32_t       timer_prescaler;
-    uint32_t       GPU_interrupts_routing;
-    uint32_t       Performance_Monitor_Interrupts_routing_set;
-    uint32_t       Performance_Monitor_Interrupts_routing_clear;
-    uint32_t       res2;
-    uint32_t       Core_timer_access_LS_32_bits; // Access first when reading/writing 64 bits.
-    uint32_t       Core_timer_access_MS_32_bits;
-    uint32_t       Local_Interrupt_routing0;
-    uint32_t       Local_Interrupts_routing1;
-    uint32_t       Axi_outstanding_counters;
-    uint32_t       Axi_outstanding_IRQ;
-    uint32_t       Local_timer_control_and_status;
-    uint32_t       Local_timer_write_flags;
-    uint32_t       res3;
-    uint32_t       Core_timers_Interrupt_control[4];
-    uint32_t       Core_Mailboxes_Interrupt_control[4];
-    uint32_t       Core_IRQ_Source[4];
-    uint32_t       Core_FIQ_Source[4];
-    struct {
-      uint32_t       Mailbox[4]; // Write only!
-    } Core_write_set[4];
-    struct {
-      uint32_t       Mailbox[4]; // Read/write
-    } Core_write_clear[4];
-  } *qa7;
+  QA7      *qa7;
 
   void *mailbox_request;
   uint32_t fb_physical_address;
@@ -105,9 +127,15 @@ struct workspace {
 
   struct core_workspace {
     struct workspace *shared;
+    int8_t first_reported_irq;
+    int8_t last_reported_irq;
+    uint8_t res[2];
     struct ticker_stack {
       uint64_t stack[64];
     } ticker_stack;
+    struct tickerv_stack {
+      uint64_t stack[4];
+    } tickerv_stack;
     uint8_t queued;
     uint8_t queue[15];
     uint32_t x;
@@ -574,12 +602,12 @@ void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace 
 static void __attribute__(( naked )) WrchV_handler( char c )
 {
   // OS_WriteC must preserve all registers, C will ensure the callee saved registers are preserved.
-  asm ( "push { r0, r1, r2, r3, r12 }" );
+  asm ( "push { "C_CLOBBERED" }" );
   register struct core_workspace *workspace asm( "r12" );
   C_WrchV_handler( c, workspace );
   // Intercepting call (pops pc from the stack)
   asm ( "bvc 0f\n  bkpt #2\n0:" );
-  asm ( "pop { r0, r1, r2, r3, r12, pc }" );
+  asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
 static void __attribute__(( noinline )) C_MouseV_handler( uint32_t *regs, struct workspace *workspace )
@@ -594,12 +622,12 @@ static void __attribute__(( noinline )) C_MouseV_handler( uint32_t *regs, struct
 static void __attribute__(( naked )) MouseV_handler()
 {
   uint32_t *regs;
-  asm ( "push { r0, r1, r2, r3, r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+  asm ( "push { "C_CLOBBERED" }\n  mov %[regs], sp" : [regs] "=r" (regs) );
   register struct workspace *workspace asm( "r12" );
   C_MouseV_handler( regs, workspace );
   // Intercepting call (pops pc from the stack)
   asm ( "bvc 0f\n  bkpt #2\n0:" );
-  asm ( "pop { r0, r1, r2, r3, r12, pc }" );
+  asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
 static void __attribute__(( naked )) IrqV_handler();
@@ -905,10 +933,10 @@ void __attribute__(( noinline )) c_start_display( struct workspace *workspace )
 
 static void __attribute__(( naked )) start_display()
 {
-  asm ( "push { r0-r4,r12,lr }"
+  asm ( "push { "C_CLOBBERED", lr }"
     "\n  mov r0, r12"
     "\n  bl c_start_display"
-    "\n  pop { r0-r4, r12, pc }" );
+    "\n  pop { "C_CLOBBERED", pc }" );
 }
 
 static uint64_t timer_now()
@@ -944,100 +972,113 @@ static void timer_interrupt_at( uint64_t then )
   asm volatile ( "mcrr p15, 2, %[lo], %[hi], c14" : : [hi] "r" (then >> 32), [lo] "r" (0xffffffff & then) : "memory" );
 }
 
-static int32_t timer_value()
-{
-  int32_t result;
-  asm volatile ( "mrc p15, 0, %[t], c14, c2, 0" : [t] "=r" (result) );
-  return result;
-}
-
 static void timer_set_countdown( int32_t timer )
 {
   asm volatile ( "mcr p15, 0, %[t], c14, c2, 0" : : [t] "r" (timer) );
+  // Clear interrupt and enable timer
+  asm volatile ( "mcr p15, 0, %[config], c14, c2, 1" : : [config] "r" (1) );
 }
 
-void __attribute__(( naked )) ticky()
+static int32_t timer_get_countdown()
 {
-  //WriteS( "Tick " );
+  int32_t timer;
+  asm volatile ( "mrc p15, 0, %[t], c14, c2, 0" : [t] "=r" (timer) );
+  return timer;
+}
+
+static uint32_t timer_status()
+{
+  uint32_t bits;
+  asm volatile ( "mrc p15, 0, %[config], c14, c2, 1" : [config] "=r" (bits) );
+  return bits;
 }
 
 static bool timer_interrupt_active()
 {
-  uint32_t bits;
-  asm volatile ( "mrc p15, 0, %[config], c14, c2, 1" : [config] "=r" (bits) );
-  return (bits & 4) != 0;
-}
-
-static void __attribute__(( noinline )) do_timer_tick( struct core_workspace *ws  )
-{
-  uint32_t ticks_per_interval = ws->shared->ticks_per_interval;
-  do {
-    // This is officially a signed value, but any value greater than
-    // ticks_per_interval is out of range.
-    uint32_t timer = timer_value();
-    uint32_t missed_ticks = 0;
-
-    while (timer > ticks_per_interval) {
-      timer += ticks_per_interval;
-      missed_ticks++;
-    }
-    // TODO: Report missed ticks?
-
-    timer_set_countdown( timer );
-
-    register uint32_t vector asm( "r9" ) = 0x1c;
-    asm volatile ( "svc %[swi]" : : [swi] "i" (0x34), "r" (vector) : "lr" );
-  } while (timer_interrupt_active());
-
-  //asm volatile ( "adrl r0, ticky\n  svc %[swi]" : : [swi] "i" (0x54) : "r0", "lr" );
-}
-
-#define C_CLOBBERED "r0-r3,r12"
-
-void __attribute__(( naked )) timer_tick()
-{
-  register struct core_workspace *ws asm ( "r12" );
-
-  asm ( "push { "C_CLOBBERED", lr }" : "=r" (ws) );
-
-  do_timer_tick( ws );
-
-  asm ( "pop { "C_CLOBBERED", pc }" );
+  return (timer_status() & 4) != 0;
 }
 
 static int __attribute__(( noinline )) C_IrqV_handler( struct core_workspace *workspace )
 {
   // This is where we will use the hardware to identify which devices have tried to
   // interrupt the processor.
+  QA7 volatile *qa7 = workspace->shared->qa7;
 
-  return 44;
+  memory_read_barrier();
+  uint32_t source = qa7->Core_IRQ_Source[core( workspace )];
+  bool found = false;
+  struct {
+    uint32_t basic_pending;
+    uint32_t pending1;
+    uint32_t pending2;
+    uint32_t fiq_control;
+    uint32_t enable_irqs1;
+    uint32_t enable_irqs2;
+    uint32_t enable_basic;
+    uint32_t disable_irqs1;
+    uint32_t disable_irqs2;
+    uint32_t disable_basic;
+  } *gpu = (void *) &workspace->shared->mbox[0x200 / 4];
+
+  memory_read_barrier();
+
+  // There are a few speedups possible
+  //  e.g. test bits by seeing if (int32_t) (source << (32-irq)) is -ve, or zero (skip the rest of the bits)
+
+  int irq = workspace->last_reported_irq;
+
+  // Write0( "IRQ " ); WriteNum( source ); Space; WriteNum( gpu->pending1 ); Space; WriteNum( gpu->pending1 ); NewLine;
+  do {
+    irq++;
+    // WriteNum( irq ); Space;
+    switch (irq) {
+    case 0  ... 31:
+      if (0 != (source & (1 << 8))) {
+        found = 0 != (gpu->pending1 & (1 << irq));
+      }
+      else {
+        irq = 63;
+      }
+      break;
+    case 32 ... 63:
+      if (0 != (source & (1 << 8))) {
+        found = 0 != (gpu->pending2 & (1 << (irq - 32)));
+      }
+      else {
+        irq = 63;
+      }
+      break;
+    case 64 ... 75:
+      //Space; WriteNum( (1 << (irq - 64)) ); NewLine;
+      found = (0 != (source & (1 << (irq - 64))));
+      break;
+    case 76:
+      irq = -1;
+      break;
+    }
+  } while (irq != -1 && !found);
+
+  workspace->last_reported_irq = irq;
+
+  return irq;
 }
 
 static void __attribute__(( naked )) IrqV_handler()
 {
   // IrqV contains no information in the registers on entry, except r12
-  asm ( "push { r0, r1, r2, r3, r12 }" );
+  asm ( "push { "C_CLOBBERED" }" );
   register struct core_workspace *workspace asm( "r12" );
-  register uint32_t *sp asm( "sp" );
+  register uint32_t *sp asm( "sp" ); // Location of r0
   *sp = C_IrqV_handler( workspace );
   // Intercepting call (pops pc from the stack)
-  asm ( "pop { r0, r1, r2, r3, r12, pc }" );
-}
-
-static inline void memory_write_barrier()
-{
-  asm ( "dsb sy" );
-}
-
-static inline void memory_read_barrier()
-{
-  asm ( "dsb sy" );
+  asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
 // FIXME Share this more neatly!
 #define OS_ThreadOp 0xf9
 enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, LockClaim, LockRelease,
        WaitForInterrupt = 32, InterruptIsOff, NumberOfInterruptSources };
+#define OS_IntOff 0x14
 
 
 static void register_interrupt_sources( uint32_t count )
@@ -1050,6 +1091,16 @@ static void register_interrupt_sources( uint32_t count )
       : [swi] "i" (OS_ThreadOp)
       , "r" (request)
       , "r" (number)
+      : "lr" );
+}
+
+// Returns with interrupts disabled for this core, enable the source
+// and call wait_for_interrupt asap.
+static void disable_interrupts()
+{
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_IntOff)
       : "lr" );
 }
 
@@ -1066,38 +1117,115 @@ static void wait_for_interrupt( uint32_t device )
       : "lr" );
 }
 
+static void yield()
+{
+  register uint32_t request asm ( "r0" ) = Sleep;
+  register uint32_t duration asm ( "r1" ) = 0;
+
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (duration)
+      : "lr" );
+}
+
+static void wait_until_woken()
+{
+  register uint32_t request asm ( "r0" ) = WaitUntilWoken;
+
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      : "lr" );
+}
+
+static void resume_task( uint32_t handle )
+{
+  register uint32_t request asm ( "r0" ) = Resume;
+  register uint32_t h asm ( "r1" ) = handle;
+
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (h)
+      : "lr" );
+}
+
+// Decouple the TickerV from the actual interrupt that causes it.
+// Unlike the documentation, PRM 1-99, enabling interrupts during
+// the vector call will not allow another call.
+static void tickerv_task( uint32_t handle, struct core_workspace *ws )
+{
+  for (;;) {
+    wait_until_woken();
+    WriteS( "I" );
+    // Vector is called with interrupts disabled
+    asm ( 
+      "\n  mov r9, #0x1c// TickerV"
+      "\n  svc 0x20034  // OS_CallAVector"
+      : : : "r9", "lr" );
+  }
+}
+
 static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, int device )
 {
   int this_core = core( ws );
 
-  Write0( "Timer task not entering loop" ); WriteNum( handle ); NewLine;
+  uint32_t ticks_per_interval = ws->shared->ticks_per_interval;
+  QA7 volatile *qa7 = ws->shared->qa7;
+
+  uint32_t tickerv_handle;
+
+  {
+    uint64_t *stack = (void*) ((&ws->tickerv_stack)+1);
+
+    register uint32_t request asm ( "r0" ) = 0; // Create Thread
+    register void *code asm ( "r1" ) = tickerv_task;
+    register void *stack_top asm ( "r2" ) = stack;
+    register struct core_workspace *cws asm( "r3" ) = ws;
+
+    register uint32_t handle asm ( "r0" );
+
+    asm volatile ( "svc %[swi]"
+        : "=r" (handle) 
+        : [swi] "i" (OS_ThreadOp)
+        , "r" (request)
+        , "r" (code)
+        , "r" (stack_top)
+        , "r" (cws)
+        : "lr" );
+
+    tickerv_handle = handle;;
+  }
+
+  // Write0( "Timer task claiming interrupt and entering loop " ); WriteNum( handle ); NewLine;
+
+  disable_interrupts();
 
   memory_write_barrier(); // About to write to QA7
 
-  // asm ( "bkpt 7" );
   // Let the generic ARM timer interrupt this core
-  ws->shared->qa7->Core_timers_Interrupt_control[this_core] = 1; // nCNTPSIRQ IRQ control
+  qa7->Core_timers_Interrupt_control[this_core] = 15; // 2; // Generic ARM timer irq
 
-  uint32_t ticks_per_interval = ws->shared->ticks_per_interval;
+  memory_write_barrier(); // About to write to something else
 
-  NewLine;
-  NewLine;
-  NewLine;
-  NewLine;
-  asm ( "mov r0, #66\n  svc 0" : : : "r0" );
+  timer_set_countdown( ticks_per_interval );
 
-  Write0( "Timer task entering loop" ); WriteNum( handle ); NewLine;
+  const uint32_t tick_divider = 10;
+  uint32_t ticks = 0;
 
   do {
-    wait_for_interrupt( device ); // FIXME: returns a number of missed interrupts, but it will only be one because the timer doesn't re-initialise itself (hence timer_set_countdown)
+    wait_for_interrupt( device );
+
     // Running with interrupts disabled
 
-    // This is officially a signed value, but any value greater than
-    // ticks_per_interval is out of range.
-    uint32_t timer = timer_value();
+    int32_t timer = timer_get_countdown();
     uint32_t missed_ticks = 0;
 
-    while (timer > ticks_per_interval) {
+    while (timer < 0) {
       timer += ticks_per_interval;
       missed_ticks++;
     }
@@ -1106,7 +1234,13 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
     timer_set_countdown( timer );
 
     // interrupt_is_off( device ); // If we wanted to enable interrupts
-    // Call TickerV
+    ticks += missed_ticks;
+
+    if (ticks >= tick_divider) resume_task( tickerv_handle );
+
+    while (ticks >= tick_divider) {
+      ticks -= tick_divider;
+    }
   } while (true); // Could check a flag in ws, in case of shutdown
 }
 
@@ -1129,17 +1263,74 @@ static uint32_t start_timer_interrupt_task( struct core_workspace *ws, int devic
       , "r" (code)
       , "r" (stack_top)
       , "r" (workspace)
-      , "r" (dev) );
+      , "r" (dev)
+      : "lr" );
 
   return handle;
 }
 
-void init( uint32_t this_core, uint32_t number_of_cores )
-{
-  struct workspace **private;
-  // Preserve r12, in case we make a function call
-  asm volatile ( "mov %[private_word], r12" : [private_word] "=r" (private) );
+#include "include/pipeop.h"
 
+static void console_task( uint32_t handle, struct core_workspace *ws, uint32_t read_pipe )
+{
+  PipeSpace data = { 0, 0, 0 };
+  add_string( "Starting console task\n\r", ws );
+  for (;;) {
+    if (data.available == 0) {
+      data = PipeOp_WaitForData( read_pipe, 1 );
+
+      if (data.location == 0) {
+        add_string( "PipeOp_WaitForData returned zero location!", ws ); update_display( ws );
+        for (;;) asm ( "wfi" );
+      }
+      if (data.available == 0) {
+        add_string( "PipeOp_WaitForData returned zero bytes", ws ); update_display( ws );
+        for (;;) asm ( "bkpt 1" ); // FIXME
+      }
+    }
+    while (data.available > 0) {
+      char *s = data.location;
+
+      for (int i = 0; i < data.available; i++)
+        add_to_display( s[i], ws );
+      data = PipeOp_DataConsumed( read_pipe, data.available );
+    }
+    update_display( ws );
+  }
+}
+
+static uint32_t start_console_task( struct core_workspace *ws, uint32_t pipe )
+{
+  uint64_t *stack = (void*) ((&ws->ticker_stack)+1);
+
+  register uint32_t request asm ( "r0" ) = 0; // Create Thread
+  register void *code asm ( "r1" ) = console_task;
+  register void *stack_top asm ( "r2" ) = stack;
+  register struct core_workspace *workspace asm( "r3" ) = ws;
+  register uint32_t read_pipe asm( "r4" ) = pipe;
+
+  register uint32_t handle asm ( "r0" );
+
+  asm volatile ( "svc %[swi]"
+      : "=r" (handle) 
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (code)
+      , "r" (stack_top)
+      , "r" (workspace)
+      , "r" (read_pipe)
+      : "lr" );
+
+  return handle;
+}
+
+static const int board_interrupt_sources = 64 + 12; // 64 GPU, 12 ARM peripherals (BCM2835-ARM-Peripherals.pdf, QA7)
+
+
+// args: debug_pipe to open for reading
+
+void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_cores, struct workspace **private, char const *args )
+{
   bool first_entry = (*private == 0);
 
   struct workspace *workspace;
@@ -1161,36 +1352,8 @@ void init( uint32_t this_core, uint32_t number_of_cores )
     asm volatile ( "dsb" );
   //for (int i = 0; i < 0x10000000; i++) asm ( "" );
     workspace->fb_physical_address = initialise_frame_buffer( workspace );
-
-if (0) {
-    uint32_t *gpio = workspace->gpio;
-    gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6); // Output, pin 22
-    asm volatile ( "dsb" );
-
-  asm volatile ( "dsb" );
-  for (int n = 0; n < 10; n++) {
-  for (int i = 0; i < 0x10000000; i++) asm ( "" );
-  gpio[0x28/4] = (1 << 22); // Clr
-  asm volatile ( "dsb" );
-  for (int i = 0; i < 0x30000000; i++) asm ( "" );
-  gpio[0x1c/4] = (1 << 22); // Set
-  asm volatile ( "dsb" );
-}
-}
-
   }
-if (0) {
-  uint32_t volatile *gpio = workspace->gpio; // 0xfff00000;
-  asm volatile ( "dsb" );
-  for (int n = 0; n < 10; n++) {
-  for (int i = 0; i < 0x30000000; i++) asm ( "" );
-  gpio[0x28/4] = (1 << 22); // Clr
-  asm volatile ( "dsb" );
-  for (int i = 0; i < 0x10000000; i++) asm ( "" );
-  gpio[0x1c/4] = (1 << 22); // Set
-  asm volatile ( "dsb" );
-  }
-}
+
   workspace->frame_buffer = map_screen_into_memory( workspace->fb_physical_address );
 
   workspace->core_specific[this_core].shared = workspace;
@@ -1218,7 +1381,7 @@ if (0) {
     register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
     asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
 
-    WriteS( "HAL obtained WrchV\\n\\r" );
+    add_string( "HAL obtained WrchV\n\r", &workspace->core_specific[this_core] );
   }
 
   {
@@ -1228,8 +1391,29 @@ if (0) {
     register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
     asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
 
-    WriteS( "HAL obtained MouseV\\n\\r" );
+    add_string( "HAL obtained MouseV\n\r", &workspace->core_specific[this_core] );
   }
+
+  {
+    uint32_t pipe = 0;
+    char const *p = args;
+    // Skip filename
+    while (*p > ' ') p++;
+    while (*p == ' ') p++;
+    for (int i = 0; i < 8; i++) {
+      char c = p[i];
+      if (c >= 'a' && c <= 'f') c = c - 'a' + 10;
+      else if (c >= 'A' && c <= 'F') c = c - 'A' + 10;
+      else if (c >= '0' && c <= '9') c = c - '0';
+      else asm ( "bkpt 1" ); // FIXME
+      pipe = (pipe << 4) | c;
+    }
+
+    uint32_t handle = start_console_task( &workspace->core_specific[this_core], pipe );
+    // Write0( "Timer task: " ); WriteNum( handle ); NewLine;
+    yield();
+  }
+
 
 #define QEMU
   workspace->qa7->timer_prescaler = 0x06AAAAAB;
@@ -1246,25 +1430,18 @@ if (0) {
 
   // No event stream, EL0 accesses not trapped to undefined: CNTHCTL
   asm volatile ( "mcr p15, 0, %[config], c14, c1, 0" : : [config] "r" (0x303) );
-  // Enable timer and interrupts from it: CNTKCTL
-  asm volatile ( "mcr p15, 0, %[config], c14, c2, 1" : : [config] "r" (1) );
 
   if (first_entry) {
-    workspace->ticks_per_interval = clock_frequency / 100000; // milliseconds
-    //workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
+    workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
 
 #ifdef QEMU
-    const int slower = 1000;
-    Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
+    const int slower = 10;
+    // Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
     workspace->ticks_per_interval = workspace->ticks_per_interval * slower;
 #endif
-    Write0( "Timer ticks per interval: " ); WriteNum( workspace->ticks_per_interval ); NewLine;
+    // Write0( "Timer ticks per interval: " ); WriteNum( workspace->ticks_per_interval ); NewLine;
 
-    timer_set_countdown( workspace->ticks_per_interval );
-
-    Write0( "Wating for interrupts" ); NewLine;
-
-    register_interrupt_sources( 72 ); // 64 GPU, 8 ARM peripherals (BCM2835-ARM-Peripherals.pdf)
+    register_interrupt_sources( board_interrupt_sources );
 
     memory_write_barrier(); // About to write to QA7
     workspace->qa7->GPU_interrupts_routing = this_core;
@@ -1274,17 +1451,10 @@ if (0) {
     workspace->qa7->Core_IRQ_Source[this_core] = 0xd;
   }
 
-  { // OS_ClaimDeviceVector TODO why did I do this?
-    register uint32_t dev asm ( "r0" ) = 1; // Generic Timer
-    //register void (*code) asm ( "r1" ) = timer_tick; Doesn't use ADR: see asm instruction.
-    register struct core_workspace *r12 asm ( "r2" ) = &workspace->core_specific[this_core];
-
-    asm volatile ( "adr r1, timer_tick\n  svc %[swi]" : : [swi] "i" (0x4b), "r" (dev), "r" (r12) : "r1" );
-  }
-  
-  if (this_core == 1) {
-    uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 44 );
-    Write0( "Timer task: " ); WriteNum( handle ); NewLine;
+  {
+    uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
+    // Write0( "Timer task: " ); WriteNum( handle ); NewLine;
+    yield();
   }
 
   if (first_entry) {
@@ -1292,6 +1462,21 @@ if (0) {
     register struct workspace *ws asm( "r1" ) = workspace;
     asm( "svc 0x20054" : : "r" (callback), "r" (ws) );
   }
+}
+
+void __attribute__(( naked )) init( uint32_t this_core, uint32_t number_of_cores )
+{
+  struct workspace **private;
+  char const *args;
+
+  // Move r12, r10 into argument registers
+  asm volatile (
+          "push { lr }"
+      "\n  mov %[private_word], r12"
+      "\n  mov %[args_ptr], r10" : [private_word] "=r" (private), [args_ptr] "=r" (args) );
+
+  c_init( this_core, number_of_cores, private, args );
+  asm ( "pop { pc }" );
 }
 
 void __attribute__(( naked )) service_call()

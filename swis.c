@@ -189,14 +189,14 @@ static bool do_OS_Control( svc_registers *regs ) { Write0( __func__ ); NewLine; 
 static bool do_OS_SetEnv( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_IntOn( svc_registers *regs )
 {
-  Write0( __func__ ); NewLine;
+  //Write0( __func__ ); NewLine;
   regs->spsr = (regs->spsr & ~0x80);
   return true;
 }
 
 static bool do_OS_IntOff( svc_registers *regs )
 {
-  Write0( __func__ ); NewLine;
+  //Write0( __func__ ); NewLine;
   regs->spsr = (regs->spsr & ~0x80) | 0x80;
   return true;
 }
@@ -204,14 +204,14 @@ static bool do_OS_IntOff( svc_registers *regs )
 static bool do_OS_CallBack( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_EnterOS( svc_registers *regs )
 {
-  Write0( __func__ ); NewLine;
+  //Write0( __func__ ); NewLine;
   regs->spsr = (regs->spsr & ~15) | 3;
   return true;
 }
 
 static bool do_OS_LeaveOS( svc_registers *regs )
 {
-  Write0( __func__ ); NewLine;
+  // Write0( __func__ ); NewLine;
   regs->spsr = (regs->spsr & ~7);
   return true;
 }
@@ -741,6 +741,10 @@ static bool do_OS_ReadRAMFsLimits( svc_registers *regs )
 static bool do_OS_ClaimDeviceVector( svc_registers *regs )
 {
 Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); NewLine;
+  asm ( "bkpt 1" );
+  // TODO Emulate the traditional mechanism by creating a Task that will call the desired
+  // vector.
+
   uint32_t device = regs->r[0];
   void (*code) = (void*) regs->r[1];
   uint32_t r12 = regs->r[2];
@@ -2286,7 +2290,11 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
     asm ( "svc 0x120" );
     WriteNum( regs->lr );
-    asm ( "bkpt 16" );
+    {
+    regs->r[0] = 3;
+    regs->r[1] = 10000;
+    do_OS_ThreadOp( regs );
+    }
   }
 }
 

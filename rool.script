@@ -22,7 +22,8 @@ SECTIONS
   /* Memory map, virtual addresses, see also MMU/... */
   free_pool             = 0xc0000000 ; /* This will hopefully disappear (Wimp Sprites?) */
   va_base               = 0xfc000000 ;
-  shared                = 0xfffe0000 ; /* Make sure it doesn't overlap the workspace */
+  debug_pipe            = 0xfffe0000 ; /* Needs 4x max block size for pipe */
+  shared                = 0xfffe4000 ; /* Make sure it doesn't overlap workspace */
   workspace             = 0xffff0000 ; /* This one can't be moved, it starts with the hardware vectors */
   l1_translation_tables = 0xfff20000 ; /* Something writes near 0xfff00000 */
   l2_translation_tables = 0xfff30000 ; /* L2TT pool */

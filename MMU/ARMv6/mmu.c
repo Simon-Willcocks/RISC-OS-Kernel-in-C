@@ -377,6 +377,9 @@ static bool just_allocated( uint32_t address, uint32_t type )
 static Level_two_translation_table *find_free_table()
 {
   Level_two_translation_table *l2tt = l2_translation_tables;
+  l2tt_entry old_value;
+  l2tt_entry just_allocated_entry = { .handler = just_allocated };
+  l2tt_entry free_entry = { .handler = free_l2tt_table };
 
   do {
     while (l2tt->entry[0].handler != free_l2tt_table
@@ -386,7 +389,8 @@ static Level_two_translation_table *find_free_table()
 
 if (l2tt->entry[0].handler == last_free_l2tt_table) { asm ( "bkpt 4" ); }
 
-  } while (free_l2tt_table != change_word_if_equal( &l2tt->entry[0].raw, (uint32_t) free_l2tt_table, (uint32_t) just_allocated ));
+    old_value.raw = change_word_if_equal( &l2tt->entry[0].raw, free_entry.raw, just_allocated_entry.raw );
+  } while (old_value.handler != free_entry.handler);
 
   return l2tt;
 }
@@ -413,14 +417,14 @@ static void map_block( physical_memory_block block )
 
   about_to_remap_memory();
 
-  WriteS( "Mapping" ); NewLine;
+  // WriteS( "Mapping" ); NewLine;
   uint32_t base = (block.virtual_base >> 12) & 0xff;
   entry.page_base = block.physical_base >> 12;
 
   // FIXME: What if block overruns the end of the table?
 
   for (uint32_t b = 0; b < block.size >> 12; b++) {
-    WriteS( "Page " ); WriteNum( (b+base) << 12 ); WriteS( " > " ); WriteNum( entry.page_base << 12 ); NewLine;
+    // WriteS( "Page " ); WriteNum( (b+base) << 12 ); WriteS( " > " ); WriteNum( entry.page_base << 12 ); NewLine;
     l2tt->entry[base + b] = entry;
     entry.page_base++;
   }
@@ -489,7 +493,7 @@ static bool allocate_core_specific_zero_page_ram( uint32_t address, uint32_t typ
   assert( address < (1 << 20) );
   assert( type == 0x807 || type == 7); // From experience, not necessarily always the case. 0x800 => write
 
-  Write0( "Access " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
+  Write0( "Zero page access " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
   arm32_ptr pointer = { .raw = address };
 
   assert( workspace.mmu.zero_page_l2tt != 0 );
@@ -528,7 +532,7 @@ static bool allocate_core_specific_zero_section( uint32_t address, uint32_t type
   assert( type == 0x805 ); // From experience, not necessarily always the case
   assert( workspace.mmu.zero_page_l2tt == 0 );
 
-Write0( __func__ ); Space; Write0( "Access " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
+Write0( __func__ ); Space; Write0( "Zero section access " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
   // One-shot per core, claims a L2TT for the bottom MiB of RAM and initialises it.
   Level_two_translation_table *l2tt = find_free_table();
 
@@ -544,11 +548,6 @@ static bool check_global_l1tt( uint32_t address, uint32_t type )
 {
   Write0( "Check global l1tt, " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
 
-uint32_t *sp;
-asm ( "mov %[sp], sp" : [sp] "=r" (sp) );
-for (int i = 0; i < 20; i++) {
-  Write0( "Abort " ); WriteNum( sp[i] ); NewLine;
-}
   arm32_ptr pointer = { .raw = address };
 
   l1tt_entry global = Global_L1TT->entry[pointer.section];
@@ -691,6 +690,14 @@ static bool uninitialised_page_in_stack_section( uint32_t address, uint32_t type
   return false;
 }
 
+static bool stack_overflow( uint32_t address, uint32_t type )
+{
+for (;;) asm ( "wfi" );
+  // Access to safety page below a system stack
+  assert ( !__func__ );
+  return false;
+}
+
 static bool stack_underflow( uint32_t address, uint32_t type )
 {
 for (;;) asm ( "wfi" );
@@ -771,6 +778,7 @@ static void setup_stack_pages( uint32_t *top, uint32_t *lim )
 
   if (top_ptr.page != base_ptr.page) {
     // For the SharedCLibrary           FIXME needed? or just allocate_stack_as_needed?
+    l2tt->entry[base_ptr.page].handler = stack_overflow; // Tried to push too much, or possibly just a random address
     l2tt->entry[base_ptr.page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
   }
 }
@@ -794,27 +802,6 @@ void Initialise_privileged_mode_stacks()
 
 static void __attribute__(( noreturn, noinline )) go_kernel()
 {
-#if 0
-if (0 && workspace.core_number == 0) {
-  uint32_t volatile *gpio = (void*) 0xfff00000;
-  gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6);
-  asm volatile ( "dsb" );
-  //gpio[0x28/4] = (1 << 22); // Clr
-  gpio[0x1c/4] = (1 << 22); // Set
-  asm volatile ( "dsb" );
-
-  for (int n = 0; n < 7; n++) {
-  for (int i = 0; i < 0x400000; i++) asm ( "" );
-  gpio[0x28/4] = (1 << 22); // Clr
-  asm volatile ( "dsb" );
-  for (int i = 0; i < 0x400000; i++) asm ( "" );
-  gpio[0x1c/4] = (1 << 22); // Set
-  asm volatile ( "dsb" );
-  }
-}
-else if (workspace.core_number > 0) { for (;;) asm  ( "wfi" ); }
-#endif
-
   // Break before make
   about_to_remap_memory();
 
@@ -911,7 +898,7 @@ if (ws->core_number > 3) {  // Max cores for HD display
 
   ws->mmu.kernel_l2tt = &L2TTs[l2tt - shared->physical_l2tts];
 
-  // FIXME Remove device page at 0xfff00000 pointing to gpio
+  // Done: Remove device page at 0xfff00000 pointing to gpio
   // Wow! This line threw an exception because the compiler put the constant (0x33) into a ROM location
   // then used a pointer to it to access it as raw (I guess), trying to access 0xfc018xxx, which is
   // out of RAM. (This is only a problem before the MMU is activated and the code is running where we've
@@ -919,31 +906,9 @@ if (ws->core_number > 3) {  // Max cores for HD display
   //    *** Leave the comment here, just in case ***
   // Symptom was the code getting stuck back in boot.c with the wrong address for `states'!
   // l2tt->entry[0].raw = l2_device.raw | 0x3f200000;
-  l2tt_entry dev = l2_device;
-  l2tt->entry[0].raw = dev.raw | 0x3f200000;
-
-if (ws->core_number == 0) {
-  // Pre MMU:
-  uint32_t volatile *gpio = (void*) 0x3f200000;
-  gpio[2] = (gpio[2] & ~(3 << 6)) | (1 << 6);
-}
-
-if (ws->core_number == 0) {
-  uint32_t volatile *gpio = (void*) 0x3f200000;
-  asm volatile ( "dsb" );
-  //gpio[0x28/4] = (1 << 22); // Clr
-  gpio[0x1c/4] = (1 << 22); // Set
-  asm volatile ( "dsb" );
-
-  for (int n = 0; n < 7; n++) {
-  for (int i = 0; i < 0x100000; i++) asm ( "" );
-  gpio[0x28/4] = (1 << 22); // Clr
-  asm volatile ( "dsb" );
-  for (int i = 0; i < 0x100000; i++) asm ( "" );
-  gpio[0x1c/4] = (1 << 22); // Set
-  asm volatile ( "dsb" );
-  }
-}
+  // The following does work, but isn't needed (except for debugging this code!)
+  // l2tt_entry dev = l2_device;
+  // l2tt->entry[0].raw = dev.raw | 0x3f200000;
 
   asm ( "  dsb sy" );
 
@@ -971,78 +936,17 @@ if (ws->core_number == 0) {
       "\n  mcr p15, 0, %[sctlr], c1, c0, 0" 
       "\n  dsb"
       "\n  isb"
-      "\n  str %[bit], [%[gpio]]"
       "\n  mov sp, %[stack]"
       "\n  bx %[kernel]"
       :
       : [sctlr] "r" (sctlr)
       , [kernel] "r" (go_kernel) // Virtual (high memory) address
-      , [bit] "r" (1 << 22), [gpio] "r" (0xfff00028) // 28 = clr, 1c = set
       , [stack] "r" (sizeof( workspace.kernel.svc_stack ) + (uint32_t) &workspace.kernel.svc_stack) );
 
   __builtin_unreachable();
 }
 
 extern void Kernel_failed_data_abort();
-
-#if 0
-static void map_block( physical_memory_block block )
-{
-  // All RISC OS memory is RWX.
-  // FIXME: Even the stuff that isn't meant to be at the moment... Lowest common denominator
-  // All lazily mapped memory is shared (task slots, and the associated storage in the kernel)
-  l2tt_entry entry = { .XN = 0, .small_page = 1, .TEX = 0b101, .C = 0, .B = 1, .unprivileged_access = 1, .AF = 1, .S = 1, .nG = 1 };
-
-  about_to_remap_memory();
-
-  if (block.virtual_base < (1 << 20)) {
-    WriteS( "Mapping" ); NewLine;
-    uint32_t base = block.virtual_base >> 12;
-    for (uint32_t b = 0; b < block.size >> 12; b++) {
-      WriteS( "Page " ); WriteNum( (b+base) << 12 ); WriteS( " > " ); WriteNum( block.physical_base + (b << 12) ); NewLine;
-      bottom_MiB_tt[base + b] = (block.physical_base + (b << 12)) | entry.raw;
-    }
-  }
-
-  memory_remapped();
-}
-
-// noinline attribute is required so that stack space is allocated for any local variables.
-// There is no need for this routine to examine the fault generating instruction or the registers.
-static bool __attribute__(( noinline )) handle_data_abort()
-{
-  uint32_t fa = fault_address();
-
-  uint32_t fault_type = data_fault_type() & ~0x800; // Don't care if read or write
-
-  // Maybe I should care, but permission faults are different...
-  if (5 == fault_type || 7 == fault_type) {
-WriteS( "Translation fault: va = " ); WriteNum( fa ); NewLine;
-uint32_t *p;
-asm ( "mov %[p], sp" : [p] "=r" (p) );
-for (int i = 15; i < 17; i++) { // Should be faulting instruction and spsr
-  WriteNum( p[i] ); Write0( " " );
-}
-NewLine;
-    claim_lock( &shared.mmu.lock );
-    physical_memory_block block = Kernel_physical_address( fa );
-    release_lock( &shared.mmu.lock );
-WriteS( "Data abort physical: " ); WriteNum( block.physical_base ); NewLine;
-    if (block.size != 0) {
-      map_block( block );
-      return true;
-    }
-  }
-
-/*
-  DynamicArea *da = shared.memory.dynamic_areas;
-
-  MMU_map_shared_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
-*/
-
-  return false;
-}
-#endif
 
 // noinline attribute is required so that stack space is allocated for any local variables.
 // There is no need for this routine to examine the fault generating instruction or the registers.
@@ -1051,6 +955,11 @@ static bool __attribute__(( noinline )) handle_data_abort()
   uint32_t fa = fault_address();
   uint32_t ft = data_fault_type();
 
+  if ((ft & ~0x800) != 7
+   && (ft & ~0x800) != 5) {
+    WriteS( "Fault type: " ); WriteNum( ft ); WriteS( " @ " ); WriteNum( fa ); NewLine;
+    for (;;) asm ( "bkpt 88" );
+  }
   about_to_remap_memory();
 
   fault_handler handler = find_handler( fa );
@@ -1064,7 +973,12 @@ static bool __attribute__(( noinline )) handle_data_abort()
 
 void __attribute__(( naked, optimize( 0 ), noreturn )) Kernel_default_data_abort()
 {
-  asm volatile ( 
+  // TODO If data aborts start to need other tasks to fill in the missing memory,
+  // e.g. from a file, this will have to copy the save_context bit from
+  // Kernel_default_irq. At the moment, this only deals with missing memory, not
+  // permission faults.
+
+  asm volatile (
         "  sub lr, lr, #8"
       "\n  srsdb sp!, #0x17 // Store return address and SPSR"
       "\n  push { "C_CLOBBERED" }"
@@ -1148,6 +1062,13 @@ static void map_at( void *va, uint32_t pa, uint32_t size, bool shared )
   }
   else if (size == 4096) {
     bool kernel_memory = ((uint32_t) va >= 0xfff00000);
+
+    // FIXME FIXME FIXME this is horrible. The console task in the HAL needs to be able to read this
+    uint32_t v = (uint32_t) va;
+    extern uint32_t debug_pipe;
+    uint32_t p = (uint32_t) &debug_pipe;
+    if (kernel_memory && (v >= p && v < p + 16*1024)) kernel_memory = false;
+
     l2tt_entry entry = kernel_memory ? l2_prw : l2_urwx;
 
     entry.S = shared ? 1 : 0;

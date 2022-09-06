@@ -47,26 +47,18 @@ static inline error_block *OSCLI( const char *command )
 extern const char hex[16];
 
 #ifndef NO_DEBUG_OUTPUT
-#define WriteS( string ) asm volatile ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "cc", "lr" )
 
-// Warning, using the same variable name for n as inside the braces quietly fails
-// Hence: write_num_number_to_write
-#define WriteNum( n ) do { \
-  uint32_t write_num_number_to_write = (uint32_t) (n); \
-  uint32_t shift = 32; \
-  while (shift > 0) { \
-    shift -= 4; \
-    register char c asm( "r0" ) = hex[(write_num_number_to_write >> shift) & 0xf]; \
-    asm volatile ( "svc 0" : : "r" (c) : "cc", "lr" ); \
-  }; } while (false)
+#include "include/pipeop.h"
 
-// Not using OS_Write0, because many strings are not null terminated.
-#define Write0( string ) { char *c = (char*) string; while (*c != '\0' && *c != '\n' && *c != '\r') { register uint32_t r0 asm( "r0" ) = *c++; asm volatile ( "svc 0" : : "r" (r0) : "cc", "lr" ); }; }
+void WriteNum( uint32_t n );
+void WriteN( char const *s, int len );
 
-#define WriteN( string, len ) { register uint32_t r0 asm( "r0" ) = (uint32_t) string; register uint32_t r1 asm( "r1" ) = len; asm volatile ( "svc 0x46" : : "r" (r0), "r" (r1) : "cc", "lr" ); }
+#define WriteS( string ) WriteN( string, sizeof( string ) - 1 )
 
-#define NewLine asm ( "svc 3" : : : "cc", "lr" )
-#define Space asm ( "svc 0x120" : : : "cc", "lr" )
+#define Write0( string ) do { char *s = (char*) string; int len = 0; for (len = 0; (s[len] != '\0' && s[len] != '\n' && s[len] != '\r'); len++) {}; WriteN( s, len ); } while (false)
+
+#define NewLine WriteS( "\n" )
+#define Space WriteS( " " )
 
 #else
 #define WriteS( string )
