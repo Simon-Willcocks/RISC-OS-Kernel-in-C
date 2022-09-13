@@ -163,7 +163,7 @@ static Level_two_translation_table *find_table_from_l1tt_entry( l1tt_entry l1 )
   // TODO this can be speeded up if the memory is allocated in 64k chunks, etc.
 
   // Global L2TT consists of page entries for the top MiB.
-  uint32_t physical_table_page = l1.table.page_table_base >> 2;
+  uint32_t physical_table_page = l1.table.page_table_base >> 2; // Page containing table
 
   Level_two_translation_table *l2tt = L2TTs; // The global level 2 TT FIXME Do we know this?
 
@@ -413,6 +413,8 @@ static void map_block( physical_memory_block block )
 
   l1tt_entry section = Local_L1TT->entry[pointer.section];
 
+  assert( section.type == 1 );
+
   Level_two_translation_table *l2tt = find_table_from_l1tt_entry( section );
 
   about_to_remap_memory();
@@ -443,9 +445,12 @@ static bool allocate_legacy_workspace_as_needed( uint32_t address, uint32_t type
   // FIXME What if Kernel_allocate_pages returns nothing? (Block the Task, find some memory)
   arm32_ptr pointer = { .raw = address };
 
-  assert( Local_L1TT->entry[pointer.section].type == 1 );
+  l1tt_entry section = Local_L1TT->entry[pointer.section];
 
-  Level_two_translation_table *l2tt = find_table_from_l1tt_entry( Local_L1TT->entry[pointer.section] );
+  assert( section.type == 1 );
+
+  Level_two_translation_table *l2tt = find_table_from_l1tt_entry( section );
+
   l2tt->entry[pointer.page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
 
   return true;
@@ -491,7 +496,7 @@ static bool check_task_slot_l2( uint32_t address, uint32_t type )
 static bool allocate_core_specific_zero_page_ram( uint32_t address, uint32_t type )
 {
   assert( address < (1 << 20) );
-  assert( type == 0x807 || type == 7); // From experience, not necessarily always the case. 0x800 => write
+  assert( (type & ~0x8f0) == 7 ); // From experience, not necessarily always the case. 0x800 => write, real hardware may report a non-zero domain
 
   Write0( "Zero page access " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
   arm32_ptr pointer = { .raw = address };
@@ -528,11 +533,12 @@ static void initialise_l2tt_for_section( Level_two_translation_table *l2tt, int 
 
 static bool allocate_core_specific_zero_section( uint32_t address, uint32_t type )
 {
+Write0( __func__ ); Space; Write0( "Zero section access " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
+
   assert( address < (1 << 20) );
-  assert( type == 0x805 ); // From experience, not necessarily always the case
+  assert( (type & ~0x8f0) == 5 ); // From experience, not necessarily always the case. 0x800 => write, real hardware may report a non-zero domain
   assert( workspace.mmu.zero_page_l2tt == 0 );
 
-Write0( __func__ ); Space; Write0( "Zero section access " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
   // One-shot per core, claims a L2TT for the bottom MiB of RAM and initialises it.
   Level_two_translation_table *l2tt = find_free_table();
 
@@ -686,23 +692,21 @@ void setup_global_translation_tables( volatile startup *startup )
 static bool uninitialised_page_in_stack_section( uint32_t address, uint32_t type )
 {
   // Access to page in stack section that isn't part of a stack
-  assert ( !__func__ );
+  assert ( false );
   return false;
 }
 
 static bool stack_overflow( uint32_t address, uint32_t type )
 {
-for (;;) asm ( "wfi" );
   // Access to safety page below a system stack
-  assert ( !__func__ );
+  assert ( false );
   return false;
 }
 
 static bool stack_underflow( uint32_t address, uint32_t type )
 {
-for (;;) asm ( "wfi" );
   // Access to safety page above a system stack
-  assert ( !__func__ );
+  assert ( false );
   return false;
 }
 
@@ -712,9 +716,12 @@ static bool allocate_stack_as_needed( uint32_t address, uint32_t type )
   // FIXME What if Kernel_allocate_pages returns nothing? (Block the Task, find some memory)
   arm32_ptr pointer = { .raw = address };
 
-  assert( Local_L1TT->entry[pointer.section].type == 1 );
+  l1tt_entry section = Local_L1TT->entry[pointer.section];
 
-  Level_two_translation_table *l2tt = find_table_from_l1tt_entry( Local_L1TT->entry[pointer.section] );
+  assert( section.type == 1 );
+
+  Level_two_translation_table *l2tt = find_table_from_l1tt_entry( section );
+
   l2tt->entry[pointer.page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
 
   return true;
@@ -763,7 +770,7 @@ static void setup_stack_pages( uint32_t *top, uint32_t *lim )
     l2tt = find_table_from_l1tt_entry( section );
     break;
   default:
-    assert ( !__func__ ); // Bad stack configuration
+    assert ( false ); // Bad stack configuration
   }
 
   uint32_t page = top_ptr.page; // The page above the stack
@@ -955,10 +962,13 @@ static bool __attribute__(( noinline )) handle_data_abort()
   uint32_t fa = fault_address();
   uint32_t ft = data_fault_type();
 
-  if ((ft & ~0x800) != 7
-   && (ft & ~0x800) != 5) {
+  // Real hardware appears to fill in a value for Domain which may not be
+  // zero. Domain errors should never happen, and when they do should be
+  // handled at this level. The fault type will not be 5 or 7.
+  if ((ft & ~0x8f0) != 7
+   && (ft & ~0x8f0) != 5) {
     WriteS( "Fault type: " ); WriteNum( ft ); WriteS( " @ " ); WriteNum( fa ); NewLine;
-    for (;;) asm ( "bkpt 88" );
+    assert( false );
   }
   about_to_remap_memory();
 
@@ -1018,16 +1028,19 @@ void MMU_switch_to( TaskSlot *slot )
 
   Level_two_translation_table *l2tt;
 
-  l2tt = find_table_from_l1tt_entry( Local_L1TT->entry[0] );
+  if (Local_L1TT->entry[0].type == 1) {
+    l2tt = find_table_from_l1tt_entry( Local_L1TT->entry[0] );
 
-  for (int i = 0x8000 >> 12; i < 0x100000 >> 12; i++) {
-    l2tt->entry[i].handler = check_task_slot_l2;
+    for (int i = 0x8000 >> 12; i < 0x100000 >> 12; i++) {
+      l2tt->entry[i].handler = check_task_slot_l2;
+    }
   }
 
   for (int i = 1; i < (((uint32_t)&app_memory_limit) >> 20); i++) {
     if (Local_L1TT->entry[i].type == 1) {
       asm ( "bkpt 1" ); // Free the l2tt.
     }
+
     Local_L1TT->entry[i].handler = check_task_slot_l1;
   }
 

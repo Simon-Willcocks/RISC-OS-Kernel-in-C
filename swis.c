@@ -226,6 +226,7 @@ static bool do_OS_SetCallBack( svc_registers *regs ) { Write0( __func__ ); NewLi
 static bool do_OS_ReadUnsigned( svc_registers *regs )
 {
   // FIXME, can overflow, ignores flags
+  // FIXME: Broken. Using legacy implementation
   if (regs->r[4] == 0x45444957) asm ( "bkpt 80" );
   uint32_t base = regs->r[0] & 0x7f;
   if (base < 2 || base > 36) base = 10; // Can this really be a default?
@@ -1995,7 +1996,7 @@ static swifn os_swis[256] = {
   [OS_Claim] =  do_OS_Claim,
 
   [OS_Release] =  do_OS_Release,
-  [OS_ReadUnsigned] =  do_OS_ReadUnsigned,
+  // [OS_ReadUnsigned] =  do_OS_ReadUnsigned,
   [OS_GenerateEvent] =  do_OS_GenerateEvent,
 
   [OS_ReadVarVal] =  do_OS_ReadVarVal,
@@ -2221,8 +2222,10 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
 
   switch (number & ~Xbit) { // FIXME
   case 0x406c0 ... 0x406ff: return; // Hourglass
-  case 0x400de: StartTask( regs ); return;
+  case 0x400de: WriteS( "Wimp_StartTask - intercepted " ); Write0( regs->r[0] ); NewLine;StartTask( regs ); return;
   case 0x80146: regs->r[0] = 0; return; // PDriver_CurrentJob (called from Desktop?!)
+  // case 0x41506: WriteS( "Translating error " ); Write0( regs->r[0] + 4 ); NewLine; break;
+  case 0x487c0: regs->r[0] = "HD Monitor"; return;
   }
   bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
 
@@ -2275,20 +2278,19 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
         break;
       default:
         WriteS( "Unimplemented!" ); NewLine;
-        register uint32_t swinum asm( "r0" ) = number;
-        asm ( "bkpt 1" : : "r" (swinum) );
-        //asm ( "bkpt 1" ); // WindowManager initialisation uses OS_DynamicArea to get free pool, and OS_Memory to allocate from it; let them continue
+        WriteNum( number ); NewLine;
+        assert( false );
       }
     }
     regs->spsr |= VF;
   }
   else {
     // Call error handler
-    WriteS( "SWI " );
+    WriteS( "Error from SWI " );
     WriteNum( number );
-    asm ( "svc 0x120" );
+    Space;
+    WriteNum( *(uint32_t*) regs->r[0] ); Space;
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
-    asm ( "svc 0x120" );
     WriteNum( regs->lr );
     {
     regs->r[0] = 3;

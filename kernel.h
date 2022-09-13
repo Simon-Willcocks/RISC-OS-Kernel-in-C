@@ -16,18 +16,8 @@
 #ifndef __KERNEL_H
 #define __KERNEL_H
 
-typedef unsigned long long uint64_t;
-typedef unsigned        uint32_t;
-typedef int             int32_t;
-typedef short           int16_t;
-typedef signed char     int8_t;
-typedef unsigned char   uint8_t;
-typedef unsigned        size_t;
-typedef unsigned        bool;
-#define true  (0 == 0)
-#define false (0 != 0)
-
-#define number_of( arr ) (sizeof( arr ) / sizeof( arr[0] ))
+#include "include/types.h"
+#include "include/pico_clib.h"
 
 typedef struct {
   uint32_t code;
@@ -39,9 +29,6 @@ typedef struct {
   void *location;
   uint32_t available; 
 } PipeSpace;
-
-// For initial debug
-#include "trivial_display.h"
 
 typedef struct core_workspace core_workspace;
 typedef struct shared_workspace shared_workspace;
@@ -190,36 +177,5 @@ extern struct shared_workspace {
 } volatile shared;
 
 void __attribute__(( noreturn )) Boot();
-
-// microclib
-
-static inline int strlen( const char *string )
-{
-  int result = 0;
-  while (*string++ != '\0') result++;
-  return result;
-}
-
-static inline int strcmp( const char *left, const char *right )
-{
-  int result = 0;
-  while (result == 0) {
-    char l = *left++;
-    char r = *right++;
-    result = l - r;
-    if (l == 0 || r == 0) break;
-  }
-  return result;
-}
-
-static inline char *strcpy( char *dest, const char *src )
-{
-  char *result = dest;
-  while (*src != '\0') {
-    *dest++ = *src++;
-  }
-  *dest = *src;
-  return result;
-}
 
 #endif

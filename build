@@ -77,27 +77,6 @@ ROM=RiscOS/Images/$( ls -rt RiscOS/Images | tail -n 1 )
 
 echo Building with RiscOS build $ROM
 
-function build_gcc_module {
-  MOD=$1 ; shift ; # All other parameters are passed to gcc
-  M=$( dirname $MOD ) &&
-  if [ "$M" == "." ]
-  then SRC=GCC_Modules/$MOD ; M=$MOD
-  else SRC=$MOD
-  fi
-  echo Building shared module $MOD \($M\) &&
-
-  arm-linux-gnueabi-gcc-8 $SRC/*.c -Wall -o /tmp/module$$.elf -fpic \
-        -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
-        -g -march=armv8-a+nofp -T module.script -I . \
-        $* &&
-  arm-linux-gnueabi-objdump -x --disassemble-all /tmp/module$$.elf > Modules/$M.dump &&
-  arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/$M &&
-  arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/$M --rename-section .data=.text Modules/$M.o &&
-  rm /tmp/module$$.elf || exit 1
-}
-
-rm -f Resources.h # Generated file, see below
-
 function paddedstring { echo -ne $1\\x00 | dd bs=4 conv=sync 2>/dev/null ; }
 function paddedfile { cat $1 | dd bs=4 conv=sync 2>/dev/null ; }
 function byte { echo -en $( printf '\\'x%02x $1 ) ; }
@@ -125,19 +104,50 @@ function resourcefile {
   paddedfile $1
 }
 
-(
-echo 'static uint8_t const __attribute__(( aligned( 4 ) )) resources[] = {' &&
-cd RiscOS/CKernel/ &&
-( for i in $( find . -type f )
-  do
-    echo Adding file ${i/\.\//} >&2
-    resourcefile ${i/\.\//}
-  done 
-  number 0
-) | xxd -i &&
-echo '};' &&
-cd ..
-) > Resources.h &&
+function build_resources_h {
+  pushd $1
+
+  rm -f Resources.h # Generated file
+
+  (
+  echo 'static uint8_t const __attribute__(( aligned( 4 ) )) resources[] = {' &&
+  cd Resources
+  ( for i in $( find * -type f )
+    do
+      echo Adding file ${i} >&2
+      resourcefile ${i}
+    done 
+    number 0
+  ) | xxd -i &&
+  echo '};' &&
+  cd ..
+  ) > Resources.h &&
+
+  popd
+}
+
+function build_gcc_module {
+  MOD=$1 ; shift ; # All other parameters are passed to gcc
+  M=$( dirname $MOD ) &&
+  if [ "$M" == "." ]
+  then SRC=GCC_Modules/$MOD ; M=$MOD
+  else SRC=$MOD
+  fi
+  echo Building shared module $MOD \($M\) &&
+
+  if [ -d $SRC/Resources ]; then
+    build_resources_h $SRC
+  fi &&
+
+  arm-linux-gnueabi-gcc-8 $SRC/*.c -Wall -o /tmp/module$$.elf -fpic \
+        -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
+        -g -march=armv8-a+nofp -T module.script -I . \
+        $* &&
+  arm-linux-gnueabi-objdump -x --disassemble-all /tmp/module$$.elf > Modules/$M.dump &&
+  arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/$M &&
+  arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/$M --rename-section .data=.text Modules/$M.o &&
+  rm /tmp/module$$.elf || exit 1
+}
 
 # Linking in a HAL module. I don't know if that's what I want to see in future, or a block of modules in a list like in the ROM
 build_gcc_module $HAL &&
@@ -156,7 +166,7 @@ function rom_kernel_start {
 }
 
 arm-linux-gnueabi-gcc-8 -Wall -I . \
-  kernel.c swis.c modules.c swis/*.c \
+  kernel.c swis.c modules.c usrboot.c swis/*.c \
   $PROC/*.c -I $PROC \
   $BOOT/*.c -I $BOOT \
   $TASK_SLOT/*.c -I $TASK_SLOT \

@@ -15,19 +15,6 @@
 
 #include "inkernel.h"
 
-static void Sleep( uint32_t microseconds )
-{
-  register uint32_t request asm ( "r0" ) = 3; // Sleep
-  register uint32_t time asm ( "r1" ) = microseconds; // Shift down a lot for testing!
-
-  asm volatile ( "svc %[swi]"
-      :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      , "r" (time)
-      : "lr" );
-}
-
 static bool Kernel_Error_NoMoreModules( svc_registers *regs )
 {
   static error_block error = { 0x107, "No more modules" };
@@ -270,6 +257,13 @@ bool run_vector( svc_registers *regs, int vec )
   }
 #endif
 
+  {
+    vector *v = workspace.kernel.vectors[vec];
+    while (v != 0) {
+      v = v->next;
+    }
+  }
+
   // "If your routine passes the call on, you can deliberately alter some of
   // the registers values to change the effect of the call, however, you must
   // arrange for control to return to your routine again to restore to those
@@ -292,8 +286,14 @@ bool run_vector( svc_registers *regs, int vec )
       "\n  ldr r14, [%[v], %[code]]"
       "\n  ldr r12, [%[v], %[private]]"
       "\n  blx r14"
+"\n  cmp %[v], #0x8000 // Test to check for errors"
+"\n  bhs 1f"
+"\n  bkpt 1"
+"\n1:"
       "\n  ldr %[v], [%[v], %[next]]"
-      "\n  b 0b"
+      "\n  cmp %[v], #0 // I don't think this should happen, but carry on if it does"
+      "\n  bhs 0b"
+      "\n  pop {lr} // intercepted"
       "\nintercepted:"
       "\n  pop { r14 } // regs (intercepted already popped)"
       "\n  stm r14, { r0-r9 }"
@@ -361,7 +361,7 @@ bool do_module_swi( svc_registers *regs, uint32_t svc )
 
 // Case insensitive, nul, cr, lf, space, or % terminates.
 // So "abc" matches "abc def", "abc%ghi", etc.
-static inline bool module_name_match( char const *left, char const *right )
+bool module_name_match( char const *left, char const *right )
 {
   int diff = 0;
 
@@ -594,15 +594,33 @@ if (m == 0) {
   Write0( "No modules initialised\n" );
 }
 #endif
+uint32_t r6 = regs->r[6];
 
   uint32_t r12 = regs->r[12];
   while (m != 0 && regs->r[1] != 0 && result) {
     regs->r[12] = (uint32_t) m->private_word;
     if (0 != m->header->offset_to_service_call_handler) {
-#if DEBUG__SHOW_SERVICE_CALLS
-Write0( title_string( m->header ) ); Write0( " " ); WriteNum( m->header->offset_to_service_call_handler + (uint32_t) m->header ); NewLine;
-#endif
+//#if DEBUG__SHOW_SERVICE_CALLS
+if (regs->r[1] == 0x46 || regs->r[1] == 0x73) {
+Write0( title_string( m->header ) ); Space; WriteNum( m->header->offset_to_service_call_handler + (uint32_t) m->header ); NewLine;
+}
+//#endif
       result = run_service_call_handler_code( regs, m );
+
+if (r6 != regs->r[6]) {
+  WriteS( "R6 changed from " ); WriteNum( r6 ); WriteS( " to " ); WriteNum( regs->r[6] ); NewLine;
+  r6 = regs->r[6];
+    asm volatile ( "mov r0, #3 // Sleep"
+               "\n  mov r1, #0 // For no time - yield"
+               "\n  svc %[swi]"
+        :
+        : [swi] "i" (OS_ThreadOp)
+        : "r0", "r1", "lr" );
+}
+      if (regs->r[1] == 0) {
+        WriteS( "Claimed" );
+        break;
+      }
     }
     m = m->next;
   }
@@ -778,7 +796,6 @@ static bool initialise_module( svc_registers *regs, uint32_t *memory, char const
   if (mp_module) {
     claim_lock( &shared.kernel.mp_module_init_lock );
 
-    Write0( "MP" );
     shared_instance = shared.kernel.module_list_head;
     while (shared_instance != 0 && shared_instance->header != new_mod) {
       shared_instance = shared_instance->next;
@@ -1565,464 +1582,6 @@ bool do_OS_RelinkApplication( svc_registers *regs )
   return Kernel_Error_UnknownSWI( regs );
 }
 
-// Transient callbacks are usually called when returning to USR mode,
-// but it's important to call them when a module has just been initialised
-// as well.
-// This could also be managed by initialising them from a script, since it
-// runs in USR mode.
-extern void run_transient_callbacks();
-
-static module_header *find_rom_module( const char *name )
-{
-  uint32_t *rom_modules = &_binary_AllMods_start;
-  uint32_t *rom_module = rom_modules;
-
-  while (0 != *rom_module) {
-    module_header *header = (void*) (rom_module+1);
-    register const char *title = title_string( header );
-    if (module_name_match( title, name )) {
-      return (void*) (rom_module+1); // Header without size
-    }
-    rom_module += (*rom_module)/4; // Includes size of length field
-  }
-
-  return 0;
-}
-
-void init_module( const char *name )
-{
-  // TaskSlot_new_application( name, "" );
-
-  module_header *header = find_rom_module( name );
-
-  if (0 != header) {
-    register uint32_t code asm( "r0" ) = 10;
-    register module_header *module asm( "r1" ) = header;
-    asm volatile ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
-  }
-}
-
-#define REPLACEMENT( modname ) \
-  if (0 == strcmp( name, #modname )) { \
-    extern uint32_t _binary_Modules_##modname##_start; \
-    module_header *header = find_rom_module( #modname ); \
-    register uint32_t code asm( "r0" ) = 10; \
-    register uint32_t module asm( "r1" ) = 4 + (uint32_t) &_binary_Modules_##modname##_start; \
-    register module_header *original asm ( "r2" ) = header; \
- \
-    asm volatile ( "svc %[os_module]" \
-       : \
-       : "r" (code) \
-       , "r" (module) \
-       , "r" (original) \
-       , [os_module] "i" (OS_Module) \
-       : "lr", "cc" ); \
-    Write0( "Replacement " ); Write0( #modname ); NewLine; \
-    return true; \
-  }
-
-bool excluded( const char *name )
-{
-  // These modules fail on init, at the moment.
-  static const char *excludes[] = { "PCI"               // Data abort fc01ff04 prob. pci_handles
-
-                                  // RISC_OSLib ROM modules
-#if 0
-                                  , "ScreenModes"       // Writes to ROM? 0xfc20d210 0xfc14d97c
-                                  , "Squash"            // Writes to ROM? In CopyLibStatics in RISC_OSLib/s/initmodule
-                                  , "ColourPicker"      // Same problem
-                                  , "DrawFile"
-                                  , "BootCommands"
-                                  , "WindowScroll"
-                                  , "Toolbox"
-                                  , "Window"
-                                  , "ToolAction"
-                                  , "Menu"
-                                  , "Iconbar"
-                                  , "ColourDbox"
-                                  , "ColourMenu"
-                                  , "DCS"
-                                  , "FileInfo"
-                                  , "FontDbox"
-                                  , "FontMenu"
-                                  , "PrintDbox"
-                                  , "ProgInfo"
-                                  , "SaveAs"
-                                  , "Scale"
-                                  // , "TextGadgets"
-#endif
-                                  , "Debugger"
-                                  , "BCMSupport"        // Unknown dynamic area
-                                  , "Portable"          // Uses OS_MMUControl
-                                  , "RTSupport"         // Unknown dynamic area
-                                  , "USBDriver"         //  "
-                                  , "DWCDriver"         //  "
-                                  , "XHCIDriver"        //  "
-                                  , "VCHIQ"             //  "
-                                  , "BCMSound"          // ???
-
-// Probably don't work, I can't be bothered to see if their problems are solved already
-                                  , "SoundDMA"          // Uses OS_Memory
-                                  , "SoundChannels"     // ???
-                                  , "SoundScheduler"    // Sound_Tuning
-                                  // , "TaskManager"       // Initialisation returns an error
-                                  , "BCMVideo"          // Tries to use OS_MMUControl
-                                  // , "FilterManager"     // Uses Wimp_ReadSysInfo 
-                                  , "WaveSynth"         // throws exception
-                                  , "StringLib"         // ?
-                                  , "Percussion"         // ?
-                                  , "IIC"         // ? 0xe200004d
-                                  , "SharedSound"       // 0xe200004d
-                                  , "DOSFS"             // 0x8600003f
-                                  , "SCSIDriver"        // 0x8600003f
-                                  , "SCSISoftUSB"       // 0x8600003f
-                                  , "SCSIFS"            // 0xe2000001
-                                  , "SDIODriver"        // 0x8600003f
-                                  , "SDFS"              // 0x8600003f
-                                  , "SDCMOS"              // 0x8600003f
-                                  //, "ColourPicker"      // 0x8600003f
-                     //             , "BootCommands"      // 0x8600003f
-                                  // , "WindowScroll"      // 0x8600003f OS_Pointer not yet supported
-                                  , "Internet"          // 0x8600003f
-                                  , "Resolver"          // 0x8600003f
-                                  , "Net"               // 0x8600003f
-
-// Not checked:
-                                  , "BootNet"
-                                  , "Freeway"
-                                  , "ShareFS"
-                                  , "MimeMap"
-                                  , "LanManFS"
-                                  , "EtherGENET"
-                                  , "EtherUSB"
-                                  , "DHCP"
-                                  // , "Toolbox"           // Tries to RMLoad System:FilterManager
-                                  // , "Window"            // Requires Toolbox
-                                  // , "ToolAction"        // Requires Window
-                                  // , "Menu"
-                                  // , "Iconbar"
-                                  // , "ColourDbox"
-                                  // , "ColourMenu"
-                                  //  , "DCS" // WTH is this?
-                                  // , "FileInfo"
-                                  // , "FontDbox"
-                                  // , "FontMenu"
-                                  // , "PrintDbox"
-                                  // , "ProgInfo"
-                                  // , "SaveAs"
-                                  // , "Scale"
-                                  // , "TextGadgets"
-                                  , "CDFSDriver"
-                                  , "CDFSSoftSCSI"
-                                  , "CDFS"
-                                  , "CDFSFiler"
-                                  // , "UnSqueezeAIF"
-                                  , "GPIO"
-
-                                  , "DMAManager"        // Calls OS_Hardware
-                                  , "BBCEconet"         // Data abort
-                                  , "FSLock"            // Writes CMOS not yet supported
-                                  , "FPEmulator"        // OS_ClaimProcessorVector
-
-                                  , "MbufManager"       // 0xe200004d
-
-                                  // , "DragASprite"       // Doesn't return, afaics
-                                  , "RamFS"
-                                  // , "Filer"             // Doesn't return, afaics
-                                  , "VFPSupport"        // Tries to claim processor vector
-                                  , "Hourglass"        // OS_ReadPalette
-                                  , "InternationalKeyboard" // Probably because there isn't one?
-                                  , "NetFS"             // Doesn't return
-                                  , "NetPrint"             // Doesn't return
-                                  , "NetStatus"             // Doesn't return
-                                  , "PipeFS"             // OS_ClaimProcessorVector
-                                  , "RTC"               // No ticks? No hardware?
-                                  , "ScreenBlanker"        // Doesn't return, afaics
-                                  , "ScrSaver"        // Doesn't return, afaics
-                                  , "Serial"        // "esources$Path{,_Message} not found
-                                  , "SerialDeviceSupport"        // "esources$Path{,_Message} not found
-                                  , "ShellCLI"        // "esources$Path{,_Message} not found
-                                  , "SoundControl"          // No return
-                                  , "BootFX"                    // Calls CallASWIR12 with 0x78440
-                                  , "SystemDevices"             // No return
-                                  , "TaskWindow"             // Data abort, fc339bc4 -> 01f0343c
-/**/
-  };
-
-  // C Modules that replace ROM modules (experimental)
-  //REPLACEMENT( FontManager );
-  REPLACEMENT( Portable );
-  REPLACEMENT( VFPSupport );
-  REPLACEMENT( FPEmulator );
-
-  for (int i = 0; i < number_of( excludes ); i++) {
-    if (0 == strcmp( name, excludes[i] ))
-      return true;
-  }
-  return false;
-}
-
-// Modified for usr mode...
-void init_modules()
-{
-  uint32_t *rom_modules = &_binary_AllMods_start;
-  uint32_t *rom_module = rom_modules;
-
-  while (0 != *rom_module) {
-    Sleep( 0 );
-    module_header *header = (void*) (rom_module+1);
-
-#ifdef DEBUG__SHOW_MODULE_INIT
-    NewLine;
-    Write0( "INIT: " );
-    WriteNum( rom_module ); Write0( " " );
-    Write0( TaskSlot_Command( TaskSlot_now() ) );
-#endif
-    if (!excluded( title_string( header ) )) {
-#ifdef DEBUG__SHOW_MODULE_INIT
-      {
-      if (header->offset_to_service_call_handler != 0) {
-        Write0( " services " );
-        uint32_t *p = pointer_at_offset_from( header, header->offset_to_service_call_handler );
-        if (0xe1a00000 == p[0]) {
-          Write0( " with table" );
-          uint32_t table_offset = p[-1];
-
-          uint32_t *p = pointer_at_offset_from( header, table_offset );
-
-          NewLine; Write0( "Flags: " ); WriteNum( *p++ ); NewLine; p++; // Skip handler offset
-          do {
-            NewLine; Write0( "Expects service: " ); WriteNum( *p++ );
-          } while (*p != 0);
-        }
-      }
-      NewLine;
-#ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
-    show_module_commands( header );
-#endif
-      }
-#endif
-
-      register uint32_t code asm( "r0" ) = 10;
-      register module_header *module asm( "r1" ) = header;
-
-      asm volatile ( "svc %[os_module]" : : "r" (code), "r" (module), [os_module] "i" (OS_Module) : "lr", "cc" );
-    }
-    else {
-#ifdef DEBUG__SHOW_MODULE_INIT
-      Write0( " - excluded" );
-      NewLine;
-#endif
-    }
-    rom_module += (*rom_module)/4; // Includes size of length field
-  }
-}
-
-static inline void set_var( const char *name, const char *value )
-{
-  svc_registers regs;
-  regs.r[0] = (uint32_t) name;
-  regs.r[1] = (uint32_t) value;
-  regs.r[2] = strlen( value );
-  regs.r[3] = 0;
-  regs.r[4] = 0;
-
-  do_OS_SetVarVal( &regs );
-}
-
-static inline void Plot( uint32_t type, uint32_t x, uint32_t y )
-{
-  register uint32_t Rtype asm( "r0" ) = type;
-  register uint32_t Rx asm( "r1" ) = x * 2; // pixel units to OS units, just for the tests
-  register uint32_t Ry asm( "r2" ) = y * 2;
-  asm volatile ( "svc %[swi]" : : [swi] "i" (OS_Plot), "r" (Rtype), "r" (Rx), "r" (Ry) );
-}
-
-static inline void Draw_Fill( uint32_t *path, int32_t *transformation_matrix )
-{
-  register uint32_t *draw_path asm( "r0" ) = path;
-  register uint32_t fill_style asm( "r1" ) = 0;
-  register  int32_t *matrix asm( "r2" ) = transformation_matrix;
-  register uint32_t flatness asm( "r3" ) = 0;
-  asm ( "swi 0x60702"
-        : 
-        : "r" (draw_path)
-        , "r" (fill_style)
-        , "r" (matrix)
-        , "r" (flatness)
-        : "lr" );
-}
-
-typedef union {
-  struct {
-    uint32_t action:3; // Set, OR, AND, EOR, Invert, Unchanged, AND NOT, OR NOT.
-    uint32_t use_transparency:1;
-    uint32_t background:1;
-    uint32_t ECF_pattern:1; // Unlikely to be supported
-    uint32_t text_colour:1; // As opposed to graphics colour
-    uint32_t read_colour:1; // As opposed to setting it
-  };
-  uint32_t raw;
-} OS_SetColour_Flags;
-
-static inline void SetColour( uint32_t flags, uint32_t colour )
-{
-  register uint32_t in_flags asm( "r0" ) = flags;
-  register uint32_t in_colour asm( "r1" ) = colour;
-  asm ( "swi %[swi]" : 
-        : "r" (in_colour)
-        , "r" (in_flags)
-        , [swi] "i" (OS_SetColour)
-        : "lr" );
-}
-
-static inline void SetGraphicsFgColour( uint32_t colour )
-{
-  Write0( "Setting graphics foreground colour with ColourTrans... " );
-  register uint32_t pal asm( "r0" ) = colour;
-  register uint32_t Rflags asm( "r3" ) = 0; // FG, no ECFs
-  register uint32_t action asm( "r4" ) = 0; // set
-  asm volatile ( "svc %[swi]" : : [swi] "i" (0x60743), "r" (pal), "r" (Rflags), "r" (action) : "lr", "cc" );
-}
-
-static inline void SetGraphicsBgColour( uint32_t colour )
-{
-  Write0( "Setting graphics background colour with ColourTrans... " );
-  register uint32_t pal asm( "r0" ) = colour;
-  register uint32_t Rflags asm( "r3" ) = 0x80;
-  register uint32_t action asm( "r4" ) = 0; // set
-  asm volatile ( "svc %[swi]" : : [swi] "i" (0x60743), "r" (pal), "r" (Rflags), "r" (action) : "lr", "cc" );
-}
-
-void Draw_Stroke( uint32_t *path, uint32_t *transformation_matrix )
-{
-  // Keep this declaration before the first register variable declaration, or
-  // -Os will cause the compiler to forget the preceding registers.
-  // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=101422
-  uint32_t cap_and_join_style[4] =  { 0, 0xa0000, 0, 0 };
-
-  register uint32_t *draw_path asm( "r0" ) = path;
-  register uint32_t fill_style asm( "r1" ) = 0;
-  register uint32_t *matrix asm( "r2" ) = transformation_matrix;
-  register uint32_t flatness asm( "r3" ) = 0;
-  register uint32_t thickness asm( "r4" ) = 0x1000;
-  register uint32_t *cap_and_join asm( "r5" ) = cap_and_join_style;
-  register uint32_t dashes asm( "r6" ) = 0;
-  asm ( "swi 0x60704" : 
-        : "r" (draw_path)
-        , "r" (fill_style)
-        , "r" (matrix)
-        , "r" (flatness)
-        , "r" (thickness)
-        , "r" (cap_and_join)
-        , "r" (dashes)
-        , "m" (cap_and_join_style) // Without this, the array is not initialised
-        : "lr" );
-}
-
-// Warning: does not return error status (although a "handle" > 255 is certainly an error)
-static inline uint32_t Font_FindFont( const char *name, uint32_t xpoints, uint32_t ypoints, uint32_t xdpi, uint32_t ydpi )
-{
-  register uint32_t result asm( "r0" );
-  register const char *rname asm( "r1" ) = name;
-  register uint32_t rxpoints asm( "r2" ) = xpoints;
-  register uint32_t rypoints asm( "r3" ) = ypoints;
-  register uint32_t rxdpi asm( "r4" ) = xdpi;
-  register uint32_t rydpi asm( "r5" ) = ydpi;
-
-  asm volatile ( "swi %[swi]"
-        : "=r" (result)
-        : "r" (rname)
-        , "r" (rxpoints)
-        , "r" (rypoints)
-        , "r" (rxdpi)
-        , "r" (rydpi)
-        , [swi] "i" (0x40081)
-        : "lr" );
-
-  return result;
-}
-
-static inline void ColourTrans_SetFontColours( uint32_t font, uint32_t fg, uint32_t bg, uint32_t maxdiff )
-{
-  register uint32_t Rfont asm( "r0" ) = font;
-  register uint32_t Rfg asm( "r1" ) = fg;
-  register uint32_t Rbg asm( "r2" ) = bg;
-  register uint32_t Rmaxdiff asm( "r3" ) = maxdiff;
-
-  asm volatile ( "swi %[swi]"
-        :
-        : "r" (Rfont)
-        , "r" (Rfg)
-        , "r" (Rbg)
-        , "r" (Rmaxdiff)
-        , [swi] "i" (0x20000 | 0x4074F)
-        : "lr" );
-}
-
-static inline void usr_OS_ConvertCardinal4( uint32_t number, char *buffer, uint32_t buffer_size, char *old_buffer, char **terminator, uint32_t *remaining_size )
-{
-  // Do any calculations or variable initialisations here, before
-  // declaring any register variables.
-  // This is important because the compiler may insert function calls
-  // like memcpy or memset, which will corrupt already declared registers.
-
-  // The inputs to the SWI
-  register uint32_t n asm( "r0" ) = number;
-  register char *buf asm( "r1" ) = buffer;
-  register uint32_t s asm( "r2" ) = buffer_size;
-
-  // The outputs from the SWI
-  register uint32_t oldbuf asm( "r0" );
-  register char *term asm( "r1" );
-  register uint32_t rem asm( "r2" );
-
-  // Call the SWI
-  asm volatile ( "svc %[swi]"
-    : "=r" (oldbuf) // List all the output variables
-    , "=r" (term)   // or they will be optimised away.
-    , "=r" (rem)
-    : [swi] "i" (OS_ConvertCardinal4) // Can use an enum for the SWI number
-    , "r" (n)       // List all the input register variables,
-    , "r" (buf)     // or they will be optimised away.
-    , "r" (s)
-    : // If the SWI corrupts any registers, list them here
-      // If the function is to be called in a priviledged mode, include "lr"
-      "memory"
-  );
-
-  // Store the output values
-  // Don't worry about the apparent inefficiency, the compiler will
-  // optimise out unused values.
-  // Again, don't do anything other than simple storage or assignments
-  // to non-register variables.
-  if (old_buffer != 0) *old_buffer = oldbuf;
-  if (terminator != 0) *terminator = term;
-  if (remaining_size != 0) *remaining_size = rem;
-}
-
-void Font_Paint( uint32_t font, const char *string, uint32_t type, uint32_t startx, uint32_t starty, uint32_t length )
-{
-  register uint32_t rHandle asm( "r0" ) = font;
-  register const char *rString asm( "r1" ) = string;
-  register uint32_t rType asm( "r2" ) = type;
-  register uint32_t rx asm( "r3" ) = startx;
-  register uint32_t ry asm( "r4" ) = starty;
-  register uint32_t rBlankArea asm( "r5" ) = 0;
-  register uint32_t rMatrix asm( "r6" ) = 0;
-  register uint32_t rLength asm( "r7" ) = length;
-  asm ( "swi 0x60086" : 
-        : "r" (rHandle)
-        , "r" (rString)
-        , "r" (rType)
-        , "r" (rx)
-        , "r" (ry)
-        , "r" (rMatrix)
-        , "r" (rBlankArea)
-        , "r" (rLength)
-        : "lr" );
-}
-
 static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
 {
 #ifdef DEBUG__SHOW_OS_BYTE
@@ -2311,6 +1870,152 @@ static void __attribute__(( naked )) default_os_byte()
   asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
+static void __attribute__(( noinline )) default_os_word_c( uint32_t *regs )
+{
+#ifdef DEBUG__SHOW_OS_WORD
+  Write0( "OS_Word " ); WriteNum( regs[0] ); NewLine;
+#endif
+
+  switch (regs[0]) {
+  case 0x00:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x01:
+    {
+    uint8_t *t = (void*) regs[1];
+    t[0] = workspace.vectors.zp.EnvTime[0];
+    t[1] = workspace.vectors.zp.EnvTime[1];
+    t[2] = workspace.vectors.zp.EnvTime[2];
+    t[3] = workspace.vectors.zp.EnvTime[3];
+    t[4] = workspace.vectors.zp.EnvTime[4];
+workspace.vectors.zp.EnvTime[0]++;
+    }
+    break;
+  case 0x02:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x03:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x04:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x05:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x06:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x07:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x08:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x09:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x0a:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x0b:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x0c:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x0d:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x0e:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x0f:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x10:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x11:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x12:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x13:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x14:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x15:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  case 0x16:
+    {
+    asm( "bkpt 1" );
+    }
+    break;
+  default: asm ( "bkpt 91" );
+  }
+#ifdef DEBUG__SHOW_OS_WORD
+  NewLine;
+#endif
+}
+
+static void __attribute__(( naked )) default_os_word()
+{
+  // Always intercepting because there's no lower call.
+  register uint32_t *regs;
+  asm ( "push { "C_CLOBBERED" }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+
+  default_os_word_c( regs );
+
+  asm ( "pop { "C_CLOBBERED", pc }" );
+}
+
 #ifdef DEBUG__SHOW_VECTOR_CALLS
 #define WriteFunc do { Write0( __func__ ); NewLine; for (int i = 0; i < 13; i++) { WriteNum( regs->r[i] ); asm volatile ( "svc 0x100+' '" ); } WriteNum( regs->lr ); asm volatile ( "svc 0x100+' '" ); WriteNum( regs->spsr ); NewLine; } while (false)
 #else
@@ -2400,193 +2105,51 @@ WriteFunc;
   return run_vector( regs, 36 );
 }
 
-static uint32_t screen_colour_from_os_colour( uint32_t os )
+bool do_OS_SWINumberFromString( svc_registers *regs )
 {
-  union {
-    struct { // BGR0
-      uint32_t Z:8;
-      uint32_t R:8;
-      uint32_t G:8;
-      uint32_t B:8;
-    };
-    uint32_t raw;
-  } os_colour = { .raw = os };
+  // String is terminated by any character <= ' '
+  char const * const string = (void*) regs->r[1];
 
-  return (255 << 24) | (os_colour.R << 16) | (os_colour.G << 8) | os_colour.B;
-}
+  // FIXME: X prefix. Does it exclude SWI names starting with an X?
 
-void __attribute__(( naked )) fast_horizontal_line_draw( uint32_t left, uint32_t y, uint32_t right, uint32_t action )
-{
-  // FIXME needs to work in sprites as well, I think
+  module *m = workspace.kernel.module_list_head;
 
-  // FIXME These things need to be moved into some graphics context. The Kernel/s/vdu stuff accesses this directly, but the DrawMod uses the ReadVduVariables interface.
-  extern uint32_t *vduvarloc[];
+  // TODO SWI Decoder code
+  while (m != 0) {
+    if (0 != m->header->offset_to_swi_decoding_table) {
+      char const *prefix = pointer_at_offset_from( m->header, m->header->offset_to_swi_decoding_table );
+      char const *matched = string;
 
-  asm ( "push { r0-r12, lr }" );
+WriteNum( m->header ); Space; Write0( prefix ); NewLine;
+      while (*prefix == *matched) { prefix++; matched++; }
 
-#ifdef DEBUG__SHOW_HLINES
-  Write0( "HLine " ); NewLine;
-#endif
-  // EcfOraEor *ecf;
-  extern uint32_t frame_buffer;
-  uint32_t *screen = &frame_buffer;
-  uint32_t *row = screen + (1079 - y) * 1920;
-  uint32_t *l = row + left;
-  uint32_t *r = row + right;
-  switch (action) {
-  case 1: // Foreground
-    {
-    uint32_t *p = l;
-    uint32_t c = screen_colour_from_os_colour( *vduvarloc[153 - 128] );
-    while (p <= r) {
-      *p = c;
-      p++;
+      if (*prefix == '\0' && *matched == '_') {
+        uint32_t swi_number = m->header->swi_chunk;
+
+        char const *table_entry = prefix + 1;
+        while (*table_entry != '\0') {
+Write0( table_entry ); Space;
+          char const *tail = matched + 1;
+          // Case sensitive
+          while (*tail == *table_entry) { tail++; table_entry++; }
+          if (*tail <= ' ' && *table_entry == '\0') {
+            regs->r[0] = swi_number;
+            return true;
+          }
+          while (*table_entry != '\0') { table_entry++; }
+          table_entry++;
+          swi_number++;
+        }
+
+        // Stop checking modules when a prefix is matched, or not?
+        break; // Yes. (May be wrong choice.)
+      }
     }
-    }
-    break;
-  case 2: // Invert
-    {
-    uint32_t *p = l;
-    while (p <= r) {
-      *p = ~*p;
-      p++;
-    }
-    }
-    break;
-  case 3: // Background
-    {
-    uint32_t *p = l;
-    uint32_t c = screen_colour_from_os_colour( *vduvarloc[154 - 128] );
-    while (p <= r) {
-      *p = c;
-      p++;
-    }
-    }
-    break;
-  default: break;
+
+    m = m->next;
   }
 
-  asm ( "pop { r0-r12, pc }" );
-}
-
-
-static const uint32_t sines[] = {
-  0x00000, // sin 0
-  0x00477, // sin 1
-  0x008ef, // sin 2
-  0x00d65, // sin 3
-  0x011db, // sin 4
-  0x0164f, // sin 5
-  0x01ac2, // sin 6
-  0x01f32, // sin 7
-  0x023a0, // sin 8
-  0x0280c, // sin 9
-  0x02c74, // sin 10
-  0x030d8, // sin 11
-  0x03539, // sin 12
-  0x03996, // sin 13
-  0x03dee, // sin 14
-  0x04241, // sin 15
-  0x04690, // sin 16
-  0x04ad8, // sin 17
-  0x04f1b, // sin 18
-  0x05358, // sin 19
-  0x0578e, // sin 20
-  0x05bbe, // sin 21
-  0x05fe6, // sin 22
-  0x06406, // sin 23
-  0x0681f, // sin 24
-  0x06c30, // sin 25
-  0x07039, // sin 26
-  0x07438, // sin 27
-  0x0782f, // sin 28
-  0x07c1c, // sin 29
-  0x07fff, // sin 30
-  0x083d9, // sin 31
-  0x087a8, // sin 32
-  0x08b6d, // sin 33
-  0x08f27, // sin 34
-  0x092d5, // sin 35
-  0x09679, // sin 36
-  0x09a10, // sin 37
-  0x09d9b, // sin 38
-  0x0a11b, // sin 39
-  0x0a48d, // sin 40
-  0x0a7f3, // sin 41
-  0x0ab4c, // sin 42
-  0x0ae97, // sin 43
-  0x0b1d5, // sin 44
-  0x0b504, // sin 45
-  0x0b826, // sin 46
-  0x0bb39, // sin 47
-  0x0be3e, // sin 48
-  0x0c134, // sin 49
-  0x0c41b, // sin 50
-  0x0c6f3, // sin 51
-  0x0c9bb, // sin 52
-  0x0cc73, // sin 53
-  0x0cf1b, // sin 54
-  0x0d1b3, // sin 55
-  0x0d43b, // sin 56
-  0x0d6b3, // sin 57
-  0x0d919, // sin 58
-  0x0db6f, // sin 59
-  0x0ddb3, // sin 60
-  0x0dfe7, // sin 61
-  0x0e208, // sin 62
-  0x0e419, // sin 63
-  0x0e617, // sin 64
-  0x0e803, // sin 65
-  0x0e9de, // sin 66
-  0x0eba6, // sin 67
-  0x0ed5b, // sin 68
-  0x0eeff, // sin 69
-  0x0f08f, // sin 70
-  0x0f20d, // sin 71
-  0x0f378, // sin 72
-  0x0f4d0, // sin 73
-  0x0f615, // sin 74
-  0x0f746, // sin 75
-  0x0f865, // sin 76
-  0x0f970, // sin 77
-  0x0fa67, // sin 78
-  0x0fb4b, // sin 79
-  0x0fc1c, // sin 80
-  0x0fcd9, // sin 81
-  0x0fd82, // sin 82
-  0x0fe17, // sin 83
-  0x0fe98, // sin 84
-  0x0ff06, // sin 85
-  0x0ff60, // sin 86
-  0x0ffa6, // sin 87
-  0x0ffd8, // sin 88
-  0x0fff6, // sin 89
-  0x10000  // sin 90
-  };        // sin 90, cos 0
-
-static inline uint32_t draw_sin( int deg )
-{
-  while (deg < 0) { deg += 360; }
-  while (deg > 360) { deg -= 360; }
-  if (deg > 180) return -draw_sin( deg - 180 );
-  if (deg > 90) return draw_sin( 180 - deg );
-  return sines[deg];
-}
-
-static inline uint32_t draw_cos( int deg )
-{
-  return draw_sin( deg + 90 );
-}
-
-static inline void fill_rect( uint32_t left, uint32_t top, uint32_t w, uint32_t h, uint32_t c )
-{
-  extern uint32_t frame_buffer;
-  uint32_t *screen = &frame_buffer;
-
-  for (uint32_t y = top; y < top + h; y++) {
-    uint32_t *p = &screen[y * 1920 + left];
-    for (int x = 0; x < w; x++) { *p++ = c; }
-  }
+  return Kernel_Error_SWINameNotKnown( regs );
 }
 
 static inline const char *discard_leading_characters( const char *command )
@@ -2685,14 +2248,15 @@ static error_block *run_module_command( const char *command )
         }
 #endif
       }
-#ifdef DEBUG__SHOW_ALL_COMMANDS
-      else {
-        Write0( sep ); sep = ", "; Write0( cmd );
-      }
-#endif
 
       cmd = &cmd[(len+20)&~3]; // +4 for terminator and alignment, +16 for words
     }
+#ifdef DEBUG__SHOW_ALL_COMMANDS
+  if (header->offset_to_help_and_command_keyword_table != 0) {
+    NewLine; WriteS( "From " ); Write0( title_string( m->header ) ); NewLine;
+    sep = "\n\r";
+  }
+#endif
     m = m->next;
   }
 #ifdef DEBUG__SHOW_COMMANDS
@@ -2704,21 +2268,22 @@ static error_block *run_module_command( const char *command )
   return &not_found;
 }
 
+static bool file_command( char const *command )
+{
+  char const *p = command;
+  while (*p > ' ') {
+    if (*p == ':' || *p == '.') return true;
+    p++;
+  }
+  return false;
+}
+
 static error_block *__attribute__(( noinline )) do_CLI( const char *command )
 {
   error_block *error = 0;
 #ifdef DEBUG__SHOW_COMMANDS
   Write0( "CLI: " ); Write0( command ); Write0( " at " ); WriteNum( (uint32_t) command ); NewLine;
 #endif
-{
-register const char *string asm ( "r0" ) = "CLI: ";
-asm ( "svc 2" : "=r" (string) : "r" (string) : "lr" );
-}
-{
-register const char *string asm ( "r0" ) = command;
-asm ( "svc 2" : "=r" (string) : "r" (string) : "lr" );
-asm ( "svc 3" : : : "lr" );
-}
 
   // Max length is 1024 bytes in RO 5.28
   // PRM 1-958
@@ -2741,11 +2306,13 @@ asm ( "svc 3" : : : "lr" );
     }
   }
 
+  bool is_file = file_command( command );
+
   if (command[0] == '%') {
     // Skip alias checking
     command++;
   }
-  else {
+  else if (!is_file) {
     char variable[256];
     static const char alias[] = "Alias$";
     strcpy( variable, alias );
@@ -2776,9 +2343,9 @@ asm ( "svc 3" : : : "lr" );
     }
   }
 
-  error = run_module_command( command );
+  if (!is_file) error = run_module_command( command );
 
-  if (error != 0 && error->code == 214) {
+  if (is_file || (error != 0 && error->code == 214)) {
 Write0( "Looking for file " ); Write0( command ); NewLine;
 
     // Not found in any module
@@ -2853,8 +2420,18 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
         Write0( "Command returned" ); NewLine;
       }
     }
+    else if (error == 0 && type == 2 && *command == '!') {
+      // Application directory
+      WriteS( "Run any !Run file in the directory - TODO" ); NewLine; // TODO
+    }
     else {
-      Write0( "No file" );
+      WriteS( "No file " ); Write0( command ); NewLine;
+    asm volatile ( "mov r0, #3 // Sleep"
+               "\n  mov r1, #0 // For no time - yield"
+               "\n  svc %[swi]"
+        :
+        : [swi] "i" (OS_ThreadOp)
+        : "r0", "r1", "lr" );
 #ifdef DEBUG__SHOW_COMMANDS
     // WindowManager runs FontInstall but is initialised before FontManager
     // and ROMFonts. Let this one go... (and re-order the modules)
@@ -2922,6 +2499,11 @@ static void __attribute__(( naked )) finish_vector()
   asm volatile ( "pop {pc}" );
 }
 
+static void __attribute__(( naked )) break_vector()
+{
+  asm volatile ( "bkpt 1" );
+}
+
 // SwiSpriteOp does BranchNotJustUs, which accesses internal kernel structures. Avoid this, by going directly
 // to SpriteVecHandler. FIXME: This might no longer be necessary; I've bypassed this in another way, somewhere...
 extern void SpriteVecHandler();
@@ -2929,18 +2511,21 @@ extern void SpriteVecHandler();
 extern void MOSPaletteV();
 extern void MOSGraphicsV();
 
-vector do_nothing = { .next = 0, .code = (uint32_t) finish_vector, .private_word = 0 };
+vector should_not_reach = { .next = 0, .code = (uint32_t) break_vector, .private_word = 0 };
+vector do_nothing = { .next = &should_not_reach, .code = (uint32_t) finish_vector, .private_word = 0 };
+
 vector default_SpriteV = { .next = &do_nothing, .code = (uint32_t) SpriteVecHandler, .private_word = 0 };
-vector default_ByteV = { .next = 0, .code = (uint32_t) default_os_byte, .private_word = 0 };
-vector default_ArgsV = { .next = 0, .code = (uint32_t) default_os_args, .private_word = 0 };
-vector default_FSControlV = { .next = 0, .code = (uint32_t) default_os_fscontrol, .private_word = 0 };
-vector default_UpCallV = { .next = 0, .code = (uint32_t) default_os_upcall, .private_word = 0 };
-vector default_ChEnvV = { .next = 0, .code = (uint32_t) default_os_changeenvironment, .private_word = 0 };
-vector default_CliV = { .next = 0, .code = (uint32_t) default_os_cli, .private_word = 0 };
+vector default_ByteV = { .next = &should_not_reach, .code = (uint32_t) default_os_byte, .private_word = 0 };
+vector default_WordV = { .next = &should_not_reach, .code = (uint32_t) default_os_word, .private_word = 0 };
+vector default_ArgsV = { .next = &should_not_reach, .code = (uint32_t) default_os_args, .private_word = 0 };
+vector default_FSControlV = { .next = &should_not_reach, .code = (uint32_t) default_os_fscontrol, .private_word = 0 };
+vector default_UpCallV = { .next = &should_not_reach, .code = (uint32_t) default_os_upcall, .private_word = 0 };
+vector default_ChEnvV = { .next = &should_not_reach, .code = (uint32_t) default_os_changeenvironment, .private_word = 0 };
+vector default_CliV = { .next = &should_not_reach, .code = (uint32_t) default_os_cli, .private_word = 0 };
 vector default_PaletteV = { .next = &do_nothing, .code = (uint32_t) MOSPaletteV, .private_word = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws };
 vector default_GraphicsV = { .next = &do_nothing, .code = (uint32_t) MOSGraphicsV, .private_word = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws };
-vector default_IrqV = { .next = 0, .code = (uint32_t) default_irq, .private_word = 0 };
-vector default_TickerV = { .next = 0, .code = (uint32_t) default_ticker, .private_word = 0 };
+vector default_IrqV = { .next = &should_not_reach, .code = (uint32_t) default_irq, .private_word = 0 };
+vector default_TickerV = { .next = &should_not_reach, .code = (uint32_t) default_ticker, .private_word = 0 };
 
 static vector *default_vector( int number )
 {
@@ -2961,103 +2546,73 @@ static vector *default_vector( int number )
   }
 }
 
-bool do_OS_SWINumberFromString( svc_registers *regs )
+static uint32_t screen_colour_from_os_colour( uint32_t os )
 {
-  // String is terminated by any character <= ' '
-  char const * const string = (void*) regs->r[1];
+  union {
+    struct { // BGR0
+      uint32_t Z:8;
+      uint32_t R:8;
+      uint32_t G:8;
+      uint32_t B:8;
+    };
+    uint32_t raw;
+  } os_colour = { .raw = os };
 
-  // FIXME: X prefix. Does it exclude SWI names starting with an X?
+  return (255 << 24) | (os_colour.R << 16) | (os_colour.G << 8) | os_colour.B;
+}
 
-  module *m = workspace.kernel.module_list_head;
+void __attribute__(( naked )) fast_horizontal_line_draw( uint32_t left, uint32_t y, uint32_t right, uint32_t action )
+{
+  // FIXME needs to work in sprites as well, I think
 
-  // TODO SWI Decoder code
-  while (m != 0) {
-    if (0 != m->header->offset_to_swi_decoding_table) {
-      char const *prefix = pointer_at_offset_from( m->header, m->header->offset_to_swi_decoding_table );
-      char const *matched = string;
+  // FIXME These things need to be moved into some graphics context. The Kernel/s/vdu stuff accesses this directly, but the DrawMod uses the ReadVduVariables interface.
+  extern uint32_t *vduvarloc[];
 
-WriteNum( m->header ); Space; Write0( prefix ); NewLine;
-      while (*prefix == *matched) { prefix++; matched++; }
+  asm ( "push { r0-r12, lr }" );
 
-      if (*prefix == '\0' && *matched == '_') {
-        uint32_t swi_number = m->header->swi_chunk;
-
-        char const *table_entry = prefix + 1;
-        while (*table_entry != '\0') {
-Write0( table_entry ); Space;
-          char const *tail = matched + 1;
-          // Case sensitive
-          while (*tail == *table_entry) { tail++; table_entry++; }
-          if (*tail <= ' ' && *table_entry == '\0') {
-            regs->r[0] = swi_number;
-            return true;
-          }
-          while (*table_entry != '\0') { table_entry++; }
-          table_entry++;
-          swi_number++;
-        }
-
-        // Stop checking modules when a prefix is matched, or not?
-        break; // Yes. (May be wrong choice.)
-      }
+#ifdef DEBUG__SHOW_HLINES
+  Write0( "HLine " ); NewLine;
+#endif
+  // EcfOraEor *ecf;
+  extern uint32_t frame_buffer;
+  uint32_t *screen = &frame_buffer;
+  uint32_t *row = screen + (1079 - y) * 1920;
+  uint32_t *l = row + left;
+  uint32_t *r = row + right;
+  switch (action) {
+  case 1: // Foreground
+    {
+    uint32_t *p = l;
+    uint32_t c = screen_colour_from_os_colour( *vduvarloc[153 - 128] );
+    while (p <= r) {
+      *p = c;
+      p++;
     }
-
-    m = m->next;
+    }
+    break;
+  case 2: // Invert
+    {
+    uint32_t *p = l;
+    while (p <= r) {
+      *p = ~*p;
+      p++;
+    }
+    }
+    break;
+  case 3: // Background
+    {
+    uint32_t *p = l;
+    uint32_t c = screen_colour_from_os_colour( *vduvarloc[154 - 128] );
+    while (p <= r) {
+      *p = c;
+      p++;
+    }
+    }
+    break;
+  default: break;
   }
 
-  return Kernel_Error_SWINameNotKnown( regs );
-}
-
-static uint64_t timer_now()
-{
-  uint32_t hi, lo;
-
-  asm volatile ( "mrrc p15, 0, %[lo], %[hi], c14" : [hi] "=r" (hi), [lo] "=r" (lo) : : "memory"  );
-
-  uint64_t now;
-  now = hi;
-  now = now << 32;
-  now = now | lo;
-
-  return now;
-}
-
-static uint32_t timer_interrupt_time()
-{
-  uint32_t hi, lo;
-
-  asm volatile ( "mrrc p15, 2, %[lo], %[hi], c14" : [hi] "=r" (hi), [lo] "=r" (lo)  );
-
-  uint64_t now;
-  now = hi;
-  now = now << 32;
-  now = now | lo;
-
-  return now;
-}
-
-static void timer_interrupt_at( uint64_t then )
-{
-  asm volatile ( "mcrr p15, 2, %[lo], %[hi], c14" : : [hi] "r" (then >> 32), [lo] "r" (0xffffffff & then) : "memory" );
-}
-
-// TODO Remove, and rely on MMU to allocate on demand
-static void allocate_legacy_scratch_space()
-{
-  // DrawMod uses ScratchSpace at 0x4000
-  uint32_t for_drawmod = Kernel_allocate_pages( 4096, 4096 );
-  MMU_map_at( (void*) 0x4000, for_drawmod, 4096 );
-
-  uint32_t for_eval = Kernel_allocate_pages( 4096, 4096 );
-  MMU_map_at( (void*) 0x6000, for_eval, 4096 );
-
-  uint32_t for_eval2 = Kernel_allocate_pages( 4096, 4096 );
-  MMU_map_at( (void*) 0x5000, for_eval2, 4096 );
-
-  // IDK what uses memory here, but it played havoc with my translation tables!
-  // Might be Squash. It was the SharedCLibrary! New MMU fixed that.
-  //uint32_t for_something_else = Kernel_allocate_pages( 4096, 4096 );
-  //MMU_map_at( (void*) 0xfff00000, for_something_else, 4096 );
+  asm ( "pop { r0-r12, pc }" );
 }
 
 static void set_up_legacy_zero_page()
@@ -3289,6 +2844,16 @@ static void set_up_legacy_zero_page()
   }
 
   workspace.vectors.zp.OsbyteVars.VDUqueueItems = 0; // Isn't this already zeroed?
+
+  // Should be settable by VDU 23, 17, 7... FIXME
+  workspace.vectors.zp.vdu_drivers.ws.GCharSizeX = 8;
+  workspace.vectors.zp.vdu_drivers.ws.GCharSizeY = 8;
+  workspace.vectors.zp.vdu_drivers.ws.GCharSpaceX = 8;
+  workspace.vectors.zp.vdu_drivers.ws.GCharSpaceY = 8;
+  workspace.vectors.zp.vdu_drivers.ws.TCharSizeX = 8;
+  workspace.vectors.zp.vdu_drivers.ws.TCharSizeX = 8;
+  workspace.vectors.zp.vdu_drivers.ws.TCharSpaceX = 8;
+  workspace.vectors.zp.vdu_drivers.ws.TCharSpaceY = 8;
 }
 
 static void setup_OS_vectors()
@@ -3314,30 +2879,13 @@ static void __attribute__(( naked, noreturn )) idle_thread()
     // TODO: Pootle around, tidying up memory, etc.
     // Don't do any I/O!
     // Don't forget to give it some stack!
-    asm volatile ( "wfi" );
+    // asm volatile ( "wfi" );
   }
 
   __builtin_unreachable();
 }
 
-void __attribute__(( naked )) returned_to_root()
-{
-  asm ( "bkpt 0x7777" );
-}
-
-static int32_t timer_get_countdown()
-{
-  int32_t timer;
-  asm volatile ( "mrc p15, 0, %[t], c14, c2, 0" : [t] "=r" (timer) );
-  return timer;
-}
-
-static uint32_t timer_status()
-{
-  uint32_t bits;
-  asm volatile ( "mrc p15, 0, %[config], c14, c2, 1" : [config] "=r" (bits) );
-  return bits;
-}
+extern void __attribute__(( noreturn )) UsrBoot();
 
 void Boot()
 {
@@ -3347,9 +2895,15 @@ void Boot()
 
   TaskSlot *slot = TaskSlot_new( "Root", 0 );
 
+  physical_memory_block block = { .physical_base = Kernel_allocate_pages( 65536, 4096 ), .virtual_base = 0x8000, .size = 65536 };
+  TaskSlot_add( slot, block );
+
   // TODO I'm still not sure whether to have a TaskSlot for module tasks, or set it to zero.
 
-  allocate_legacy_scratch_space();
+  // allocate_legacy_scratch_space();
+  // Pages used by legacy kernel code. Now allocated on demand by memory manager
+  //   DrawMod  0x4000
+  //   Eval     0x5000, 0x6000
 
   set_up_legacy_zero_page();
 
@@ -3394,90 +2948,20 @@ void Boot()
   uint32_t *stack = rma_allocate( root_stack_size * sizeof( uint32_t ) );
   extern uint32_t svc_stack_top;
 
-  asm ( "mov sp, %[svc_stack_top]"
+  register uint32_t core_number asm ( "r0" ) = workspace.core_number;
+  register uint32_t *stack_top asm ( "r1" ) = &svc_stack_top;
+  register uint32_t *usr_stack_top asm ( "r2" ) = &stack[root_stack_size];
+
+  asm ( "mov sp, r1"
     "\n  cpsie aif, #0x10"
-    "\n  mov sp, %[usr_sp]"
+    "\n  mov sp, r2"
     "\n  b UsrBoot"
     :
-    : [svc_stack_top] "r" (&svc_stack_top)
-    , [usr_sp] "r" (&stack[root_stack_size])
+    : "r" (core_number)
+    , "r" (stack_top)
+    , "r" (usr_stack_top)
     : "sp", "lr" );
-}
-
-void __attribute__(( noreturn )) UsrBoot()
-{
-#ifdef BASIC_ONLY
-  init_module( "FileSwitch" ); // needed by...
-  init_module( "ResourceFS" ); // needed by...
-  init_module( "BASIC" );
-#else
-#ifdef LIMITED_MODULES
-  init_module( "UtilityModule" );
-  init_module( "ColourTrans" );
-
-  init_module( "Draw" ); // needed by...
-  init_module( "SpriteExtend" ); // and...
-
-  // Order is important: FontManager and ResourceFS before ROMFonts
-  init_module( "FontManager" ); // needed by ROMFonts
-  init_module( "FileSwitch" ); // needed by...
-  init_module( "ResourceFS" ); // needed by...
-  init_module( "ROMFonts" );
-
-  init_module( "SuperSample" ); // needed for anti-aliasing fonts
-
-  init_module( "TerritoryManager" );
-  init_module( "Messages" );
-  init_module( "MessageTrans" );
-  init_module( "UK" );
-
-  init_module( "BASIC" );
-  init_module( "Obey" );
-#else
-  init_modules();
-#endif
-#endif
-
-  {
-    svc_registers regs = {};
-    regs.r[1] = 0x73; // Service_PostInit
-    do_OS_ServiceCall( &regs );
-  }
-
-  {
-    svc_registers regs = {};
-    regs.r[1] = 0x46; // Service_ModeChange
-    regs.r[2] = (uint32_t) &only_one_mode;
-    regs.r[3] = 0;
-    do_OS_ServiceCall( &regs );
-  }
-
-  if (0 == workspace.core_number) {
-    // File declaring resources, ROM-based boot files.
-    // This should probably be done in the HAL
-#include "Resources.h"
-
-    register void const *file asm( "r0" ) = resources;
-    asm volatile ( "svc 0x41b40" : : "r" (file) ); // ResourceFS_RegisterFiles
-
-    {
-    register uint32_t reason asm ( "r0" ) = 5;
-    register void *dir asm ( "r1" ) = "Resources:$";
-    asm volatile ( "svc 0x20029" : : "r" (reason), "r" (dir) ); // OS_FSControl 5 Catalogue a directory
-    }
-
-    OSCLI( "Resources:$.!Boot" );
-  }
-  else {
-    for (;;) {
-      asm volatile ( "mov r0, #3 // Sleep"
-                 "\n  mov r1, #0 // For no time - yield"
-                 "\n  svc %[swi]"
-            :
-            : [swi] "i" (OS_ThreadOp)
-            : "r0", "r1", "lr" );
-    }
-  }
 
   __builtin_unreachable();
 }
+

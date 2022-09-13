@@ -24,7 +24,7 @@ then
   echo RISC_OSLib
   exit
 else
-  grep install_rom.*COMPONENT=$1 $LATEST | sed -n 's/^.*TARGET=\([^ ]*\>\).*$/\1/p'
+  grep install_rom.*COMPONENT=$1 $LATEST | sed -n 's/^.*TARGET=\([^ ]*\>\).*$/\1/p' || ( echo Component not found ; exit ; )
 fi
 }
 
@@ -59,4 +59,5 @@ fi
 MOD=$( rocode $VA )
 echo $MOD
 target $MOD
+vi_cmd $MOD $1
 $( vi_cmd $MOD $1 )

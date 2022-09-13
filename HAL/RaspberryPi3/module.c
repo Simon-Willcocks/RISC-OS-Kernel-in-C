@@ -520,6 +520,8 @@ static void add_to_display( char c, struct core_workspace *workspace )
     if (0 != workspace->shared->frame_buffer) {
       if (c < ' ')
         show_character_at( workspace->x, workspace->y, c + '@', core( workspace ), Red, workspace->shared );
+      else if (c > 128)
+        show_character_at( workspace->x, workspace->y, c - 128, core( workspace ), Green, workspace->shared );
       else
         show_character_at( workspace->x, workspace->y, c, core( workspace ), White, workspace->shared );
     }
@@ -539,6 +541,15 @@ static inline void add_num( uint32_t number, struct core_workspace *workspace )
     char c = '0' + ((number >> (nibble*4)) & 0xf);
     if (c > '9') c += ('a' - '0' - 10);
     add_to_display( c, workspace );
+  }
+}
+
+static inline void add_green_num( uint32_t number, struct core_workspace *workspace )
+{
+  for (int nibble = 7; nibble >= 0; nibble--) {
+    char c = '0' + ((number >> (nibble*4)) & 0xf);
+    if (c > '9') c += ('a' - '0' - 10);
+    add_to_display( c + 128, workspace );
   }
 }
 
@@ -589,10 +600,10 @@ void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace 
     }
   }
   else {
-    add_to_display( c, workspace );
+    add_to_display( 128 + c, workspace );
 
     // This part is temporary, until the display update can be triggered by an interrupt FIXME
-    update_display( workspace );
+    //update_display( workspace );
     // End of temporary implementation
   }
 
@@ -634,6 +645,22 @@ static void __attribute__(( naked )) IrqV_handler();
 
 typedef enum { HANDLER_PASS_ON, HANDLER_INTERCEPTED, HANDLER_FAILED } handled;
 
+static void GraphicsV_ReadItems( uint32_t item, uint32_t *buffer, uint32_t len )
+{
+  switch (item) {
+  case 4:
+    {
+      for (int i = 0; i < len; i++) {
+        WriteS( "GraphicsV control list item: " ); WriteNum( buffer[i] );
+      }
+    asm ( "bkpt 1" );
+    }
+    break;
+  default:
+    asm ( "bkpt 1" );
+  };
+}
+
 handled __attribute__(( noinline )) C_GraphicsV_handler( uint32_t *regs, struct workspace *workspace )
 {
   union {
@@ -653,14 +680,29 @@ handled __attribute__(( noinline )) C_GraphicsV_handler( uint32_t *regs, struct 
   Write0( "GraphicsV for HAL " ); WriteNum( command.raw ); NewLine;
 
   switch (command.code) {
-  case 0: break; // Null reason code for when vector has been claimed
-  case 1: Write0( "VSync interrupt occurred " ); break; // VSync interrupt occurred 	BG 	SVC/IRQ
-  case 2: Write0( "Set mode " ); break; // Set mode 	FG2 	SVC
-  case 3: Write0( "Obsolete3 (was Set interlace) " ); break; // Obsolete3 (was Set interlace) 	FG 	SVC
-  case 4: Write0( "Set blank " ); break; // Set blank 	FG/BG 	SVC
-  case 5: Write0( "Update pointer " ); break; // Update pointer 	FG/BG 	SVC/IRQ
-  case 6: Write0( "Set DAG " ); break; // Set DAG 	FG/BG 	SVC/IRQ
-  case 7: Write0( "Vet mode " ); break; // Vet mode 	FG 	SVC
+  case 0:
+    break; // Null reason code for when vector has been claimed
+  case 1:
+    WriteS( "VSync interrupt occurred " ); 
+    break; // VSync interrupt occurred 	BG 	SVC/IRQ
+  case 2:
+    WriteS( "Set mode " ); 
+    break; // Set mode 	FG2 	SVC
+  case 3:
+    WriteS( "Obsolete3 (was Set interlace) " ); 
+    break; // Obsolete3 (was Set interlace) 	FG 	SVC
+  case 4:
+    WriteS( "Set blank " ); 
+    break; // Set blank 	FG/BG 	SVC
+  case 5:
+    WriteS( "Update pointer " ); 
+    break; // Update pointer 	FG/BG 	SVC/IRQ
+  case 6:
+    WriteS( "Set DAG " ); 
+    break; // Set DAG 	FG/BG 	SVC/IRQ
+  case 7:
+    WriteS( "Vet mode " ); 
+    break; // Vet mode 	FG 	SVC
   case 8:  // Features 	FG 	SVC
     {
       regs[0] = 0x18; // No VSyncs, separate frame store, not variable frame store
@@ -669,26 +711,47 @@ handled __attribute__(( noinline )) C_GraphicsV_handler( uint32_t *regs, struct 
       regs[4] = 0;
     }
     break;
-  case 9: Write0( "Framestore information " ); // Framestore information 	FG 	SVC
+  case 9:
+    WriteS( "Framestore information " ); // Framestore information 	FG 	SVC
     {
       regs[0] = workspace->fb_physical_address;
       regs[1] = 8 << 20; // FIXME
     }
     break;
-  case 10: Write0( "Write palette entry " ); break; // Write palette entry 	FG/BG 	SVC/IRQ
-  case 11: Write0( "Write palette entries " ); break; // Write palette entries 	FG/BG 	SVC/IRQ
-  case 12: Write0( "Read palette entry " ); break; // Read palette entry 	FG 	SVC
-  case 13: Write0( "Render " ); break; // Render 	FG 	SVC
-  case 14: Write0( "IIC op " ); break; // IIC op 	FG 	SVC
-  case 15: Write0( "Select head " ); break; // Select head 	FG 	SVC
-  case 16: Write0( "Select startup mode " ); break; // Select startup mode 	FG 	SVC
-  case 17: Write0( "List pixel formats " ); break; // List pixel formats 	FG 	SVC
-  case 18: Write0( "Read info " ); break; // Read info 	FG 	SVC
-  case 19: Write0( "Vet mode 2 " ); break; // Vet mode 2 	FG 	SVC
+  case 10:
+    WriteS( "Write palette entry " ); 
+    break; // Write palette entry 	FG/BG 	SVC/IRQ
+  case 11:
+    WriteS( "Write palette entries " ); 
+    break; // Write palette entries 	FG/BG 	SVC/IRQ
+  case 12:
+    WriteS( "Read palette entry " ); 
+    break; // Read palette entry 	FG 	SVC
+  case 13:
+    WriteS( "Render " ); 
+    break; // Render 	FG 	SVC
+  case 14:
+    WriteS( "IIC op " ); 
+    break; // IIC op 	FG 	SVC
+  case 15:
+    WriteS( "Select head " ); 
+    break; // Select head 	FG 	SVC
+  case 16:
+    WriteS( "Select startup mode " ); 
+    break; // Select startup mode 	FG 	SVC
+  case 17:
+    WriteS( "List pixel formats " );
+    break; // List pixel formats 	FG 	SVC
+  case 18:
+    GraphicsV_ReadItems( regs[0], (void*) regs[1], regs[2] );
+    break; // Read info 	FG 	SVC
+  case 19:
+    WriteS( "Vet mode 2 " ); 
+    break; // Vet mode 2 	FG 	SVC
   }
 
-  command.code = 0;
-  regs[4] = command.raw; // Indicate to caller that call was intercepted
+  regs[4] = 0; // Indicate to caller that call was intercepted
+
   return HANDLER_INTERCEPTED;
 }
 
@@ -696,7 +759,7 @@ static void __attribute__(( naked )) GraphicsV_handler( char c )
 {
   uint32_t *regs;
   asm ( "push { r0-r9, r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
-  asm ( "push {lr}" );
+  asm ( "push {lr}" ); // Normal return address, to continue down the list
 
   register struct workspace *workspace asm( "r12" );
   handled result = C_GraphicsV_handler( regs, workspace );
@@ -924,11 +987,11 @@ void __attribute__(( noinline )) c_start_display( struct workspace *workspace )
     asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
   }
 
-  WriteS( "HAL obtained GraphicsV\\n\\r" );
+  WriteS( "HAL obtained GraphicsV" ); NewLine;
   GraphicsV_DeviceReady( workspace->graphics_driver_id );
-  WriteS( "Graphics Driver Ready\\n\\r" );
+  WriteS( "Graphics Driver Ready" ); NewLine;
 
-  WriteS( "HAL initialised frame buffer\\n\\r" );
+  WriteS( "HAL initialised frame buffer" ); NewLine;
 }
 
 static void __attribute__(( naked )) start_display()
@@ -939,7 +1002,7 @@ static void __attribute__(( naked )) start_display()
     "\n  pop { "C_CLOBBERED", pc }" );
 }
 
-static uint64_t timer_now()
+static inline uint64_t timer_now()
 {
   uint32_t hi, lo;
 
@@ -953,7 +1016,7 @@ static uint64_t timer_now()
   return now;
 }
 
-static uint32_t timer_interrupt_time()
+static inline uint32_t timer_interrupt_time()
 {
   uint32_t hi, lo;
 
@@ -967,7 +1030,7 @@ static uint32_t timer_interrupt_time()
   return now;
 }
 
-static void timer_interrupt_at( uint64_t then )
+static inline void timer_interrupt_at( uint64_t then )
 {
   asm volatile ( "mcrr p15, 2, %[lo], %[hi], c14" : : [hi] "r" (then >> 32), [lo] "r" (0xffffffff & then) : "memory" );
 }
@@ -993,7 +1056,7 @@ static uint32_t timer_status()
   return bits;
 }
 
-static bool timer_interrupt_active()
+static inline bool timer_interrupt_active()
 {
   return (timer_status() & 4) != 0;
 }
@@ -1212,7 +1275,7 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
 
   memory_write_barrier(); // About to write to something else
 
-  timer_set_countdown( ticks_per_interval );
+  // timer_set_countdown( ticks_per_interval );
 
   const uint32_t tick_divider = 10;
   uint32_t ticks = 0;
@@ -1291,6 +1354,10 @@ static void console_task( uint32_t handle, struct core_workspace *ws, uint32_t r
     while (data.available > 0) {
       char *s = data.location;
 
+      add_green_num( data.available, ws );
+      add_to_display( ' ', ws );
+      add_green_num( (uint32_t) data.location, ws );
+
       for (int i = 0; i < data.available; i++)
         add_to_display( s[i], ws );
       data = PipeOp_DataConsumed( read_pipe, data.available );
@@ -1325,7 +1392,6 @@ static uint32_t start_console_task( struct core_workspace *ws, uint32_t pipe )
 }
 
 static const int board_interrupt_sources = 64 + 12; // 64 GPU, 12 ARM peripherals (BCM2835-ARM-Peripherals.pdf, QA7)
-
 
 // args: debug_pipe to open for reading
 
@@ -1410,7 +1476,6 @@ void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_
     }
 
     uint32_t handle = start_console_task( &workspace->core_specific[this_core], pipe );
-    // Write0( "Timer task: " ); WriteNum( handle ); NewLine;
     yield();
   }
 
@@ -1435,7 +1500,7 @@ void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_
     workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
 
 #ifdef QEMU
-    const int slower = 10;
+    const int slower = 100;
     // Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
     workspace->ticks_per_interval = workspace->ticks_per_interval * slower;
 #endif
@@ -1451,7 +1516,7 @@ void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_
     workspace->qa7->Core_IRQ_Source[this_core] = 0xd;
   }
 
-  {
+  if (0) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     // Write0( "Timer task: " ); WriteNum( handle ); NewLine;
     yield();
@@ -1479,6 +1544,24 @@ void __attribute__(( naked )) init( uint32_t this_core, uint32_t number_of_cores
   asm ( "pop { pc }" );
 }
 
+#include "Resources.h"
+
+void register_files( uint32_t *regs )
+{
+  register void const *files asm ( "r0" ) = resources;
+  register uint32_t service asm ( "r1" ) = regs[1];
+  register uint32_t code asm ( "r2" ) = regs[2];
+  register uint32_t workspace asm ( "r3" ) = regs[3];
+  asm ( "mov lr, pc"
+    "\n  mov pc, r2"
+    :
+    : "r" (files)
+    , "r" (service)
+    , "r" (code)
+    , "r" (workspace)
+    : "lr" );
+}
+
 void __attribute__(( naked )) service_call()
 {
   // This is extremely minimal!
@@ -1487,6 +1570,13 @@ void __attribute__(( naked )) service_call()
     "\n  moveq r1, #0"
     "\n  moveq r2, #0"
     "\n  moveq pc, lr" );
+  asm ( "teq r1, #0x60" // Service_ResourceFSStarting
+    "\n  bne 0f"
+    "\n  push { "C_CLOBBERED", lr }"
+    "\n  mov r0, sp"
+    "\n  bl register_files"
+    "\n  pop { "C_CLOBBERED", pc }"
+    "\n  0:" );
   asm ( "teq r1, #0x50"
     "\n  ldreq r12, [r12]"
     "\n  moveq r1, #0"

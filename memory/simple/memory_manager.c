@@ -25,6 +25,7 @@
 // has merit.
 
 #include "inkernel.h"
+#include "trivial_display.h"
 
 // Very, very simple implementation: one block of contiguous physical memory for each DA.
 // It will break very quickly, but hopefully demonstrate the principle.
@@ -67,34 +68,15 @@ void Initialise_system_DAs()
 // See comments to GSTrans in swis.c
 
   uint32_t memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
-  if (memory == 0xffffffff) asm ( "bkpt 1" );
-
-#if 0
-// Now do it again for some other kernel workspace... (Specifically GSVarWSpace for GSTrans/GSRead/GSInit, fa645800)
-do {
-  memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
-} while (memory == 0xffffffff);
-
-MMU_map_at( (void*) 0xfa600000, memory, natural_alignment );
-memset( (void*) 0xfa600000, '\0', natural_alignment );
-#endif
-
-// How much workspace does the kernel need? Lots could be far more easily
-// and efficiently be placed on the stack. e.g. SysVarWorkSpace
-
-// Workspace for OS_EvaluateExpression, at least
-memory = Kernel_allocate_pages( 4096, 4096 );
-MMU_map_at( (void*) 0x7000, memory, 4096 );
-memset( (void*) 0x7000, '\0', 4096 );
+  assert( memory != -1 );
 
   if (shared.memory.dynamic_areas == 0) {
     // First core here (need not be core zero)
     uint32_t RMA = -1;
 
     // But there may not be any memory to allocate, yet...
-    while (-1 == RMA) {
-      RMA = Kernel_allocate_pages( initial_rma_size, natural_alignment );
-    }
+    RMA = Kernel_allocate_pages( initial_rma_size, natural_alignment );
+    assert( RMA != -1 );
 
     MMU_map_shared_at( &rma_heap, RMA, initial_rma_size );
     asm ( "dsb sy" );
@@ -898,7 +880,9 @@ uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment )
   }
 
   release_lock( &shared.memory.lock );
-if (result == -1) asm ( "wfi" );
+
+  assert( result != -1 );
+
   return result;
 }
 

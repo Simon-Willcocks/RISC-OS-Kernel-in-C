@@ -14,6 +14,7 @@
  */
 
 #include "kernel.h"
+#include "trivial_display.h" // show_word - for debugging, TODO: remove
 
 extern uint32_t undef_stack_top;
 extern uint32_t abt_stack_top;

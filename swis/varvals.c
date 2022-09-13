@@ -32,6 +32,9 @@ bool do_OS_ReadVarVal( svc_registers *regs )
 #endif
   bool result = run_risos_code_implementing_swi( regs, OS_ReadVarVal );
 #ifdef DEBUG__SHOW_SYSTEM_VARIABLE
+  WriteS( "ROM code returned " );
+  if (result) WriteS( "success!" ); else WriteS( "FAILED" );
+  NewLine;
 #if DEBUG__SHOW_SYSTEM_VARIABLE & 4
   if (result) {
     if (regs->r[2] == 0) {
@@ -79,23 +82,28 @@ bool do_OS_SetVarVal( svc_registers *regs )
     case 1:
       WriteS( " to (number) " );
       WriteNum( regs->r[1] );
-      WriteS( ")\\n\\r" );
+      WriteS( ")" ); NewLine;
       break;
     case 16:
       WriteS( "Code variable: " );
       WriteNum( regs->r[1] );
-      WriteS( "\\n\\r" );
+      NewLine;
       break;
     default:
-      WriteS( " to \\\"" ); 
+      WriteS( " to \"" ); 
       Write0( regs->r[1] );
-      WriteS( "\\\"\\n\\r" );
+      WriteS( "\"" ); NewLine;
     }
   }
   NewLine;
 #endif
 #endif
   bool result = run_risos_code_implementing_swi( regs, OS_SetVarVal );
+#ifdef DEBUG__SHOW_SYSTEM_VARIABLE
+  WriteS( "ROM code returned " );
+  if (result) WriteS( "success!" ); else WriteS( "FAILED" );
+  NewLine;
+#endif
   return result;
 }
 
@@ -358,7 +366,7 @@ svc_registers after;
 register svc_registers *lr asm( "lr" ) = &before;
 asm ( "stm lr, { r0-r12 }" : : "r" (lr) );
 */
-WriteS( "Setting " ); Write0( regs->r[0] ); WriteS( " to " ); 
+WriteS( "Setting " ); Write0( regs->r[0] ); WriteS( " to \"" ); 
 
     const char *name = (void*) regs->r[0];
     uint32_t name_length = 0;
@@ -380,7 +388,7 @@ WriteS( "*" ); // Indicate unknown length, undocumented feature
     }
 
 if (type == VarType_Number) { WriteNum( *(uint32_t*) regs->r[1] ); }
-else { WriteS( "\\\"" ); Write0( regs->r[1] ); WriteS( "\\\"" ); WriteNum( length ); }
+else { WriteS( "\"" ); Write0( regs->r[1] ); WriteS( "\"" ); WriteNum( length ); }
 NewLine; 
 
     uint32_t store_length = length;
@@ -438,7 +446,7 @@ WriteS( "Wrote: " ); Write0( varval( v ) ); NewLine; WriteN( varval( v ), v->len
     // Alphabetical order
     int cmp;
     while ((*p) != 0 && (cmp = varnamecmp( varname( *p ), varname( v ) )) < 0) {
-NewLine; Write0( varname( *p ) ); WriteS( " " ); WriteNum( (*p)->length-1 ); WriteS( " " ); WriteN( varval( *p ), (*p)->length - 1 );
+NewLine; Write0( varname( *p ) ); Space; WriteNum( (*p)->length-1 ); Space; WriteN( varval( *p ), (*p)->length - 1 );
       p = &((*p)->next);
     }
     if (0 == cmp) {

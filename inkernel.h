@@ -42,7 +42,9 @@ static inline error_block *OSCLI( const char *command )
 
 // TEMPORARY!
 
-#define assert( x ) while (!(x)) { Write0( "Assertion failed: " ); Write0( __func__ ); Write0( #x ); asm ( "bkpt 5" ); }
+extern void __attribute__(( noreturn )) assertion_failed();
+
+#define assert( x ) if (!(x)) { Write0( "FAILED: " ); Write0( __func__ ); Write0( " "#x ); assertion_failed(); }
 
 extern const char hex[16];
 
@@ -57,7 +59,7 @@ void WriteN( char const *s, int len );
 
 #define Write0( string ) do { char *s = (char*) string; int len = 0; for (len = 0; (s[len] != '\0' && s[len] != '\n' && s[len] != '\r'); len++) {}; WriteN( s, len ); } while (false)
 
-#define NewLine WriteS( "\n" )
+#define NewLine WriteS( "\n\r" )
 #define Space WriteS( " " )
 
 #else
