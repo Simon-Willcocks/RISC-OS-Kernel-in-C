@@ -25,11 +25,10 @@ bool Kernel_Error_UnknownSWI( svc_registers *regs )
 
 bool Kernel_Error_UnimplementedSWI( svc_registers *regs )
 {
-  asm ( "mov r10, lr\n  bkpt 77" );
   static error_block error = { 0x999, "Unimplemented SWI" };
   regs->r[0] = (uint32_t) &error;
 
-  Write0( "Unimplemented SWI" ); NewLine;
+  WriteS( "Unimplemented SWI" ); NewLine;
   return false;
 }
 
@@ -136,6 +135,9 @@ static bool do_OS_Write0( svc_registers *regs )
   const char *s = (void*) regs->r[0];
   bool result = true;
 
+if (s[0] == 'R' && s[1] == 'e' && s[2] == 's' && s[3] == 'e' && s[4] == 't') {
+  WriteS( "Reset being printed " ); WriteNum( regs->lr ); NewLine;
+}
   while (*s != '\0' && result) {
     regs->r[0] = *s++;
     result = do_OS_WriteC( regs );
@@ -205,14 +207,14 @@ static bool do_OS_CallBack( svc_registers *regs ) { Write0( __func__ ); NewLine;
 static bool do_OS_EnterOS( svc_registers *regs )
 {
   //Write0( __func__ ); NewLine;
-  regs->spsr = (regs->spsr & ~15) | 3;
+  regs->spsr = (regs->spsr & ~15) | 0x1f; // System state: using sp_usr and lr_usr
   return true;
 }
 
 static bool do_OS_LeaveOS( svc_registers *regs )
 {
   // Write0( __func__ ); NewLine;
-  regs->spsr = (regs->spsr & ~7);
+  regs->spsr = (regs->spsr & ~0xf);
   return true;
 }
 
@@ -454,8 +456,6 @@ static bool do_OS_ReadEscapeState( svc_registers *regs )
 
 //static bool do_OS_EvaluateExpression( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 //static bool do_OS_ReadPalette( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-
-static bool do_OS_SWINumberToString( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ValidateAddress( svc_registers *regs )
 {
@@ -764,7 +764,8 @@ Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); 
   InterruptHandler *h = &workspace.interrupts.handlers[device];
 
   error_block const *err = 0;
-  claim_lock( &workspace.interrupts.lock );
+  bool reclaimed = claim_lock( &workspace.interrupts.lock );
+  assert( !reclaimed );
   if (h->code != 0) {
     static const error_block error = { 0x999, "Device already claimed" };
     err = &error;
@@ -789,7 +790,8 @@ static bool do_OS_ReleaseDeviceVector( svc_registers *regs ) { Write0( __func__ 
 static bool do_OS_ReadMemMapInfo( svc_registers *regs )
 {
   regs->r[0] = 4096;
-  regs->r[1] = 64 << 20; // FIXME Lying, but why is this being used?
+  regs->r[1] = 64 << 8; // 256MiB FIXME Lying, but why is this being used?
+  // Called from FontManager Init routine, which is only interested in the page size.
   return true;
 }
 
@@ -1066,6 +1068,33 @@ static bool do_OS_SetColour( svc_registers *regs )
 {
 Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->r[1] ); NewLine;
 
+#ifdef DEBUG__EXAMINE_SET_COLOUR
+  VduDriversWorkspace before = workspace.vectors.zp.vdu_drivers.ws;
+  extern uint32_t *vduvarloc[];
+  uint32_t bc = *vduvarloc[154 - 128];
+#endif
+  bool result = run_risos_code_implementing_swi( regs, OS_SetColour );
+
+#ifdef DEBUG__EXAMINE_SET_COLOUR
+  if (bc != *vduvarloc[154 - 128]) {
+    WriteS( "GFCOL changed from " ); WriteNum( bc ); WriteS( " to " ); WriteNum( *vduvarloc[154 - 128] ); NewLine;
+  }
+
+  // Findings:
+  // changes: VduDriverWorkSpace.ws.FgEcf, VduDriverWorkSpace.ws.FgEcfOraEor, VduDriverWorkSpace.ws.FgPattern
+
+  uint32_t *pa = (void*) &workspace.vectors.zp.vdu_drivers.ws;
+  uint32_t *pb = (void*) &before;
+  while (pb - ((uint32_t*) &before) < sizeof( before ) / 4) {
+    if (*pb != *pa) {
+      WriteS( "Changed " ); WriteNum( pa ); WriteS( " from " ); WriteNum( *pb ); WriteS( " to " ); WriteNum( *pa ); NewLine;
+    }
+    pb ++;
+    pa ++;
+  }
+#endif
+
+#if 0
   OS_SetColour_Flags flags = { .raw = regs->r[0] };
 
   if (flags.read_colour) {
@@ -1152,7 +1181,8 @@ Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->r[1] )
     }
   }
 */
-  return true;
+#endif
+  return result;
 }
 
 static bool do_OS_Pointer( svc_registers *regs ) { Write0( __func__ ); NewLine; return true; }
@@ -1887,7 +1917,8 @@ bool do_OS_MapDevicePages( svc_registers *regs )
 
   extern uint32_t devices; // Linker symbol
 
-  claim_lock( &shared.memory.device_page_lock );
+  bool reclaimed = claim_lock( &shared.memory.device_page_lock );
+  assert( !reclaimed );
   uint32_t va = (uint32_t) &devices;
   uint32_t pa = regs->r[0];
 
@@ -1926,9 +1957,10 @@ bool do_OS_MapDevicePages( svc_registers *regs )
 
 static bool do_OS_FlushCache( svc_registers *regs )
 {
-  claim_lock( &shared.mmu.lock );
+  bool reclaimed = claim_lock( &shared.mmu.lock );
   clean_cache_to_PoC(); // FIXME
-  release_lock( &shared.mmu.lock );
+  if (!reclaimed)
+    release_lock( &shared.mmu.lock );
   return true;
 }
 
@@ -1943,10 +1975,10 @@ bool do_OS_Heap( svc_registers *regs )
   // is non-zero. Masking interrupts is no longer a guarantee of atomicity.
   // OS_Heap appears to call itself, even without interrupts...
   bool reclaimed = claim_lock( &shared.memory.os_heap_lock );
-  bool result = run_risos_code_implementing_swi( regs, 0x1d );
-  //Write0( "OS_Heap returns " ); WriteNum( regs->r[3] ); NewLine;
+  assert( !reclaimed );
 
-asm volatile ( "" : : "r" (regs->r[0]), "r" (regs->r[1]), "r" (regs->r[2]) ); // FIXME remove, only for debugging in qemu
+  bool result = run_risos_code_implementing_swi( regs, OS_Heap );
+  //Write0( "OS_Heap returns " ); WriteNum( regs->r[3] ); NewLine;
 
   if (!reclaimed) release_lock( &shared.memory.os_heap_lock );
   return result;
@@ -2053,7 +2085,7 @@ static swifn os_swis[256] = {
   [OS_AddToVector] =  do_OS_AddToVector,
 
   [OS_WriteEnv] =  do_OS_WriteEnv,
-  [OS_ReadArgs] =  do_OS_ReadArgs,
+  // [OS_ReadArgs] =  do_OS_ReadArgs,
   [OS_ReadRAMFsLimits] =  do_OS_ReadRAMFsLimits,
   [OS_ClaimDeviceVector] =  do_OS_ClaimDeviceVector,
 
@@ -2085,7 +2117,9 @@ static swifn os_swis[256] = {
 
 
   [OS_FindMemMapEntries] =  do_OS_FindMemMapEntries,
-  // [OS_SetColour] =  do_OS_SetColour,
+#ifdef DEBUG__EXAMINE_SET_COLOUR
+  [OS_SetColour] =  do_OS_SetColour,
+#endif
   [OS_Pointer] =  do_OS_Pointer,
   [OS_ScreenMode] =  do_OS_ScreenMode,
 
@@ -2160,7 +2194,7 @@ static swifn os_swis[256] = {
   [OS_LockForDMA] = do_OS_LockForDMA,
   [OS_ReleaseDMALock] = do_OS_ReleaseDMALock,
   [OS_MapDevicePages] = do_OS_MapDevicePages,
-  [OS_FlushCache] = do_OS_FlushCache, // This could be called by each core on centisecond interrupts, maybe?
+  [OS_FlushCache] = do_OS_FlushCache,
 
   [OS_ConvertFileSize] =  do_OS_ConvertFileSize
 };
@@ -2198,7 +2232,7 @@ static bool __attribute__(( noinline )) Kernel_go_svc( svc_registers *regs, uint
  */
 static void StartTask( svc_registers *regs )
 {
-  Write0( "Start task: " ); Write0( regs->r[0] ); 
+  WriteS( "Start task: " ); Write0( regs->r[0] ); 
   if (regs->r[1] != 0) {
     WriteS( " " );
     Write0( regs->r[1] );
@@ -2206,9 +2240,45 @@ static void StartTask( svc_registers *regs )
 
   NewLine;
 
+  // I think this will call Wimp_Initialise, which can be intercepted and the result returned from this routine
   OSCLI( (char const *) regs->r[0] );
 
-  asm( "bkpt 170" );
+  { register char *s asm ( "r0" ) = "Returned"; asm ( "svc 2" : : "r" (s) ); }
+}
+
+static void trace_wimp_calls_in( svc_registers *regs, uint32_t number )
+{
+  char buffer[64] = { 0 };
+  register uint32_t swi asm ( "r0" ) = number + 0x400c0;
+  register void *buf asm ( "r1" ) = buffer;
+  register uint32_t size asm ( "r2" ) = sizeof( buffer );
+
+  register error_block *error asm ( "r0" );
+  register uint32_t written asm ( "r2" );
+
+  asm ( "svc %[swi]\n  movvc r0, #0"
+      : "=r" (error), "=r" (written)
+      : [swi] "i" (OS_SWINumberToString), "r" (swi), "r" (buf), "r" (size)
+      : "lr" );
+
+  WriteN( buffer, written ); Space; WriteNum( 0x400c0 + number );
+
+    if (0x32 == number) {
+      Space; WriteNum( regs->r[0] );
+    }
+    else if (0x2f == number) {
+      Space; if (regs->r[0] != 0xffffffff && regs->r[0] > 1) Write0( regs->r[0] ); else WriteNum( regs->r[0] );
+    }
+  NewLine;
+}
+
+static void trace_wimp_calls_out( svc_registers *regs, uint32_t number )
+{
+    WriteS( "Wimp OUT " ); WriteNum( 0x400c0 + number );
+    if (0x32 == number) {
+      Space; WriteNum( regs->r[0] );
+    }
+    NewLine;
 }
 
 static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t number )
@@ -2222,16 +2292,23 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
 
   switch (number & ~Xbit) { // FIXME
   case 0x406c0 ... 0x406ff: return; // Hourglass
-  case 0x400de: WriteS( "Wimp_StartTask - intercepted " ); Write0( regs->r[0] ); NewLine;StartTask( regs ); return;
+  case 0x400c0 ... 0x400ff:
+    trace_wimp_calls_in( regs, number & 0x3f );
+    if ((number & 0x3f) == 0x1e) { StartTask( regs ); regs->r[0] = 0x66666666; return; } // FIXME: should be handle returned from Wimp_Initialise, and return only when Wimp_Poll is called...
+    break;
   case 0x80146: regs->r[0] = 0; return; // PDriver_CurrentJob (called from Desktop?!)
   // case 0x41506: WriteS( "Translating error " ); Write0( regs->r[0] + 4 ); NewLine; break;
-  case 0x487c0: regs->r[0] = "HD Monitor"; return;
+  case 0x487c0: regs->r[0] = (uint32_t) "HD Monitor"; return;
   }
   bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
 
   uint32_t r0 = regs->lr;
+  bool result = Kernel_go_svc( regs, number );
 
-  if (Kernel_go_svc( regs, number )) {
+  // Just in case the SWI enabled interrupts
+  asm volatile ( "cpsid fi" );
+
+  if (result) {
     // Worked
     regs->spsr &= ~VF;
   }
@@ -2252,14 +2329,8 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
       default:
         if (e->code != 0x1e4 && e->code != 0x124 && !read_var_val_for_length) {
           NewLine;
-          Write0( "Returned error: " );
+          Write0( "Error: " );
           WriteNum( number );
-          Write0( " " );
-          WriteNum( r0 );
-          Write0( " " );
-          WriteNum( regs->r[1] );
-          Write0( " " );
-          WriteNum( regs->r[2] );
           Write0( " " );
           WriteNum( *(uint32_t *)(regs->r[0]) );
           Write0( " " );
@@ -2298,6 +2369,12 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
     do_OS_ThreadOp( regs );
     }
   }
+
+  switch (number & ~Xbit) {
+  case 0x400c0 ... 0x400ff:
+    trace_wimp_calls_out( regs, number & 0x3f );
+    break;
+  }
 }
 
 void run_transient_callbacks()
@@ -2316,7 +2393,6 @@ void run_transient_callbacks()
 #ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
   WriteS( "Call transient callback: " ); WriteNum( latest.code ); WriteS( ", " ); WriteNum( latest.private_word ); NewLine;
 #endif
-
     run_handler( latest.code, latest.private_word );
   }
 }
@@ -2351,28 +2427,41 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
 
   uint32_t number = get_swi_number( lr );
 
+uint32_t banked_sp;
+asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (banked_sp) );
+if (0 && (regs->spsr & 0xf) == 0) {
+NewLine;
+WriteS( "Running: " ); WriteNum( workspace.task_slot.running ); NewLine;
+uint32_t banked_lr;
+asm volatile ( "mrs %[lr], lr_usr" : [lr] "=r" (banked_lr) );
+  for (int i = 0; i < 13; i++) {
+    WriteNum( regs->r[i] ); if (i == 7) NewLine; else Space;
+  }
+  WriteNum( banked_sp ); Space;
+  WriteNum( banked_lr ); Space;
+  WriteNum( regs->lr ); Space;
+  WriteNum( regs->spsr ); NewLine;
+}
+if (banked_sp > 0x80000000 && (regs->spsr & 0xf) == 0) {
+  asm ( "bkpt 3001" );
+}
+
   // FIXME What should happen if you call CallASWI using CallASWI?
   if ((number & ~Xbit) == OS_CallASWI) number = regs->r[9];
   else if ((number & ~Xbit) == OS_CallASWIR12) number = regs->r[12];
 
   do_svc( regs, number );
 
-#if 0
-  if ((number & ~Xbit) == 0x400c8 // Wimp_RedrawWindow
-   || (number & ~Xbit) == 0x400ca) { // Wimp_GetRectangle
-    if (regs->r[0] == 0) { Write0( "GetRectangle Done" ); NewLine; }
-    else {
-      uint32_t *block = (void*) regs->r[1];
-      Write0( "GetRectangle not done." ); NewLine;
-      for (int i = 0; i <= 10; i++) {
-        WriteNum( block[i] ); NewLine;
-      }
-    }
-  }
-#endif
   if (0x10 == (regs->spsr & 0x1f)) {
     run_transient_callbacks();
+  }
+  if (0x10 == (regs->spsr & 0x1f)) {
     swi_returning_to_usr_mode( regs );
+  }
+  if (0x10 == (regs->spsr & 0x1f)) {
+    uint32_t banked_sp;
+    asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (banked_sp) );
+    assert( banked_sp < 0x80000000 );
   }
 
   asm ( "pop { r0-r12 }"

@@ -48,25 +48,24 @@ extern void __attribute__(( noreturn )) assertion_failed();
 
 extern const char hex[16];
 
+void SVCWriteNum( uint32_t n );
+void SVCWriteN( char const *s, int len );
+
 #ifndef NO_DEBUG_OUTPUT
 
-#include "include/pipeop.h"
-
-void WriteNum( uint32_t n );
-void WriteN( char const *s, int len );
+#define WriteNum( n ) SVCWriteNum( (uint32_t) (n) )
+#define WriteN( s, n ) SVCWriteN( s, n )
 
 #define WriteS( string ) WriteN( string, sizeof( string ) - 1 )
 
-#define Write0( string ) do { char *s = (char*) string; int len = 0; for (len = 0; (s[len] != '\0' && s[len] != '\n' && s[len] != '\r'); len++) {}; WriteN( s, len ); } while (false)
+#define Write0( string ) do { char *s = (char*) string; if (s == 0) s = "<NULL>"; int len = 0; for (len = 0; (s[len] != '\0' && s[len] != '\n' && s[len] != '\r'); len++) {}; WriteN( s, len ); } while (false)
 
-#define NewLine WriteS( "\n\r" )
+#define NewLine WriteS( "\n" )
 #define Space WriteS( " " )
 
 #else
 #define WriteS( string )
 #define Write0( string )
-#define WriteNum( n )
 #define NewLine 
 #define Space 
-#define WriteN( string, len )
 #endif

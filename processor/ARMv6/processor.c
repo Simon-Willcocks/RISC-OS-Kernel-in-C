@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-#include "kernel.h"
+#include "inkernel.h"
 #include "trivial_display.h" // show_word - for debugging, TODO: remove
 
 extern uint32_t undef_stack_top;
@@ -152,11 +152,14 @@ static unsigned cache_type( uint32_t clidr, int level )
 
 static void try_everything()
 {
-  claim_lock( &shared.mmu.lock );
+  bool reclaimed = claim_lock( &shared.mmu.lock );
+  assert( !reclaimed );
+
   for (int level = 0; level < 7 && cache_type( processor.caches.v7.clidr.raw, level ) != 0; level++) {
     clean_cache_32( level );
   }
-  release_lock( &shared.mmu.lock );
+  if (!reclaimed)
+    release_lock( &shared.mmu.lock );
 }
 
 static void do_nothing()

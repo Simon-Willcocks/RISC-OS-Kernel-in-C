@@ -19,6 +19,14 @@
  * In time, this should all be made to disappear.
  */
 
+// 0xfa600000   GeneralMOSBuffer
+// 0xfa601000   More GSTrans output buffer
+// 0x000043c4   ExprWSpace->ExprSVCstack
+// 0xfa605b00   GSVarWSpace->GS_StackPtr
+// 0x00008000   ExprStackStart (Top i.e. stack in 0x7000-0x7fff)
+//              more generally: ScratchSpace 0x4000-0x7fff, see
+//              RiscOS/Sources/Kernel/hdr/KernelWS
+
 /* Note that offsets will change if the structure is compiled in 64-bit. */
 #if 4 == __SIZEOF_POINTER__
 typedef struct EcfOraEor EcfOraEor;
@@ -292,7 +300,7 @@ typedef struct {
   // holds 2,3,4 or 5 for 8,4,2,1 bits per pixel respectivly
   EcfOraEorPtr GColAdr ; // FgEcfOraEor, BgEcfOraEor, Invert, or NoEffect afaik 12/21
 
-  uint32_t ScreenStart ; // Start address of screen (for VDU drivers)
+  uint32_t ScreenStart ; // Start address of screen (for VDU drivers) MISNOMER: also selected sprite start
 
   uint32_t NPix ; // Number of pixels per word minus 1, holds
   // holds 3,7,15 or 31 for 8,4,2,1 bits per pixel modes

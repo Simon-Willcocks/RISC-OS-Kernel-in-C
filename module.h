@@ -156,3 +156,70 @@ void *memset(void *s, int c, size_t n)
   return s;
 }
 
+#define OS_ThreadOp 0xf9
+enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, LockClaim, LockRelease,
+       WaitForInterrupt = 32, InterruptIsOff, NumberOfInterruptSources };
+#define OS_IntOff 0x14
+
+static inline void memory_write_barrier()
+{
+  asm ( "dsb sy" );
+}
+
+static inline void memory_read_barrier()
+{
+  asm ( "dsb sy" );
+}
+
+static inline void clear_VF()
+{
+  asm ( "msr cpsr_f, #0" );
+}
+
+static inline void set_VF()
+{
+  asm ( "msr cpsr_f, #(1 << 28)" );
+}
+
+static inline void debug_string_with_length( char const *s, int length )
+{
+  register int code asm( "r0" ) = 48;
+  register char const *string asm( "r1" ) = s;
+  register int len asm( "r2" ) = length;
+  asm ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (code)
+      , "r" (len)
+      , "r" (string)
+      : "lr" );
+}
+
+static inline void debug_string( char const *s )
+{
+  int len = 0;
+  char const *p = s;
+  while (*p != '\0') { p++; len++; }
+  debug_string_with_length( s, len );
+}
+
+static inline void debug_number( uint32_t num )
+{
+  register int code asm( "r0" ) = 49;
+  register uint32_t number asm( "r1" ) = num;
+  asm ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (code)
+      , "r" (number)
+      : "lr" );
+}
+
+#define WriteN( s, n ) debug_string_with_length( s, n )
+#define Write0( s ) debug_string( s )
+#define WriteS( s ) debug_string_with_length( s, sizeof( s ) - 1 )
+#define NewLine WriteS( "\n" );
+#define Space WriteS( " " );
+#define WriteNum( n ) debug_number( n )
+
+

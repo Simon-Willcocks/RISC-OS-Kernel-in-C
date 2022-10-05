@@ -38,36 +38,6 @@ NO_messages_file;
 
 const char title[] = "VFPSupport";
 
-static inline void clear_VF()
-{
-  asm ( "msr cpsr_f, #0" );
-}
-
-#ifdef DEBUG_OUTPUT
-
-#define WriteS( string ) asm ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "lr" )
-
-#define NewLine asm ( "svc 3" : : : "lr" )
-
-#define Write0( string ) do { register uint32_t r0 asm( "r0" ) = (uint32_t) (string); asm ( "push { r0-r12, lr }\nsvc 2\n  pop {r0-r12, lr}" : : "r" (r0) ); } while (false)
-#define Write13( string ) do { const char *s = (void*) (string); register uint32_t r0 asm( "r0" ); while (31 < (r0 = *s++)) { asm ( "push { r1-r12, lr }\nsvc 0\n  pop {r1-r12, lr}" : : "r" (r0) ); } } while (false)
-#else
-#define WriteS( string )
-#define NewLine
-#define Write0( string )
-#define Write13( string )
-#endif
-
-static void WriteNum( uint32_t number )
-{
-  for (int nibble = 7; nibble >= 0; nibble--) {
-    char c = '0' + ((number >> (nibble*4)) & 0xf);
-    if (c > '9') c += ('a' - '0' - 10);
-    register uint32_t r0 asm( "r0" ) = c;
-    asm( "svc 0": : "r" (r0) : "lr", "cc" );
-  }
-}
-
 // This needs a defined struct workspace
 C_SWI_HANDLER( c_swi_handler );
 

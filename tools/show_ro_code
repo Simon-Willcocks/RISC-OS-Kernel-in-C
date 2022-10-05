@@ -40,13 +40,13 @@ function vi_cmd {
   if [ "$1" == "Kernel" ]; then
   grep -i -e File: -e ${3/0x/} $GPA |
     grep -B 1 -i ${3/0x/} | 
-      sed 's!File: !vi '$( dirname $GPA )'/../!;s!^\([0-9]*\>\).*$!+\1!' |
-        grep vi -A 1
+      sed 's!File: !view '$( dirname $GPA )'/../!;s!^\([0-9]*\>\).*$!+\1!' |
+        grep view -A 1
   else
   grep -i -e File: -e '\<0*'${2/0x/} $GPA |
     grep -B 1 -i ${2/0x/} | 
-      sed 's!File: !vi '$( dirname $GPA )'/../../!;s!^\([0-9]*\>\).*$!+\1!' |
-        grep vi -A 1
+      sed 's!File: !view '$( dirname $GPA )'/../../!;s!^\([0-9]*\>\).*$!+\1!' |
+        grep view -A 1
   fi
 }
 

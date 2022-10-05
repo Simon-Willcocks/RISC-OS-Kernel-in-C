@@ -62,7 +62,8 @@ void Initialise_system_DAs()
   uint32_t initial_rma_size = 2 * natural_alignment;
   svc_registers regs;
 
-  claim_lock( &shared.memory.dynamic_areas_setup_lock ); 
+  bool reclaimed = claim_lock( &shared.memory.dynamic_areas_setup_lock ); 
+  assert( !reclaimed ); // No question, only entered once
 
 // While we're hacking like crazy, let's allocate far too much memory for RO kernel workspace...
 // See comments to GSTrans in swis.c
@@ -482,7 +483,8 @@ bool do_OS_DynamicArea( svc_registers *regs )
 
   enum { New, Remove, Info, Enumerate, Renumber, NewInfo = 24 };
 
-  claim_lock( &shared.memory.dynamic_areas_lock );
+  bool reclaimed = claim_lock( &shared.memory.dynamic_areas_lock );
+  assert( !reclaimed ); // No question, only entered once
 
   if (shared.memory.last_da_address == 0) {
     // First time in this routine
@@ -731,13 +733,13 @@ for (;;) { asm ( "bkpt 78" ); }
     break;
   }
 
-  release_lock( &shared.memory.dynamic_areas_lock );
+  if (!reclaimed) release_lock( &shared.memory.dynamic_areas_lock );
 
   return result;
 
 nomem:
   for (;;) { asm ( "bkpt 31" ); }
-  release_lock( &shared.memory.dynamic_areas_lock );
+  if (!reclaimed) release_lock( &shared.memory.dynamic_areas_lock );
   return false;
 }
 
@@ -791,7 +793,8 @@ Write0( "OS_Memory operation " ); WriteNum( regs->r[0] ); Write0( " VA " ); Writ
 
 void Kernel_add_free_RAM( uint32_t base_page, uint32_t size_in_pages )
 {
-  claim_lock( &shared.memory.lock );
+  bool reclaimed = claim_lock( &shared.memory.lock );
+  assert( !reclaimed );
 
   free_block *p = (free_block *) shared.memory.free_blocks;
 
@@ -802,7 +805,7 @@ void Kernel_add_free_RAM( uint32_t base_page, uint32_t size_in_pages )
   p->base_page = base_page;
   p->size = size_in_pages;
 
-  release_lock( &shared.memory.lock );
+  if (!reclaimed) release_lock( &shared.memory.lock );
 }
 
 static bool aligned( uint32_t b, uint32_t alignment )
@@ -832,13 +835,17 @@ static uint32_t misalignment( uint32_t b, uint32_t alignment )
 // the start of the freed memory blocks, there will be practically zero OS
 // memory overhead.
 
+// Or a red-black tree of free pages, whose maximum size would be a node
+// for each of the odd- or even-numbered pages (half allocated, half freed). 
+
 uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment )
 {
   uint32_t result = -1;
   uint32_t size_in_pages = size >> 12;
   uint32_t alignment_in_pages = alignment >> 12;
 
-  claim_lock( &shared.memory.lock );
+  bool reclaimed = claim_lock( &shared.memory.lock );
+  assert( !reclaimed ); // IDK, seems sus.
 
   free_block *p = (free_block *) shared.memory.free_blocks;
 
@@ -879,7 +886,7 @@ uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment )
     }
   }
 
-  release_lock( &shared.memory.lock );
+  if (!reclaimed) release_lock( &shared.memory.lock );
 
   assert( result != -1 );
 

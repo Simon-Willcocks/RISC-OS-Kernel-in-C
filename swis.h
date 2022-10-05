@@ -30,7 +30,8 @@ bool do_OS_GSTrans( svc_registers *regs );
 bool do_OS_SubstituteArgs32( svc_registers *regs );
 
 
-// Implemented in os_heap.c:
+// Not Implemented in os_heap.c:
+// Implementation in swis.c, calls legacy code
 bool do_OS_Heap( svc_registers *regs );
 
 // modules.c:
@@ -44,6 +45,7 @@ bool do_OS_AddToVector( svc_registers *regs );
 bool do_OS_DelinkApplication( svc_registers *regs );
 bool do_OS_RelinkApplication( svc_registers *regs );
 bool do_OS_SWINumberFromString( svc_registers *regs );
+bool do_OS_SWINumberToString( svc_registers *regs );
 
 // Vectored SWIs (do nothing but call the appropriate vectors)
 bool do_OS_GenerateError( svc_registers *regs );
@@ -139,13 +141,9 @@ static inline void *rma_allocate( uint32_t size )
   regs.r[3] = size;
   regs.spsr = 0; // V flag set on entry results in failure
 
-  claim_lock( &shared.memory.lock );
-
   if (do_OS_Heap( &regs )) {
     result = (void*) regs.r[2];
   }
-
-  release_lock( &shared.memory.lock );
 
   return result;
 }

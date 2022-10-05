@@ -56,7 +56,6 @@ SECTIONS
   *(.text) ;
   *(.rodata*) ;
   . = ALIGN( 4096 ) ;
-  . = ALIGN( 2*65536 ) ; /* Ensure that the modules from the RISC OS ROM will be at their expected locations (for SharedCLib), has to match the ROM build */
  }
 
  /DISCARD/ : { *(.*) ; }

@@ -1,0 +1,7 @@
+Modules
+Set Boot$Dir <Obey$Dir>
+echo <CPU$Core>
+if "<CPU$Core>"="" Then Echo CPU$Core not found
+echo Running Desktop or Balls
+if "<CPU$Core>"="0" Then Desktop Else <Boot$Dir>.Balls2022
+echo End of Obey file

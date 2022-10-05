@@ -436,8 +436,8 @@ static void map_block( physical_memory_block block )
 
 static bool check_task_slot_l1( uint32_t address, uint32_t type )
 {
-  asm ( "bkpt 1" );
-  return false;
+  WriteS( "Check task slot L1: " ); WriteNum( address ); NewLine;
+  return true;
 }
 
 static bool allocate_legacy_workspace_as_needed( uint32_t address, uint32_t type )
@@ -480,9 +480,11 @@ static bool random_legacy_kernel_workspace_l1( uint32_t address, uint32_t type )
 
 static bool check_task_slot_l2( uint32_t address, uint32_t type )
 {
-  claim_lock( &shared.mmu.lock );
+  bool reclaimed = claim_lock( &shared.mmu.lock );
+  assert( !reclaimed ); // IDK, seems sus.
+
   physical_memory_block block = Kernel_physical_address( address );
-  release_lock( &shared.mmu.lock );
+  if (!reclaimed) release_lock( &shared.mmu.lock );
 
   if (block.size != 0) {
     map_block( block );
@@ -691,9 +693,19 @@ void setup_global_translation_tables( volatile startup *startup )
 
 static bool uninitialised_page_in_stack_section( uint32_t address, uint32_t type )
 {
-  // Access to page in stack section that isn't part of a stack
-  assert ( false );
-  return false;
+  arm32_ptr pointer = { .raw = address };
+  l1tt_entry section = Local_L1TT->entry[pointer.section];
+
+  assert( section.type == 1 ); // Table containing this page
+
+  Level_two_translation_table *l2tt = find_table_from_l1tt_entry( section );
+
+  l2tt->entry[pointer.page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
+
+  // Access to page in stack section that isn't part of a stack yet
+  // WriteS( "Expanded stack at " ); WriteNum( address ); NewLine;
+
+  return true;
 }
 
 static bool stack_overflow( uint32_t address, uint32_t type )
@@ -716,6 +728,8 @@ static bool allocate_stack_as_needed( uint32_t address, uint32_t type )
   // FIXME What if Kernel_allocate_pages returns nothing? (Block the Task, find some memory)
   arm32_ptr pointer = { .raw = address };
 
+  // Do not write any debug before the stack is allocated, it takes stack!
+
   l1tt_entry section = Local_L1TT->entry[pointer.section];
 
   assert( section.type == 1 );
@@ -723,6 +737,9 @@ static bool allocate_stack_as_needed( uint32_t address, uint32_t type )
   Level_two_translation_table *l2tt = find_table_from_l1tt_entry( section );
 
   l2tt->entry[pointer.page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
+
+  // Don't write anything in here!
+  // WriteS( "Allocated stack: " ); WriteNum( address ); NewLine;
 
   return true;
 }
@@ -743,7 +760,7 @@ static void setup_stack_pages( uint32_t *top, uint32_t *lim )
   uint32_t base = ((uint32_t) top) & mask;
 
   arm32_ptr top_ptr = { .rawp = top };
-  arm32_ptr base_ptr = { .rawp = base };
+  arm32_ptr base_ptr = { .raw = base };
 
   assert ( top_ptr.section == base_ptr.section );
 
@@ -967,7 +984,10 @@ static bool __attribute__(( noinline )) handle_data_abort()
   // handled at this level. The fault type will not be 5 or 7.
   if ((ft & ~0x8f0) != 7
    && (ft & ~0x8f0) != 5) {
-    WriteS( "Fault type: " ); WriteNum( ft ); WriteS( " @ " ); WriteNum( fa ); NewLine;
+    uint32_t *stack;
+    asm ( "mov %[sp], sp" : [sp] "=r" (stack) );
+    WriteNum( &stack[9] );
+    WriteS( "Fault type: " ); WriteNum( ft ); WriteS( " @ " ); WriteNum( fa ); WriteS( " address " ); WriteNum( stack[9] ); NewLine;
     assert( false );
   }
   about_to_remap_memory();
@@ -987,6 +1007,10 @@ void __attribute__(( naked, optimize( 0 ), noreturn )) Kernel_default_data_abort
   // e.g. from a file, this will have to copy the save_context bit from
   // Kernel_default_irq. At the moment, this only deals with missing memory, not
   // permission faults.
+  // Second thoughts: usually the handler will resolve the problem, sometimes it
+  // will be a failure, other times it will want to replace the running task with
+  // a task that can, say, read data from disc, in which case the rest of the
+  // context can be saved in this routine.
 
   asm volatile (
         "  sub lr, lr, #8"
@@ -1014,8 +1038,10 @@ void __attribute__(( naked, optimize( 0 ), noreturn )) Kernel_default_data_abort
 
 void MMU_switch_to( TaskSlot *slot )
 {
-  claim_lock( &shared.mmu.lock );
-  Write0( "Switching to slot " ); WriteNum( slot ); Space; WriteNum( TaskSlot_asid( slot ) ); NewLine;
+  bool reclaimed = claim_lock( &shared.mmu.lock );
+  assert( !reclaimed ); // IDK, seems sus.
+
+  // Write0( "Switching to slot " ); WriteNum( slot ); Space; WriteNum( TaskSlot_asid( slot ) ); NewLine;
   // FIXME Only clear what's used
   // FIXME deal with slots that go over the first MiB
   // Note: My idea is to try to keep memory as contiguous as possible, and have
@@ -1047,7 +1073,7 @@ void MMU_switch_to( TaskSlot *slot )
   // Set CONTEXTIDR
   asm ( "mcr p15, 0, %[asid], c13, c0, 1" : : [asid] "r" (TaskSlot_asid( slot )) );
   // FIXME: clear out L2TTs, or disable walks until one is needed, then clear them
-  release_lock( &shared.mmu.lock );
+  if (!reclaimed) release_lock( &shared.mmu.lock );
 
   // This appears to be necessary. Perhaps it should be in MMU_switch_to.
   clean_cache_to_PoC();
@@ -1134,6 +1160,8 @@ static void map_at( void *va, uint32_t pa, uint32_t size, bool shared )
 #if 0
     Write0( __func__ ); Space; WriteNum( va ); Space; WriteNum( pa ); Space; WriteNum( size ); Space; Write0( shared ? " shared" : " not shared" ); NewLine;
 #endif
+    // Delay the breakpoint until the frame buffer is initialised (hopefully)
+    for (int i = 0; i < 80000000; i++) asm ( "svc 0xff" );
     for (;;) { asm ( "bkpt 102" ); }
   }
 

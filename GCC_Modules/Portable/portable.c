@@ -38,21 +38,10 @@ NO_messages_file;
 
 const char title[] = "Portable";
 
-static inline void clear_VF()
-{
-  asm ( "msr cpsr_f, #0" );
-}
-
 struct workspace { };
 
 // This needs a defined struct workspace
 C_SWI_HANDLER( c_swi_handler );
-
-static void print( char const *const string )
-{
-  register char const *const r0 asm( "r0" ) = string;
-  asm ( "svc 2" : : "r" (r0) : "lr", "cc" );
-}
 
 char const swi_names[] = { "Speed"
           "\0Control"
@@ -76,7 +65,7 @@ char const swi_names[] = { "Speed"
 
 bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI_regs *regs )
 {
-  print( "Handling Portable SWI " );
+  WriteS( "Handling Portable SWI " );
 
   switch (regs->number) {
   case 5: // Portable_ReadFeatures
@@ -93,7 +82,7 @@ bool __attribute__(( noinline )) c_swi_handler( struct workspace *workspace, SWI
         while (*name != '\0') name++;
         name++;
       }
-      print( name == 0 ? "Unknown" : name );
+      Write0( name == 0 ? "Unknown" : name );
     }
   }
   static const error_block error = { 0x1ff, "Portable features not supported" };

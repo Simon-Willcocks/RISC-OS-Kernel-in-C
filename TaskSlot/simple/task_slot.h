@@ -55,6 +55,7 @@ struct TaskSlot_workspace {
   Task *sleeping;       // 0 or more sleeping tasks
 
   Task **irq_tasks;     // Array of tasks handling interrupts 
+  char core_number_string[4]; // For OS_TaskSlot, 64 (CoreNumber)
 };
 
 struct TaskSlot_shared_workspace {

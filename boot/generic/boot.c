@@ -95,6 +95,24 @@ void __attribute__(( noreturn )) locate_rom_and_enter_kernel( uint32_t start, ui
   uint32_t max_cores = 0;
 
   if (core_number == 0) {
+
+#if 0
+uint32_t *gpio = (void*) 0x3f200000;
+// Set gpios 22 and 27 (physical pins 15 and 13) to output
+gpio[2] = (gpio[2] & ~(7 << (2 * 3))) | (1 << (2 * 3));
+gpio[2] = (gpio[2] & ~(7 << (7 * 3))) | (1 << (7 * 3));
+for (;;){
+asm ( "dsb sy" );
+for (int i = 0; i < 1000; i++) asm ( "nop" );
+gpio[0x1c/4] = (1 << 22);
+gpio[0x28/4] = (1 << 27);
+asm ( "dsb sy" );
+for (int i = 0; i < 2000; i++) asm ( "nop" );
+gpio[0x28/4] = (1 << 22);
+gpio[0x1c/4] = (1 << 27);
+}
+#endif
+
     // Identify the kind of processor we're working with.
     // The overall system (onna chip) will be established later.
     max_cores = pre_mmu_identify_processor();

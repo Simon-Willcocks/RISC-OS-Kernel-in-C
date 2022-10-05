@@ -75,7 +75,7 @@ struct module {
 
 static void *pointer_at_offset_from( void *base, uint32_t off )
 {
-  return ((uint8_t*) base) + off;
+  return (off == 0) ? 0 : ((uint8_t*) base) + off;
 }
 
 static inline void *start_code( module_header *header )
@@ -286,10 +286,6 @@ bool run_vector( svc_registers *regs, int vec )
       "\n  ldr r14, [%[v], %[code]]"
       "\n  ldr r12, [%[v], %[private]]"
       "\n  blx r14"
-"\n  cmp %[v], #0x8000 // Test to check for errors"
-"\n  bhs 1f"
-"\n  bkpt 1"
-"\n1:"
       "\n  ldr %[v], [%[v], %[next]]"
       "\n  cmp %[v], #0 // I don't think this should happen, but carry on if it does"
       "\n  bhs 0b"
@@ -318,30 +314,30 @@ bool run_vector( svc_registers *regs, int vec )
 #ifdef DEBUG__SHOW_VECTORS_VERBOSE
   if (vec != 3 && vec != 0x1c && workspace.kernel.vectors[3] != &do_nothing)
   {
-    Write0( "Vector " ); WriteNum( vec ); asm ( "svc 0x120" ); WriteNum( flags ); NewLine;
+    Write0( "Vector " ); WriteNum( vec ); Space; WriteNum( flags ); NewLine;
   }
 #endif
   return (flags & VF) == 0;
 }
 
-static inline uint32_t swi_decoding_table_code( module_header *header )
+static inline char const *swi_decoding_table( module_header *header )
 {
-  return header->offset_to_swi_decoding_table + (uint32_t) header;
+  return pointer_at_offset_from( header, header->offset_to_swi_decoding_table );
 }
 
 static inline uint32_t swi_decoding_code( module_header *header )
 {
-  return header->offset_to_swi_decoding_code + (uint32_t) header;
+  return (uint32_t) pointer_at_offset_from( header, header->offset_to_swi_decoding_code );
 }
 
 static inline const char *title_string( module_header *header )
 {
-  return (const char *) header->offset_to_title_string + (uint32_t) header;
+  return pointer_at_offset_from( header, header->offset_to_title_string );
 }
 
 static inline const char *help_string( module_header *header )
 {
-  return (const char *) header->offset_to_help_string + (uint32_t) header;
+  return pointer_at_offset_from( header, header->offset_to_help_string );
 }
 
 bool do_module_swi( svc_registers *regs, uint32_t svc )
@@ -589,43 +585,42 @@ bool do_OS_ServiceCall( svc_registers *regs )
   module *m = workspace.kernel.module_list_head;
 
 #ifdef DEBUG__SHOW_SERVICE_CALLS
+int count = 0;
 describe_service_call( regs );
 if (m == 0) {
-  Write0( "No modules initialised\n" );
+  Write0( "No modules initialised\n" ); NewLine;
 }
 #endif
-uint32_t r6 = regs->r[6];
 
   uint32_t r12 = regs->r[12];
   while (m != 0 && regs->r[1] != 0 && result) {
     regs->r[12] = (uint32_t) m->private_word;
     if (0 != m->header->offset_to_service_call_handler) {
-//#if DEBUG__SHOW_SERVICE_CALLS
-if (regs->r[1] == 0x46 || regs->r[1] == 0x73) {
-Write0( title_string( m->header ) ); Space; WriteNum( m->header->offset_to_service_call_handler + (uint32_t) m->header ); NewLine;
+#if DEBUG__SHOW_SERVICE_CALLS
+//if (regs->r[1] == 0x46 || regs->r[1] == 0x73) {
+{
+NewLine; Write0( title_string( m->header ) ); Space; WriteNum( pointer_at_offset_from( m->header, m->header->offset_to_service_call_handler ) );
+count++;
 }
-//#endif
+#endif
       result = run_service_call_handler_code( regs, m );
 
-if (r6 != regs->r[6]) {
-  WriteS( "R6 changed from " ); WriteNum( r6 ); WriteS( " to " ); WriteNum( regs->r[6] ); NewLine;
-  r6 = regs->r[6];
-    asm volatile ( "mov r0, #3 // Sleep"
-               "\n  mov r1, #0 // For no time - yield"
-               "\n  svc %[swi]"
-        :
-        : [swi] "i" (OS_ThreadOp)
-        : "r0", "r1", "lr" );
-}
       if (regs->r[1] == 0) {
+#if DEBUG__SHOW_SERVICE_CALLS
         WriteS( "Claimed" );
+#endif
         break;
       }
+    }
+    else {
+#if DEBUG__SHOW_SERVICE_CALLS
+      Write0( title_string( m->header ) ); Space; WriteS( "No handler; " ); NewLine;
+#endif
     }
     m = m->next;
   }
 #ifdef DEBUG__SHOW_SERVICE_CALLS
-  NewLine;
+  WriteS( "Passed to " ); WriteNum( count ); WriteS( " modules" ); NewLine;
 #endif
 
   regs->r[12] = r12;
@@ -636,7 +631,6 @@ if (r6 != regs->r[6]) {
 static bool Unknown_OS_Module_call( svc_registers *regs )
 {
   static error_block error = { 0x105, "Unknown OS_Module call" };
-  Write0( "OS_Module Unknown call: " ); WriteNum( regs->r[0] ); NewLine;
   regs->r[0] = (uint32_t)&error;
   return false;
 }
@@ -662,15 +656,13 @@ if (m) { Write0( ", FOUND " ); Write0( title_string( m->header ) ); NewLine; }
   return m;
 }
 
-#define OSMERR( f, l ) do { Write0( f l ); for (;;) {}; } while (0)
-
 static bool do_Module_Run( svc_registers *regs )
 {
 Write0( __func__ ); for (;;) {};
   return Unknown_OS_Module_call( regs );
 }
 
-// Warning: Only works when file exists
+// Warning: Returns 0 if no file
 static uint32_t read_file_size( const char *name )
 {
   register uint32_t os_file_code asm( "r0" ) = 17;
@@ -690,16 +682,21 @@ static uint32_t read_file_size( const char *name )
       , "r" (os_file_code)
       , "r" (filename)
       : "lr" );
-  return file_size;
+  return object_type == 1 ? file_size : 0;
 }
 
 // Reads the size, allocates space, then loads the file after a word containing the size plus 4
 uint32_t *read_module_into_memory( const char *name )
 {
   uint32_t file_size = read_file_size( name );
-Write0( "File size = " ); WriteNum( file_size ); NewLine;
+WriteS( "File size = " ); WriteNum( file_size ); NewLine;
+
+  if (file_size == 0) {
+    return 0;
+  }
+
   void *mem = rma_allocate( file_size + 4 );
-Write0( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
+WriteS( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
 
   if (mem != 0)
   {
@@ -867,7 +864,12 @@ static bool do_Module_Load( svc_registers *regs )
 {
   char const *command = (void*) regs->r[1];
   uint32_t *memory = read_module_into_memory( command );
-  if (memory == 0) { asm ( "bkpt 1" ); }
+  if (memory == 0) {
+    static error_block err = { 0x888, "File not a module, or not found" };
+    regs->r[0] = &err;
+    WriteS( "Tried to load module " ); Write0( command ); NewLine;
+    return false;
+  }
 
   char const *parameters = command;
   while (*++parameters > ' ') {}
@@ -881,6 +883,7 @@ static bool do_Module_Enter( svc_registers *regs )
 Write0( __func__ ); NewLine;
 Write0( (char*) regs->r[1] ); NewLine;
 Write0( (char*) regs->r[2] ); NewLine;
+
   // This routine should follow the procedure described in 1-235 including
   // making the upcall OS_FSControl 2 2-85
 
@@ -945,6 +948,7 @@ Write0( "Start address: " ); WriteNum( start_address ); NewLine;
 
   // Remember: eret is unpredictable in System mode
   // TODO: This does not yet reset the SVC stack.
+
   register void *private asm ( "r12" ) = m->private_word;
   asm ( "isb"
     "\n\tmsr spsr, %[usermode]"
@@ -953,7 +957,7 @@ Write0( "Start address: " ); WriteNum( start_address ); NewLine;
     "\n\tisb"
     "\n\teret"
     :
-    : [stacktop] "r" (0xffffffff)       // Dummy. It's up to the module to allocate stack if it needs it
+    : [stacktop] "r" (0)       // Dummy. It's up to the module to allocate stack if it needs it
     , [usr] "r" (start_address)
     , [usermode] "r" (0x10)
     , "r" (private) );
@@ -1109,7 +1113,7 @@ static bool do_Module_InsertFromMemory( svc_registers *regs )
 #ifdef DEBUG__SHOW_MODULE_INIT
   NewLine;
   Write0( "INIT: " );
-  Write0( title_string( header ) );
+  Write0( title_string( header ) ); NewLine;
 #ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
   show_module_commands( header );
 #endif
@@ -2017,7 +2021,7 @@ static void __attribute__(( naked )) default_os_word()
 }
 
 #ifdef DEBUG__SHOW_VECTOR_CALLS
-#define WriteFunc do { Write0( __func__ ); NewLine; for (int i = 0; i < 13; i++) { WriteNum( regs->r[i] ); asm volatile ( "svc 0x100+' '" ); } WriteNum( regs->lr ); asm volatile ( "svc 0x100+' '" ); WriteNum( regs->spsr ); NewLine; } while (false)
+#define WriteFunc do { Write0( __func__ ); NewLine; for (int i = 0; i < 13; i++) { WriteNum( regs->r[i] ); Space; } WriteNum( regs->lr ); Space; WriteNum( regs->spsr ); NewLine; } while (false)
 #else
 #define WriteFunc
 #endif
@@ -2042,6 +2046,8 @@ WriteFunc;
 bool do_OS_CLI( svc_registers *regs )
 {
 WriteFunc;
+WriteS( "OS_CLI: " ); WriteNum( regs->r[0] ); Space; Write0( (void*) regs->r[0] ); NewLine;
+WriteS( "Caller: " ); WriteNum( regs->lr ); NewLine;
   // Check stack space TODO
   // Check command length TODO (still 256?)
   // /SetECF
@@ -2105,22 +2111,336 @@ WriteFunc;
   return run_vector( regs, 36 );
 }
 
+static char const *const unknown = "Unknown";
+
+static char const *const os_swi_names[256] = {
+"WriteC",
+"WriteS",
+"Write0",
+"NewLine",
+"ReadC",
+"CLI",
+"Byte",
+"Word",
+"File",
+"Args",
+"BGet",
+"BPut",
+"GBPB",
+"Find",
+"ReadLine",
+"Control",
+"GetEnv",
+"Exit",
+"SetEnv",
+"IntOn",
+"IntOff",
+"CallBack",
+"EnterOS",
+"BreakPt",
+"BreakCtrl",
+"UnusedSWI",
+"UpdateMEMC",
+"SetCallBack",
+"Mouse",
+"Heap",
+"Module",
+"Claim",
+
+"Release",
+"ReadUnsigned",
+"GenerateEvent",
+"ReadVarVal",
+"SetVarVal",
+"GSInit",
+"GSRead",
+"GSTrans",
+"BinaryToDecimal",
+"FSControl",
+"ChangeDynamicArea",
+"GenerateError",
+"ReadEscapeState",
+"EvaluateExpression",
+"SpriteOp",
+"ReadPalette",
+"ServiceCall",
+"ReadVduVariables",
+"ReadPoint",
+"UpCall",
+"CallAVector",
+"ReadModeVariable",
+"RemoveCursors",
+"RestoreCursors",
+"SWINumberToString",
+"SWINumberFromString",
+"ValidateAddress",
+"CallAfter",
+"CallEvery",
+"RemoveTickerEvent",
+"InstallKeyHandler",
+"CheckModeValid",
+
+"ChangeEnvironment",
+"ClaimScreenMemory",
+"ReadMonotonicTime",
+"SubstituteArgs",
+"PrettyPrint",
+"Plot",
+"WriteN",
+"AddToVector",
+"WriteEnv",
+"ReadArgs",
+"ReadRAMFsLimits",
+"ClaimDeviceVector",
+"ReleaseDeviceVector",
+"DelinkApplication",
+"RelinkApplication",
+"HeapSort",
+"ExitAndDie",
+"ReadMemMapInfo",
+"ReadMemMapEntries",
+"SetMemMapEntries",
+"AddCallBack",
+"ReadDefaultHandler",
+"SetECFOrigin",
+"SerialOp",
+
+"ReadSysInfo",
+"Confirm",
+"ChangedBox",
+"CRC",
+"ReadDynamicArea",
+"PrintChar",
+"ChangeRedirection",
+"RemoveCallBack",
+
+"FindMemMapEntries",
+"SetColour",
+unknown,
+unknown,
+"Pointer",
+"ScreenMode",
+"DynamicArea",
+unknown,
+"Memory",
+"ClaimProcessorVector",
+"Reset",
+"MMUControl",
+"ResyncTime",
+"PlatformFeatures",
+"SynchroniseCodeAreas",
+"CallASWI",
+"AMBControl",
+"CallASWIR12",
+"SpecialControl",
+"EnterUSR32",
+"EnterUSR26",
+"VIDCDivider",
+"NVMemory",
+unknown,
+unknown,
+unknown,
+"Hardware",
+"IICOp",
+"LeaveOS",
+"ReadLine32",
+"SubstituteArgs32",
+"HeapSort32",
+ 
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+
+"ConvertStandardDateAndTime",
+"ConvertDateAndTime",
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+"ConvertHex1",
+"ConvertHex2",
+"ConvertHex4",
+"ConvertHex6",
+"ConvertHex8",
+"ConvertCardinal1",
+"ConvertCardinal2",
+"ConvertCardinal3",
+"ConvertCardinal4",
+"ConvertInteger1",
+"ConvertInteger2",
+"ConvertInteger3",
+"ConvertInteger4",
+"ConvertBinary1",
+"ConvertBinary2",
+"ConvertBinary3",
+"ConvertBinary4",
+"ConvertSpacedCardinal1",
+"ConvertSpacedCardinal2",
+"ConvertSpacedCardinal3",
+"ConvertSpacedCardinal4",
+"ConvertSpacedInteger1",
+"ConvertSpacedInteger2",
+"ConvertSpacedInteger3",
+"ConvertSpacedInteger4",
+"ConvertFixedNetStation",
+"ConvertNetStation",
+"ConvertFixedFileSize",
+"ConvertFileSize",
+unknown,
+unknown,
+unknown,
+
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+unknown,
+"MSTime",
+"ThreadOp",
+"PipeOp",
+"VduCommand",
+"LockForDMA",
+"ReleaseDMALock",
+"MapDevicePages",
+"FlushCache"
+};
+ 
 bool do_OS_SWINumberFromString( svc_registers *regs )
 {
+  WriteS( __func__ ); Space; Write0( regs->r[1] ); NewLine;
+
   // String is terminated by any character <= ' '
-  char const * const string = (void*) regs->r[1];
+  char const * const whole_string = (void*) regs->r[1];
+  char const * const string = whole_string + (whole_string[0] == 'X' ? 1 : 0);
+  uint32_t x_bit = (string == whole_string) ? 0 : 0x20000;
+  WriteS( __func__ ); Space; Write0( string ); NewLine;
+  WriteS( __func__ ); Space; Write0( whole_string ); NewLine;
 
   // FIXME: X prefix. Does it exclude SWI names starting with an X?
 
   module *m = workspace.kernel.module_list_head;
 
+  bool kernel_swi = string[0] == 'O' && string[1] == 'S' && string[2] == '_';
+
+  if (kernel_swi) {
+    // FIXME: OS_WriteI+nn?
+#if DEBUG__SWI_NUMBER_FROM_STRING
+    Write0( string+3 ); NewLine;
+#endif
+    for (int i = 0; i < number_of( os_swi_names ); i++) {
+      char const *matched = string + 3;
+      char const *name = os_swi_names[i];
+#if DEBUG__SWI_NUMBER_FROM_STRING
+      Write0( name ); NewLine;
+#endif
+      while (*matched == *name && *name != '\0') {
+        matched++;
+        name++;
+      }
+      if (*matched <= ' ' && *name == '\0') {
+#if DEBUG__SWI_NUMBER_FROM_STRING
+        WriteS( "Match: " ); WriteNum( i ); NewLine;
+#endif
+        regs->r[0] = i | x_bit;
+        return true;
+      }
+    }
+
+    return Kernel_Error_SWINameNotKnown( regs );
+  }
+
   // TODO SWI Decoder code
   while (m != 0) {
-    if (0 != m->header->offset_to_swi_decoding_table) {
-      char const *prefix = pointer_at_offset_from( m->header, m->header->offset_to_swi_decoding_table );
+#if DEBUG__SWI_NUMBER_FROM_STRING
+WriteNum( m->header ); Space; Write0( title_string( m->header ) ); Space;
+WriteNum( swi_decoding_code( m->header ) ); Space; WriteNum( swi_decoding_table( m->header ) );
+#endif
+    if (0 == m->header->swi_chunk) {
+      // No SWIs
+    }
+    else if (swi_decoding_table( m->header ) != 0) {
+      char const *prefix = swi_decoding_table( m->header );
       char const *matched = string;
 
-WriteNum( m->header ); Space; Write0( prefix ); NewLine;
+#if DEBUG__SWI_NUMBER_FROM_STRING
+Write0( prefix ); NewLine;
+#endif
+
       while (*prefix == *matched) { prefix++; matched++; }
 
       if (*prefix == '\0' && *matched == '_') {
@@ -2128,14 +2448,27 @@ WriteNum( m->header ); Space; Write0( prefix ); NewLine;
 
         char const *table_entry = prefix + 1;
         while (*table_entry != '\0') {
+#if DEBUG__SWI_NUMBER_FROM_STRING
 Write0( table_entry ); Space;
+#endif
           char const *tail = matched + 1;
+#if DEBUG__SWI_NUMBER_FROM_STRING
+Write0( tail ); Space;
+#endif
           // Case sensitive
-          while (*tail == *table_entry) { tail++; table_entry++; }
+          while (*tail == *table_entry && *table_entry != '\0') { tail++; table_entry++; }
           if (*tail <= ' ' && *table_entry == '\0') {
-            regs->r[0] = swi_number;
+#if DEBUG__SWI_NUMBER_FROM_STRING
+            WriteS( "Match: " ); NewLine;
+#endif
+            regs->r[0] = swi_number | x_bit;
             return true;
           }
+
+#if DEBUG__SWI_NUMBER_FROM_STRING
+          WriteS( "No Match: " ); Write0( table_entry ); Space; Write0( tail ); NewLine;
+#endif
+
           while (*table_entry != '\0') { table_entry++; }
           table_entry++;
           swi_number++;
@@ -2145,11 +2478,112 @@ Write0( table_entry ); Space;
         break; // Yes. (May be wrong choice.)
       }
     }
+    else if (0 != swi_decoding_code( m->header )) {
+      WriteS( "Decoding using code" ); NewLine;
+      register int32_t offset asm( "r0" );
+      register uint32_t text_to_number asm( "r0" ) = -1;
+      register char const *string asm ( "r1" ) = string;
+      asm ( "blx %[code]"
+          : "=r" (offset)
+          : [code] "r" (swi_decoding_code( m->header ))
+          , "r" (text_to_number)
+          : "lr" );
+      if (offset >= 0) {
+        regs->r[0] = (m->header->swi_chunk + offset) | x_bit;
+        return true;
+      }
+    }
+#if DEBUG__SWI_NUMBER_FROM_STRING
+    NewLine;
+#endif
 
     m = m->next;
   }
 
   return Kernel_Error_SWINameNotKnown( regs );
+}
+
+bool do_OS_SWINumberToString( svc_registers *regs )
+{
+  uint32_t swi = regs->r[0];
+  char *buffer = (void *) regs->r[1];
+  uint32_t buffer_length = regs->r[2];
+  uint32_t written = 0;
+
+  if (0 != (swi & 0x20000)) {
+    if (buffer_length > 1) {
+      buffer[written++] = 'X';
+    }
+    swi = swi & ~0x20000;
+  }
+
+  if (swi < 0x100) {
+    char const *prefix = "OS_";
+    while (written < buffer_length && *prefix != '\0') {
+      buffer[written++] = *prefix++;
+    }
+    char const *name = os_swi_names[swi];
+    while (written < buffer_length && *name != '\0') {
+      buffer[written++] = *name++;
+    }
+  }
+  else if (swi < 0x200) {
+    char const *name = "OS_WriteI";
+    while (written < buffer_length && *name != '\0') {
+      buffer[written++] = *name++;
+    }
+  }
+  else {
+    module *m = workspace.kernel.module_list_head;
+    uint32_t const chunk = (swi & ~0x3f);
+    uint32_t const index = (swi & 0x3f);
+    while (m != 0) {
+      if (chunk == m->header->swi_chunk) {
+        char const *name = swi_decoding_table( m->header );
+
+        assert( name != (void*) m->header ); // FIXME: call the decoding code...
+
+        while (written < buffer_length && *name != '\0') {
+          buffer[written++] = *name++;
+        }
+        // name points to the terminating nul, unless the buffer has been filled, in which case it
+        // points to a character in the prefix. The latter case doesn't matter, since nothing else
+        // will be added to the buffer.
+        if (written < buffer_length) {
+          buffer[written++] = '_';
+        }
+        int current = 0;
+        while (current <= index && written < buffer_length) {
+          assert( *name == '\0' );
+          name++;
+          if (*name == '\0') { // "\0\0" => end of list
+            // Passing end of list.
+            if (written < buffer_length && index > 10) buffer[written++] = '0' + (swi & 0x3f) / 10;
+            if (written < buffer_length) buffer[written++] = '0' + (swi & 0x3f) % 10;
+            break;
+          }
+          else if (current == index) {
+            while (written < buffer_length && *name != '\0') {
+              buffer[written++] = *name++;
+            }
+            break;
+          }
+          else {
+            // Skip next name
+            while (*name != '\0') name++;
+            current ++;
+          }
+        }
+        break;
+      }
+      m = m->next;
+    }
+  }
+
+  buffer[written] = '\0';
+  regs->r[2] = written;
+
+  return true;
 }
 
 static inline const char *discard_leading_characters( const char *command )
@@ -2207,7 +2641,7 @@ static error_block *run_module_command( const char *command )
     module_header *header = m->header;
 
     const char *cmd = pointer_at_offset_from( header, header->offset_to_help_and_command_keyword_table );
-    while (cmd[0] != '\0') {
+    while (cmd != 0 && cmd[0] != '\0') {
 #ifdef DEBUG__SHOW_ALL_COMMANDS
   Write0( sep ); sep = ", "; Write0( cmd );
 #endif
@@ -2222,6 +2656,8 @@ static error_block *run_module_command( const char *command )
 
 #ifdef DEBUG__SHOW_ALL_COMMANDS
         NewLine; Write0( "Yes! " ); WriteNum( c->code_offset ); Space; WriteNum( c->info_word ); Space; WriteNum( c->invalid_syntax_offset ); Space; WriteNum( c->help_offset ); NewLine;
+        if (c->help_offset != 0) { Write0( pointer_at_offset_from( header, c->help_offset ) ); }
+        if (c->invalid_syntax_offset != 0) { Write0( pointer_at_offset_from( header, c->invalid_syntax_offset ) ); }
 #endif
 
         if (c->code_offset != 0) {
@@ -2268,7 +2704,7 @@ static error_block *run_module_command( const char *command )
   return &not_found;
 }
 
-static bool file_command( char const *command )
+static bool is_file_command( char const *command )
 {
   char const *p = command;
   while (*p > ' ') {
@@ -2278,8 +2714,10 @@ static bool file_command( char const *command )
   return false;
 }
 
-static error_block *__attribute__(( noinline )) do_CLI( const char *command )
+static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
 {
+  char const *command = (void*) regs[0];
+
   error_block *error = 0;
 #ifdef DEBUG__SHOW_COMMANDS
   Write0( "CLI: " ); Write0( command ); Write0( " at " ); WriteNum( (uint32_t) command ); NewLine;
@@ -2288,8 +2726,8 @@ static error_block *__attribute__(( noinline )) do_CLI( const char *command )
   // Max length is 1024 bytes in RO 5.28
   // PRM 1-958
   command = discard_leading_characters( command );
-  if (*command == '|') return 0; // Comment, nothing to do
-  if (*command < ' ') return 0; // Nothing on line, nothing to do
+  if (*command == '|') return true; // Comment, nothing to do
+  if (*command < ' ') return true; // Nothing on line, nothing to do
   bool run = (*command == '/');
   if (run) {
     command++;
@@ -2306,7 +2744,7 @@ static error_block *__attribute__(( noinline )) do_CLI( const char *command )
     }
   }
 
-  bool is_file = file_command( command );
+  bool is_file = is_file_command( command );
 
   if (command[0] == '%') {
     // Skip alias checking
@@ -2405,23 +2843,26 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
 
       if (error == 0) {
         template[varlen] = '\0';
-        Write0( runtype ); Write0( " variable found " ); NewLine; Write0( "X" ); Write0( template ); Write0( "X" ); NewLine;
+        Write0( runtype ); Write0( " variable found " ); Space; WriteS( "\"" ); Write0( template ); WriteS( "\"" ); NewLine;
         char to_run[1024];
-        svc_registers regs = {
+        svc_registers call_regs = {
             .r[0] = (uint32_t) command,
             .r[1] = (uint32_t) to_run,
             .r[2] = sizeof( to_run ),
             .r[3] = (uint32_t) template,
             .r[4] = varlen };
-        if (!do_OS_SubstituteArgs32( &regs )) return (error_block*) regs.r[0];
+        if (!do_OS_SubstituteArgs32( &call_regs )) {
+          regs[0] = call_regs.r[0];
+          return false;
+        }
 
         Write0( "Command to run: " ); Write0( to_run ); NewLine;
         error = run_module_command( to_run );
         Write0( "Command returned" ); NewLine;
       }
     }
-    else if (error == 0 && type == 2 && *command == '!') {
-      // Application directory
+    else if (error == 0 && type == 2) {
+      // Application directory?
       WriteS( "Run any !Run file in the directory - TODO" ); NewLine; // TODO
     }
     else {
@@ -2442,16 +2883,27 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
     }
   }
 
-  return error;
+  if (error != 0) {
+    regs[0] = (uint32_t) error;
+    return false;
+  }
+
+  return true;
 }
 
 void __attribute__(( naked )) default_os_cli()
 {
   register uint32_t *regs;
-  // Return address is already on stack, ignore lr
-  asm ( "push { "C_CLOBBERED" }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+  // Return address is already on stack, ignore lr, always claiming
+  asm ( "push { "C_CLOBBERED" }\n  mov %[regs], sp" 
+      : [regs] "=r" (regs) );
 
-  regs[0] = (uint32_t) do_CLI( (const char *) regs[0] );
+  if (!do_CLI( regs )) {
+    set_VF();
+  }
+  else {
+    clear_VF();
+  }
 
   asm ( "pop { "C_CLOBBERED", pc }" );
 }
@@ -2561,35 +3013,135 @@ static uint32_t screen_colour_from_os_colour( uint32_t os )
   return (255 << 24) | (os_colour.R << 16) | (os_colour.G << 8) | os_colour.B;
 }
 
-void __attribute__(( naked )) fast_horizontal_line_draw( uint32_t left, uint32_t y, uint32_t right, uint32_t action )
+static void show_sprite()
 {
-  // FIXME needs to work in sprites as well, I think
+  if (workspace.vectors.zp.vdu_drivers.ws.XWindLimit > 256
+   || workspace.vectors.zp.vdu_drivers.ws.YWindLimit > 256) {
+    WriteS( "Sprite too big to display" ); NewLine;
+    return;
+  }
+  int shift = workspace.vectors.zp.vdu_drivers.ws.Log2BPP + 1;
+  int mask = (1 << shift) - 1;
+
+  WriteS( "Show sprite " ); WriteNum( workspace.vectors.zp.vdu_drivers.ws.XWindLimit ); WriteS( "x" ); WriteNum( workspace.vectors.zp.vdu_drivers.ws.YWindLimit ); Space; WriteNum( shift ); Space; WriteNum( mask ); NewLine;
+
+  uint32_t const *start = workspace.vectors.zp.vdu_drivers.ws.ScreenStart;
+  // "The image contains the rows of the sprite from top to bottom, all word-aligned" PRM 1-780
+
+  // Reversed y, because printing top line first
+  uint32_t const *pixels = start;
+  for (int y = 0; y <= workspace.vectors.zp.vdu_drivers.ws.YWindLimit; y++) {
+    asm volatile ( "mov r0, #3 // Sleep"
+               "\n  mov r1, #0 // For no time - yield"
+               "\n  svc %[swi]"
+        :
+        : [swi] "i" (OS_ThreadOp)
+        : "r0", "r1", "lr" );
+    WriteNum( pixels ); Space; WriteS( "|" );
+    int word_shifted = 32;
+    uint32_t word;
+    for (int x = 0; x <= workspace.vectors.zp.vdu_drivers.ws.XWindLimit; x++) {
+      if (word_shifted == 32) {
+        word = *pixels++;
+        word_shifted = 0;
+      }
+      if (0 != (word & mask)) WriteS( "*" ); else Space;
+      word = word >> shift;
+      word_shifted += shift;
+    }
+    if (word_shifted != 32) pixels++;
+    WriteS( "|" );
+    NewLine;
+  }
+  NewLine;
+}
+
+void __attribute__(( noinline )) c_horizontal_line_draw( uint32_t left, uint32_t y, uint32_t right, uint32_t action )
+{
+#ifdef DEBUG__SHOW_HLINES
+  WriteS( "HLine: " ); WriteNum( left ); Space; WriteNum( right ); Space; WriteNum( y ); Space; WriteNum( action ); NewLine;
+  // FIXME needs to work in sprites as well, I think. I really does, especially for fonts!
+
+  WriteS( "HLine:  " ); WriteNum( workspace.vectors.zp.vdu_drivers.ws.GWBRow );
+  Space; WriteNum( workspace.vectors.zp.vdu_drivers.ws.GWTRow );
+  Space; WriteNum( workspace.vectors.zp.vdu_drivers.ws.GWLCol );
+  Space; WriteNum( workspace.vectors.zp.vdu_drivers.ws.GWRCol );
+  NewLine;
+#endif
+
+  if (y < workspace.vectors.zp.vdu_drivers.ws.GWBRow || y > workspace.vectors.zp.vdu_drivers.ws.GWTRow) return;
+  if (left > workspace.vectors.zp.vdu_drivers.ws.GWRCol || right < workspace.vectors.zp.vdu_drivers.ws.GWLCol) return;
+
+  switch (workspace.vectors.zp.vdu_drivers.ws.XShftFactor) {
+  case 0: break;
+  case 5: break;
+  default: WriteS( "HLine called, shift factor " ); WriteNum( workspace.vectors.zp.vdu_drivers.ws.XShftFactor ); NewLine;
+  }
+
+#ifdef DEBUG__SHOW_HLINES
+  WriteNum( workspace.vectors.zp.vdu_drivers.ws.XShftFactor ); Space;
+  WriteNum( workspace.vectors.zp.vdu_drivers.ws.XWindLimit ); Space;
+  WriteNum( workspace.vectors.zp.vdu_drivers.ws.YWindLimit ); Space;
+  WriteNum( workspace.vectors.zp.vdu_drivers.ws.ScreenStart ); Space;
+  WriteNum( workspace.vectors.zp.vdu_drivers.ws.Log2BPP ); Space;
+  WriteNum( workspace.vectors.zp.vdu_drivers.ws.Log2BPC ); NewLine;
+#endif
 
   // FIXME These things need to be moved into some graphics context. The Kernel/s/vdu stuff accesses this directly, but the DrawMod uses the ReadVduVariables interface.
   extern uint32_t *vduvarloc[];
 
-  asm ( "push { r0-r12, lr }" );
-
-#ifdef DEBUG__SHOW_HLINES
-  Write0( "HLine " ); NewLine;
-#endif
   // EcfOraEor *ecf;
   extern uint32_t frame_buffer;
-  uint32_t *screen = &frame_buffer;
-  uint32_t *row = screen + (1079 - y) * 1920;
-  uint32_t *l = row + left;
-  uint32_t *r = row + right;
+  uint32_t bpp = 1 << workspace.vectors.zp.vdu_drivers.ws.Log2BPP;
+  uint32_t *screen = workspace.vectors.zp.vdu_drivers.ws.ScreenStart;
+  uint32_t y_from_top = workspace.vectors.zp.vdu_drivers.ws.YWindLimit - y;
+  int32_t stride = (((workspace.vectors.zp.vdu_drivers.ws.XWindLimit + 1) * bpp + 31) / 32);
+  uint32_t *row = screen + stride * y_from_top;
+  uint32_t *l = row + (left * bpp) / 32;
+  uint32_t *r = row + (right * bpp) / 32;
+  uint32_t lmask = 0xffffffff << ((left * bpp) & 31);
+  uint32_t rmask = 0xffffffff >> (31 - ((right * bpp) & 31));
+#ifdef DEBUG__SHOW_HLINES
+  WriteS( "Row: " ); WriteNum( row ); Space;
+  WriteS( "L: " ); WriteNum( l ); Space;
+  WriteS( "R: " ); WriteNum( r ); Space;
+  if (l == r) WriteNum( lmask & rmask ); else { WriteNum( lmask ); Space; WriteNum( rmask ); } NewLine;
+  show_sprite();
+#endif
+
+  uint32_t c;
+  switch (workspace.vectors.zp.vdu_drivers.ws.Log2BPP) {
+  case 0: // 1bpp
+    c = workspace.vectors.zp.vdu_drivers.ws.FgEcf[0];
+    assert( c == 0xffffffff || c == 0 );
+    break;
+  case 5: // 32bpp
+    c = screen_colour_from_os_colour( workspace.vectors.zp.vdu_drivers.ws.FgEcf[0] );
+    //c = screen_colour_from_os_colour( *vduvarloc[154 - 128] );
+    break;
+  default:
+    WriteS( "Unsupported bit depth" ); NewLine;
+    c = 0xffffffff;
+  }
+
   switch (action) {
   case 1: // Foreground
     {
-    uint32_t *p = l;
-    uint32_t c = screen_colour_from_os_colour( *vduvarloc[153 - 128] );
-    while (p <= r) {
-      *p = c;
-      p++;
+    // FIXME URGENTLY Only sets to one!
+    if (l == r) {
+      *l = ((*l) & ~(lmask & rmask)) | (c & (lmask & rmask));
+    }
+    else {
+      if (lmask != 0xffffffff) { *l = (*l & ~lmask) | (c & lmask); l++; }
+      while (l < r) {
+        *l++ = c;
+      }
+      assert( l == r );
+      if (rmask != 0xffffffff) *l |= (*l & ~rmask) | (c & rmask); else *l = 0xffffffff;
     }
     }
     break;
+#if 0
   case 2: // Invert
     {
     uint32_t *p = l;
@@ -2609,9 +3161,19 @@ void __attribute__(( naked )) fast_horizontal_line_draw( uint32_t left, uint32_t
     }
     }
     break;
+#endif
   default: break;
   }
+}
 
+// Actual "parameters":
+// GWLCol,GWBRow,GWRCol,GWTRow, YWindLimit, XShftFactor,LineLength,GColAdr,ScreenStart, lefy, y, right, action
+// workspace.zp.vdu_drivers.ws.GWLCol etc.
+
+void __attribute__(( naked )) fast_horizontal_line_draw( uint32_t left, uint32_t y, uint32_t right, uint32_t action )
+{
+  asm ( "push { r0-r12, lr }" );
+  c_horizontal_line_draw( left, y, right, action );
   asm ( "pop { r0-r12, pc }" );
 }
 
@@ -2887,6 +3449,10 @@ static void __attribute__(( naked, noreturn )) idle_thread()
 
 extern void __attribute__(( noreturn )) UsrBoot();
 
+#ifndef NO_DEBUG_OUTPUT
+#include "include/pipeop.h"
+#endif
+
 void Boot()
 {
   setup_OS_vectors();
@@ -2924,6 +3490,8 @@ void Boot()
   {
 #ifndef NO_DEBUG_OUTPUT
     workspace.kernel.debug_pipe = PipeOp_CreateForTransfer( 4096 );
+    // Guaranteed to work:
+    workspace.kernel.debug_space = PipeOp_WaitForSpace( workspace.kernel.debug_pipe, 2048 );
     PipeOp_PassingOff( workspace.kernel.debug_pipe, 0 ); // The task doesn't exist yet
 #endif
     Write0( "Kernel starting HAL" ); NewLine;

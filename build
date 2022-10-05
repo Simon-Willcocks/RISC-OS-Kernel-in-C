@@ -156,10 +156,10 @@ build_gcc_module VFPSupport &&
 build_gcc_module Portable &&
 build_gcc_module FPEmulator &&
 
-echo Making ROM-specific script >&2 &&
-cp rool.script hal.script &&
-sed -n 's/VduInit \(.*\)\.\..*$/VduInit = 0x\1 ;/p;s/MOSPaletteV \(.*\)\.\..*$/MOSPaletteV = 0x\1 ;/p;s/MOSGraphicsV \(.*\)\.\..*$/MOSGraphicsV = 0x\1 ;/p;s/JTABLE \(.*\)\.\..*$/JTABLE = 0x\1 ;/p;s/SysModules_Info \(.*\)\.\..*$/_binary_AllMods_start = 0x\1 ;/p;s/SpriteVecHandler \(.*\)\.\..*$/SpriteVecHandler = 0x\1 ;/p;s/\<HardFont\> \(.*\)\.\..*$/system_font = 0x\1 ;/p;s/ByteVarInitTable \(.*\)\.\..*$/ByteVarInitTable = 0x\1 ;/p' RiscOS/Sources/Kernel/bin/Kernel_gpa >> hal.script &&
-echo 'rom_size = ' $( stat -c %s $ROM )  ' ;' >> hal.script &&
+#echo Making ROM-specific script >&2 &&
+#cp rool.script hal.script &&
+#sed -n 's/VduInit \(.*\)\.\..*$/VduInit = 0x\1 ;/p;s/MOSPaletteV \(.*\)\.\..*$/MOSPaletteV = 0x\1 ;/p;s/MOSGraphicsV \(.*\)\.\..*$/MOSGraphicsV = 0x\1 ;/p;s/JTABLE \(.*\)\.\..*$/JTABLE = 0x\1 ;/p;s/SysModules_Info \(.*\)\.\..*$/_binary_AllMods_start = 0x\1 ;/p;s/SpriteVecHandler \(.*\)\.\..*$/SpriteVecHandler = 0x\1 ;/p;s/\<HardFont\> \(.*\)\.\..*$/system_font = 0x\1 ;/p;s/ByteVarInitTable \(.*\)\.\..*$/ByteVarInitTable = 0x\1 ;/p;s/SWINumberFromString_Code \(.*\)\.\..*$/SWINumberFromString_Code = 0x\1 ;/p;s/SWINumberToString_Code \(.*\)\.\..*$/SWINumberToString_Code = 0x\1 ;/p' RiscOS/Sources/Kernel/bin/Kernel_gpa >> hal.script &&
+#echo 'rom_size = ' $( stat -c %s $ROM )  ' ;' >> hal.script &&
 
 function rom_kernel_start {
   sed -n 's/KernelBase \(.*\)\.\..*$/\1/p' RiscOS/Sources/Kernel/bin/Kernel_gpa
@@ -186,7 +186,7 @@ arm-linux-gnueabi-objdump -x --disassemble-all hal.elf > hal.dump &&
 ls -l *.bin &&
 
 cp hal.bin latest.bin &&
-dd if=$ROM bs=65536 skip=$(( (0x$( rom_kernel_start ) - 0xfc000000) >> 16 )) >> latest.bin &&
+dd if=$ROM $( stat -c 'bs=%B skip=%b' hal.bin ) >> latest.bin &&
 arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 latest.bin --rename-section .data=.text latest.elf &&
 arm-linux-gnueabi-objdump -x --disassemble-all latest.elf > latest.dump &&
 ls -l latest.*

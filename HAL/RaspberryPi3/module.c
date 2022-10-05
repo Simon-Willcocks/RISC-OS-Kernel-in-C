@@ -40,47 +40,6 @@ NO_messages_file;
 
 const char title[] = "HAL";
 
-static inline void memory_write_barrier()
-{
-  asm ( "dsb sy" );
-}
-
-static inline void memory_read_barrier()
-{
-  asm ( "dsb sy" );
-}
-
-static inline void clear_VF()
-{
-  asm ( "msr cpsr_f, #0" );
-}
-
-static inline void set_VF()
-{
-  asm ( "msr cpsr_f, #(1 << 28)" );
-}
-
-#define WriteS( string )
-#define Write0( string )
-#define NewLine 
-#define Space 
-#if 0
-#define WriteS( string ) asm ( "svc 1\n  .string \""string"\"\n  .balign 4" : : : "lr" )
-#define Write0( string ) { register uint32_t r0 asm( "r0" ) = (uint32_t) (string); asm ( "push { r0-r12, lr }\nsvc 2\n  pop {r0-r12, lr}" : : "r" (r0) ); }
-#define NewLine asm ( "svc 3\n" : : : "lr" )
-#define Space asm ( "svc 0x120\n" : : : "lr" )
-#endif
-
-static void WriteNum( uint32_t number )
-{
-  for (int nibble = 7; nibble >= 0; nibble--) {
-    char c = '0' + ((number >> (nibble*4)) & 0xf);
-    if (c > '9') c += ('a' - '0' - 10);
-    register uint32_t r0 asm( "r0" ) = c;
-    asm( "svc 0": : "r" (r0) : "lr", "cc" );
-  }
-}
-
 typedef struct {
   uint32_t       control;
   uint32_t       res1;
@@ -110,12 +69,48 @@ typedef struct {
   } Core_write_clear[4];
 } QA7;
 
+// Note: Alignment is essential for device area, so that GCC doesn't
+// generate multiple strb instructions to write a single word.
+// Or I could be professional and make every device access an inline
+// routine call. Nah!
+struct __attribute__(( packed, aligned( 256 ) )) gpio {
+  uint32_t gpfsel[6];  // 0x00 - 0x14
+  uint32_t res18;
+  uint32_t gpset[2];   // 0x1c, 0x20
+  uint32_t res24;
+  uint32_t gpclr[2];
+  uint32_t res30;     // 0x30
+  uint32_t gplev[2];
+  uint32_t res3c;
+  uint32_t gpeds[2];   // 0x40
+  uint32_t res48;
+  uint32_t gpren[2];
+  uint32_t res54;
+  uint32_t gpfen[2];
+  uint32_t res60;     // 0x60
+  uint32_t gphen[2];
+  uint32_t res6c;
+  uint32_t gplen[2];    // 0x70
+  uint32_t res78;
+  uint32_t gparen[2];
+  uint32_t res84;
+  uint32_t gpafen[2];
+  uint32_t res90;     // 0x90
+  uint32_t gppud;
+  uint32_t gppudclk[2];
+  uint32_t resa0;
+  uint32_t resa4;
+  uint32_t resa8;
+  uint32_t resac;
+  uint32_t test;
+};
+
 
 struct workspace {
   uint32_t lock;
   uint32_t *mbox;
 
-  uint32_t *gpio;
+  struct gpio *gpio;
   uint32_t *uart;
   QA7      *qa7;
 
@@ -125,11 +120,16 @@ struct workspace {
   uint32_t graphics_driver_id;
   uint32_t ticks_per_interval;
 
+  uint32_t wimp_started;
+
   struct core_workspace {
     struct workspace *shared;
     int8_t first_reported_irq;
     int8_t last_reported_irq;
     uint8_t res[2];
+    struct console_stack {
+      uint64_t stack[64];
+    } console_stack;
     struct ticker_stack {
       uint64_t stack[64];
     } ticker_stack;
@@ -468,32 +468,19 @@ static void show_character_at( int cx, int cy, char ch, int core, uint32_t colou
   show_character( x, y, ch, colour, ws );
 }
 
-static void show_line( int y, int core, uint32_t colour, struct workspace *ws )
-{
-  y = y * 8 + TOP;
-  int x = core * (60 * 8) + 2;
-  set_pixel( x, y, colour, ws );
-  set_pixel( x, y+2, colour, ws );
-  set_pixel( x, y+4, colour, ws );
-  set_pixel( x, y+6, colour, ws );
-}
-
 static void new_line( struct core_workspace *workspace )
 {
-  show_line( workspace->y, core( workspace ), Black, workspace->shared );
-
   workspace->x = 0;
   workspace->y++;
   if (workspace->y == 40)
     workspace->y = 0;
-  for (int x = 0; x < 59; x++) {
-    workspace->display[workspace->y][x] = ' ';
 
-    show_character_at( x, workspace->y, ' ', core( workspace ), Black, workspace->shared );
-  }
-  show_line( workspace->y, core( workspace ), Green, workspace->shared );
+  char *row = workspace->display[workspace->y];
+  for (int x = 0; x < 59; x++)
+    row[x] = ' ';
 }
 
+static inline void add_string( const char *s, struct core_workspace *workspace );
 static void add_to_display( char c, struct core_workspace *workspace )
 {
   if (core( workspace ) == 0) {
@@ -515,16 +502,6 @@ static void add_to_display( char c, struct core_workspace *workspace )
 
   if (c != '\n' && c != '\r') {
     workspace->display[workspace->y][workspace->x++] = c;
-
-    // Temp:
-    if (0 != workspace->shared->frame_buffer) {
-      if (c < ' ')
-        show_character_at( workspace->x, workspace->y, c + '@', core( workspace ), Red, workspace->shared );
-      else if (c > 128)
-        show_character_at( workspace->x, workspace->y, c - 128, core( workspace ), Green, workspace->shared );
-      else
-        show_character_at( workspace->x, workspace->y, c, core( workspace ), White, workspace->shared );
-    }
   }
 }
 
@@ -555,7 +532,19 @@ static inline void add_green_num( uint32_t number, struct core_workspace *worksp
 
 static void update_display( struct core_workspace *workspace )
 {
-  // The whole "screen" will be displayed, with a cache flush, and the top line will be (workspace->y + 1) % 40
+  for (int y = 1; y <= 40; y++) {
+    char *row = workspace->display[(y + workspace->y) % 40];
+    for (int x = 0; x < 60; x++) {
+      char c = row[x];
+      if (c < ' ')
+        show_character_at( x, y, c + '@', core( workspace ), Red, workspace->shared );
+      else if (c > 128)
+        show_character_at( x, y, c - 128, core( workspace ), Green, workspace->shared );
+      else
+        show_character_at( x, y, c, core( workspace ), White, workspace->shared );
+    }
+  }
+
   if (0 != workspace->shared->frame_buffer) {
     asm ( "svc 0xff" : : : "lr", "cc" );
   }
@@ -601,10 +590,6 @@ void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace 
   }
   else {
     add_to_display( 128 + c, workspace );
-
-    // This part is temporary, until the display update can be triggered by an interrupt FIXME
-    //update_display( workspace );
-    // End of temporary implementation
   }
 
   clear_VF();
@@ -789,17 +774,40 @@ static void *map_device_page( uint32_t physical_address )
 
 #define LED_BLINK_TIME 0x10000000
 
+static inline void led_init( struct workspace *workspace )
+{
+  volatile struct gpio *g = workspace->gpio;
+  // gpfsel[pin / 10] ... << 3 * (pin % 10)
+  g->gpfsel[2] = (g->gpfsel[2] & ~(7 << (2 * 3))) | (1 << (2 * 3)); // GPIO pin 22
+  g->gpfsel[2] = (g->gpfsel[2] & ~(7 << (7 * 3))) | (1 << (7 * 3)); // GPIO pin 27
+
+  // Never before needed, but LED not getting bright. (Copied from IsambardOS)
+  g->gppud = 0;
+  asm volatile ( "dsb sy" );
+  for (int i = 0; i < 150; i++) { asm volatile( "nop" ); }
+  g->gppudclk[0] |= 1 << 4;
+  asm volatile ( "dsb sy" );
+  for (int i = 0; i < 150; i++) { asm volatile( "nop" ); }
+  g->gppud = 0;
+  asm volatile ( "dsb sy" );
+  g->gppudclk[0] &= ~(1 << 4);
+  // End.
+
+  asm volatile ( "dsb sy" );
+}
+
 void led_on( struct workspace *workspace )
 {
-  asm volatile ( "dsb" ); // Probably overkill on the dsbs, but we're alternating between two devices
-  workspace->gpio[0x1c/4] = (1 << 22); // Set
+  // Probably overkill on the dsbs, but we're alternating between mailboxes and gpio
+  asm volatile ( "dsb" );
+  workspace->gpio->gpset[0] = (1 << 22);
   asm volatile ( "dsb" );
 }
 
 void led_off( struct workspace *workspace )
 {
   asm volatile ( "dsb" );
-  workspace->gpio[0x28/4] = (1 << 22); // Clr
+  workspace->gpio->gpclr[0] = (1 << 22);
   asm volatile ( "dsb" );
 }
 
@@ -834,9 +842,11 @@ void led_blink( struct workspace *workspace, int n )
 
 void show_word( int x, int y, uint32_t number, uint32_t colour, struct workspace *ws )
 {
+  // Wow. Has this has never been right?
   static const char hex[] = "0123456789abcdef";
   for (int nibble = 0; nibble < 8; nibble++) {
-    show_character( x+64-nibble*8, y, hex[nibble], colour, ws );
+    show_character( x+64-nibble*8, y, hex[number & 0xf], colour, ws );
+    number = number >> 4;
   }
 }
 
@@ -931,8 +941,7 @@ static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
     asm volatile ( "dsb" );
 
     //workspace->gpio[0x28/4] = (1 << 22); // Clr
-    workspace->gpio[0x1c/4] = (1 << 22); // Set
-    asm volatile ( "dsb" );
+    led_on( workspace );
 
     uint32_t response;
 
@@ -948,7 +957,7 @@ static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
     asm ( "svc 0xff" : : : "lr", "cc" );
   }
 
-  workspace->gpio[0x28/4] = (1 << 22); // Clr
+  led_off( workspace );
   asm volatile ( "dsb" );
 
   return (dma_tags[buffer_tag] & ~0xc0000000);
@@ -961,7 +970,7 @@ static uint32_t GraphicsV_DeviceNumber( char const *name )
   register uint32_t flags asm( "r1" ) = 0;
   register char const *driver_name asm( "r2" ) = name;
   register uint32_t allocated asm( "r0" );
-  asm ( "svc 0x20065" : "=r" (allocated) : "r" (code), "r" (flags), "r" (driver_name) );
+  asm ( "svc 0x20065" : "=r" (allocated) : "r" (code), "r" (flags), "r" (driver_name) : "lr" );
   return allocated;
 }
 
@@ -970,25 +979,29 @@ static void GraphicsV_DeviceReady( uint32_t number )
   // OS_ScreenMode 65
   register uint32_t code asm( "r0" ) = 65;
   register uint32_t driver_number asm( "r1" ) = number;
-  asm ( "svc 0x20065" : : "r" (code), "r" (driver_number) );
+  asm ( "svc 0x20065" : : "r" (code), "r" (driver_number) : "lr" );
 }
 
 // Not static, or it won't be seen by inline assembler
-void __attribute__(( noinline )) c_start_display( struct workspace *workspace )
+void __attribute__(( noinline )) c_start_display( struct core_workspace *workspace )
 {
-  workspace->graphics_driver_id = GraphicsV_DeviceNumber( "BCM28xx" );
+  if (0 != workspace->shared->graphics_driver_id) asm ( "bkpt 1" );
+
+  WriteS( "BCM28xx" ); NewLine;
+
+  workspace->shared->graphics_driver_id = GraphicsV_DeviceNumber( "BCM28xx" );
 
   {
     // This handler is not core-specific
     void *handler = GraphicsV_handler;
     register uint32_t vector asm( "r0" ) = 42;
     register void *routine asm( "r1" ) = handler;
-    register struct workspace *handler_workspace asm( "r2" ) = workspace;
+    register struct workspace *handler_workspace asm( "r2" ) = workspace->shared;
     asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
   }
 
   WriteS( "HAL obtained GraphicsV" ); NewLine;
-  GraphicsV_DeviceReady( workspace->graphics_driver_id );
+  GraphicsV_DeviceReady( workspace->shared->graphics_driver_id );
   WriteS( "Graphics Driver Ready" ); NewLine;
 
   WriteS( "HAL initialised frame buffer" ); NewLine;
@@ -1061,11 +1074,24 @@ static inline bool timer_interrupt_active()
   return (timer_status() & 4) != 0;
 }
 
-static int __attribute__(( noinline )) C_IrqV_handler( struct core_workspace *workspace )
+static int __attribute__(( noinline )) C_IrqV_handler( struct core_workspace *workspace
+
+
+, uint32_t irq_address ) // FIXME: remove!
+
 {
   // This is where we will use the hardware to identify which devices have tried to
   // interrupt the processor.
   QA7 volatile *qa7 = workspace->shared->qa7;
+
+    uint32_t this_core = core( workspace );
+  memory_read_barrier();
+    qa7->Core_write_clear[this_core].Mailbox[this_core] = 0xffffffff;
+    uint32_t old = qa7->Core_write_clear[this_core].Mailbox[3-this_core];
+    qa7->Core_write_clear[this_core].Mailbox[3-this_core] = 0xffffffff;
+  memory_read_barrier();
+    qa7->Core_write_set[this_core].Mailbox[this_core] = irq_address;
+    qa7->Core_write_set[this_core].Mailbox[3-this_core] = old+1;;
 
   memory_read_barrier();
   uint32_t source = qa7->Core_IRQ_Source[core( workspace )];
@@ -1132,16 +1158,10 @@ static void __attribute__(( naked )) IrqV_handler()
   asm ( "push { "C_CLOBBERED" }" );
   register struct core_workspace *workspace asm( "r12" );
   register uint32_t *sp asm( "sp" ); // Location of r0
-  *sp = C_IrqV_handler( workspace );
+  *sp = C_IrqV_handler( workspace, *sp );
   // Intercepting call (pops pc from the stack)
   asm ( "pop { "C_CLOBBERED", pc }" );
 }
-
-// FIXME Share this more neatly!
-#define OS_ThreadOp 0xf9
-enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, LockClaim, LockRelease,
-       WaitForInterrupt = 32, InterruptIsOff, NumberOfInterruptSources };
-#define OS_IntOff 0x14
 
 
 static void register_interrupt_sources( uint32_t count )
@@ -1222,9 +1242,15 @@ static void resume_task( uint32_t handle )
 // the vector call will not allow another call.
 static void tickerv_task( uint32_t handle, struct core_workspace *ws )
 {
+  QA7 volatile *qa7 = ws->shared->qa7;
+  int this_core = core( ws );
   for (;;) {
     wait_until_woken();
     WriteS( "I" );
+    for (int i = 0; i < 4; i++) {
+      Space; WriteNum( qa7->Core_write_clear[i].Mailbox[3-i] );
+    }
+    NewLine;
     // Vector is called with interrupts disabled
     asm ( 
       "\n  mov r9, #0x1c// TickerV"
@@ -1275,7 +1301,7 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
 
   memory_write_barrier(); // About to write to something else
 
-  // timer_set_countdown( ticks_per_interval );
+  timer_set_countdown( ticks_per_interval );
 
   const uint32_t tick_divider = 10;
   uint32_t ticks = 0;
@@ -1338,6 +1364,7 @@ static void console_task( uint32_t handle, struct core_workspace *ws, uint32_t r
 {
   PipeSpace data = { 0, 0, 0 };
   add_string( "Starting console task\n\r", ws );
+
   for (;;) {
     if (data.available == 0) {
       data = PipeOp_WaitForData( read_pipe, 1 );
@@ -1354,12 +1381,9 @@ static void console_task( uint32_t handle, struct core_workspace *ws, uint32_t r
     while (data.available > 0) {
       char *s = data.location;
 
-      add_green_num( data.available, ws );
-      add_to_display( ' ', ws );
-      add_green_num( (uint32_t) data.location, ws );
-
       for (int i = 0; i < data.available; i++)
         add_to_display( s[i], ws );
+
       data = PipeOp_DataConsumed( read_pipe, data.available );
     }
     update_display( ws );
@@ -1368,7 +1392,7 @@ static void console_task( uint32_t handle, struct core_workspace *ws, uint32_t r
 
 static uint32_t start_console_task( struct core_workspace *ws, uint32_t pipe )
 {
-  uint64_t *stack = (void*) ((&ws->ticker_stack)+1);
+  uint64_t *stack = (void*) ((&ws->console_stack)+1);
 
   register uint32_t request asm ( "r0" ) = 0; // Create Thread
   register void *code asm ( "r1" ) = console_task;
@@ -1411,16 +1435,29 @@ void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_
   workspace->mbox = map_device_page( 0x3f00b000 );
 
   workspace->gpio = map_device_page( 0x3f200000 );
+
+  if (first_entry) {
+    led_init( workspace );
+    //led_blink( 0x04040404, workspace );
+  }
+
   workspace->uart = map_device_page( 0x3f201000 );
   workspace->qa7 = map_device_page( 0x40000000 );
 
+  workspace->uart[0] = '0' + this_core;
+
   if (first_entry) {
     asm volatile ( "dsb" );
-  //for (int i = 0; i < 0x10000000; i++) asm ( "" );
+
     workspace->fb_physical_address = initialise_frame_buffer( workspace );
   }
 
   workspace->frame_buffer = map_screen_into_memory( workspace->fb_physical_address );
+
+show_word( this_core * 100, this_core * 16 + 16, this_core*0x11111111, first_entry ? Red : Green, workspace ); 
+show_word( this_core * 100, this_core * 16 + 32, workspace->gpio, first_entry ? Red : Green, workspace ); 
+  QA7 volatile *qa7 = workspace->qa7;
+show_word( this_core * 100, this_core * 16 + 48, &qa7->Core_write_clear[this_core], first_entry ? Red : Green, workspace ); 
 
   workspace->core_specific[this_core].shared = workspace;
   workspace->core_specific[this_core].queued = 0; // VDU code queue size, including character that started it filling
@@ -1475,10 +1512,12 @@ void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_
       pipe = (pipe << 4) | c;
     }
 
-    uint32_t handle = start_console_task( &workspace->core_specific[this_core], pipe );
-    yield();
+    if (pipe != 0) {
+      uint32_t handle = start_console_task( &workspace->core_specific[this_core], pipe );
+    }
   }
 
+  yield();
 
 #define QEMU
   workspace->qa7->timer_prescaler = 0x06AAAAAB;
@@ -1499,12 +1538,12 @@ void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_
   if (first_entry) {
     workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
 
-#ifdef QEMU
+#if 1 // def QEMU
     const int slower = 100;
-    // Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
+    Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
     workspace->ticks_per_interval = workspace->ticks_per_interval * slower;
 #endif
-    // Write0( "Timer ticks per interval: " ); WriteNum( workspace->ticks_per_interval ); NewLine;
+    Write0( "Timer ticks per interval: " ); WriteNum( workspace->ticks_per_interval ); NewLine;
 
     register_interrupt_sources( board_interrupt_sources );
 
@@ -1518,13 +1557,16 @@ void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_
 
   if (0) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
-    // Write0( "Timer task: " ); WriteNum( handle ); NewLine;
+    Write0( "Timer task: " ); WriteNum( handle ); NewLine;
     yield();
   }
 
   if (first_entry) {
+    // Involves calculation, don't assign directly to the register variable
+    struct core_workspace *cws = &workspace->core_specific[this_core];
+
     register void *callback asm( "r0" ) = start_display;
-    register struct workspace *ws asm( "r1" ) = workspace;
+    register struct core_workspace *ws asm( "r1" ) = cws;
     asm( "svc 0x20054" : : "r" (callback), "r" (ws) );
   }
 }
@@ -1562,26 +1604,46 @@ void register_files( uint32_t *regs )
     : "lr" );
 }
 
+void start_wimp( uint32_t *regs, struct core_workspace *workspace )
+{
+  if (workspace->shared->wimp_started == 0) {
+    workspace->shared->wimp_started = 1;
+    regs[0] = "<Boot$Dir>.!Blocks.!Run";
+    regs[1] = 0; // Claim service
+    // FIXME deal with Wimp exiting StartedWimp/Reset
+  }
+}
+
 void __attribute__(( naked )) service_call()
 {
-  // This is extremely minimal!
+  asm ( "teq r1, #0x77"
+    "\n  teqne r1, #0x49"
+    "\n  teqne r1, #0x50"
+    "\n  teqne r1, #0x60"
+    "\n  movne pc, lr" );
+
+
+  // This is extremely minimal, and not all that efficient!
   // Object to mode changes. All of them.
   asm ( "teq r1, #0x77"
     "\n  moveq r1, #0"
     "\n  moveq r2, #0"
     "\n  moveq pc, lr" );
-  asm ( "teq r1, #0x60" // Service_ResourceFSStarting
+
+  asm ( "teq r1, #0x49" // Service_StartWimp
     "\n  bne 0f"
     "\n  push { "C_CLOBBERED", lr }"
     "\n  mov r0, sp"
-    "\n  bl register_files"
+    "\n  mov r1, r12 // workspace"
+    "\n  bl start_wimp"
     "\n  pop { "C_CLOBBERED", pc }"
     "\n  0:" );
+
   asm ( "teq r1, #0x50"
-    "\n  ldreq r12, [r12]"
-    "\n  moveq r1, #0"
-    "\n  adreq r3, vidc_list"
-    "\n  mov pc, lr"
+    "\n  bne 0f"
+    "\n  ldr r12, [r12]"
+    "\n  mov r1, #0"
+    "\n  adr r3, vidc_list"
 /* VIDC List:
 https://www.riscosopen.org/wiki/documentation/show/Service_ModeExtension
 0 	3 (list format)
@@ -1609,7 +1671,17 @@ Bit 4: Interlace fields1
 N 	-1 (terminator) 
  */
     "\nvidc_list: .word 3, 5, 0, 0, 0, 1920, 0, 0, 0, 0, 0, 1080, 0, 0, 8000, 0, -1"
-    );
+    "\n  0:" );
 
+  asm ( "teq r1, #0x60" // Service_ResourceFSStarting
+    "\n  bne 0f"
+    "\n  push { "C_CLOBBERED", lr }"
+    "\n  mov r0, sp"
+    "\n  bl register_files"
+    "\n  pop { "C_CLOBBERED", pc }"
+    "\n  0:" );
+
+    asm (
+    "\n  bkpt 1" );
 }
 

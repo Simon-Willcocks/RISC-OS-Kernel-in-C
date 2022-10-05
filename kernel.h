@@ -68,6 +68,7 @@ struct Kernel_workspace {
   uint32_t svc_stack[640]; // For use until SharedCLibrary-friendly stack set up.
 
   uint32_t debug_pipe;
+  uint32_t debug_written; // Written, but not reported to the pipe
   PipeSpace debug_space;
 
   callback *callbacks_pool;
