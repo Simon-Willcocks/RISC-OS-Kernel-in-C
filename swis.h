@@ -130,22 +130,16 @@ static inline void rma_free( uint32_t block )
   // FIXME
 }
 
-static inline void *rma_allocate( uint32_t size )
+static void *rma_allocate( uint32_t size )
 {
-  svc_registers regs;
+  register uint32_t code asm( "r0" ) = 2;
+  register void *heap asm( "r1" ) = &rma_heap;
+  register uint32_t bytes asm( "r3" ) = size;
+  register void *memory asm( "r2" );
 
-  void *result = 0;
+  asm ( "svc %[swi]" : "=r" (memory) : [swi] "i" (OS_Heap | 0x20000), "r" (code), "r" (heap), "r" (bytes) : "memory", "lr" );
 
-  regs.r[0] = 2;
-  regs.r[1] = (uint32_t) &rma_heap;
-  regs.r[3] = size;
-  regs.spsr = 0; // V flag set on entry results in failure
-
-  if (do_OS_Heap( &regs )) {
-    result = (void*) regs.r[2];
-  }
-
-  return result;
+  return memory;
 }
 
 static inline bool error_nomem( svc_registers *regs )

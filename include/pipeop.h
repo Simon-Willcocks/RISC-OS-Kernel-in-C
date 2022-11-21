@@ -56,7 +56,7 @@ static inline uint32_t PipeOp_CreateForTransfer( uint32_t max_block )
         , "r" (max_block_size)
         , "r" (max_data)
         , "r" (allocated_mem)
-        : "lr"
+        : "lr", "cc", "memory"
         );
 
   return pipe;
@@ -96,7 +96,7 @@ static inline PipeSpace PipeOp_WaitForSpace( uint32_t write_pipe, uint32_t bytes
         , "r" (code)
         , "r" (pipe)
         , "r" (amount)
-        : "lr"
+        : "lr", "cc", "memory"
         );
 
   PipeSpace result = { .error = error, .location = location, .available = available };
@@ -133,7 +133,7 @@ static inline PipeSpace PipeOp_SpaceFilled( uint32_t write_pipe, uint32_t bytes 
         , "r" (code)
         , "r" (pipe)
         , "r" (amount)
-        : "lr"
+        : "lr", "cc", "memory"
         );
 
   PipeSpace result = { .error = error, .location = location, .available = available };
@@ -165,7 +165,7 @@ static inline PipeSpace PipeOp_WaitForData( uint32_t read_pipe, uint32_t bytes )
         , "r" (code)
         , "r" (pipe)
         , "r" (amount)
-        : "lr"
+        : "lr", "cc", "memory"
         );
 
   PipeSpace result = { .error = error, .location = location, .available = available };
@@ -201,7 +201,7 @@ static inline PipeSpace PipeOp_DataConsumed( uint32_t read_pipe, uint32_t bytes 
         , "r" (code)
         , "r" (pipe)
         , "r" (amount)
-        : "lr"
+        : "lr", "cc", "memory"
         );
 
   PipeSpace result = { .error = error, .location = location, .available = available };
@@ -229,7 +229,7 @@ static inline error_block *PipeOp_PassingOff( uint32_t read_pipe, uint32_t new_r
         , "r" (code)
         , "r" (pipe)
         , "r" (task)
-        : "lr"
+        : "lr", "cc", "memory"
         );
 
   return error;
@@ -243,19 +243,20 @@ static inline error_block *PipeOp_PassingOver( uint32_t write_pipe, uint32_t new
   register uint32_t task asm ( "r2" ) = new_sender;
 
   // OUT
-  register error_block *error asm ( "r0" );
+  register error_block *error;
 
   // gcc is working on allowing output and goto in inline assembler, but it's not there yet, afaik
   asm volatile (
         "svc %[swi]"
-    "\n  movvc r0, #0"
+    "\n  movvc %[error], #0"
+    "\n  movvs %[error], r0"
 
-        : "=r" (error)
+        : [error] "=r" (error)
         : [swi] "i" (OS_PipeOp)
         , "r" (code)
         , "r" (pipe)
         , "r" (task)
-        : "lr"
+        : "lr", "cc", "memory"
         );
 
   return error;

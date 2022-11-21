@@ -156,10 +156,7 @@ void *memset(void *s, int c, size_t n)
   return s;
 }
 
-#define OS_ThreadOp 0xf9
-enum { Start, Exit, WaitUntilWoken, Sleep, Resume, GetHandle, LockClaim, LockRelease,
-       WaitForInterrupt = 32, InterruptIsOff, NumberOfInterruptSources };
-#define OS_IntOff 0x14
+#include "include/kernel_swis.h"
 
 static inline void memory_write_barrier()
 {
@@ -192,7 +189,7 @@ static inline void debug_string_with_length( char const *s, int length )
       , "r" (code)
       , "r" (len)
       , "r" (string)
-      : "lr" );
+      : "lr", "memory" );
 }
 
 static inline void debug_string( char const *s )
@@ -212,7 +209,7 @@ static inline void debug_number( uint32_t num )
       : [swi] "i" (OS_ThreadOp)
       , "r" (code)
       , "r" (number)
-      : "lr" );
+      : "lr", "memory" );
 }
 
 #define WriteN( s, n ) debug_string_with_length( s, n )

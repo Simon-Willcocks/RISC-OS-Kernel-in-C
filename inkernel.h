@@ -42,14 +42,18 @@ static inline error_block *OSCLI( const char *command )
 
 // TEMPORARY!
 
-extern void __attribute__(( noreturn )) assertion_failed();
+// Some versions of this break routines with variables called regs that aren't svc_registers *
+extern svc_registers regs[];
+extern void __attribute__(( noreturn )) assertion_failed( uint32_t *abt, svc_registers *regs, const char *assertion );
 
-#define assert( x ) if (!(x)) { Write0( "FAILED: " ); Write0( __func__ ); Write0( " "#x ); assertion_failed(); }
+#define assert( x ) if (!(x)) { asm volatile ( "push {r0-r12,r14,r15}" ); register svc_registers *r asm( "r1" ) = &regs[0]; register const char *ass asm( "r2" ) = #x; asm volatile ( "mov r0, sp\n  bl assertion_failed" : : "r" (r), "r" (ass) ); }
+//#define assert( x ) while (!(x)) { asm ( "wfi"  : : "r" (#x) ); }
 
 extern const char hex[16];
 
 void SVCWriteNum( uint32_t n );
 void SVCWriteN( char const *s, int len );
+void SVCWrite0( char const *s );
 
 #ifndef NO_DEBUG_OUTPUT
 
@@ -58,12 +62,14 @@ void SVCWriteN( char const *s, int len );
 
 #define WriteS( string ) WriteN( string, sizeof( string ) - 1 )
 
-#define Write0( string ) do { char *s = (char*) string; if (s == 0) s = "<NULL>"; int len = 0; for (len = 0; (s[len] != '\0' && s[len] != '\n' && s[len] != '\r'); len++) {}; WriteN( s, len ); } while (false)
+#define Write0( string ) SVCWrite0( (char const *) string )
 
 #define NewLine WriteS( "\n" )
 #define Space WriteS( " " )
 
 #else
+#define WriteNum( n )
+#define WriteN( s, n )
 #define WriteS( string )
 #define Write0( string )
 #define NewLine 

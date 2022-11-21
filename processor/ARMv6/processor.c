@@ -292,7 +292,7 @@ void *memcpy(void *d, const void *s, uint32_t n)
 // Returns the original content of word (= from if changed successfully)
 uint32_t change_word_if_equal( uint32_t volatile *word, uint32_t from, uint32_t to )
 {
-  uint32_t failed;
+  uint32_t failed = true;
   uint32_t value;
 
   do {
@@ -324,16 +324,22 @@ uint32_t change_word_if_equal( uint32_t volatile *word, uint32_t from, uint32_t 
 bool claim_lock( uint32_t volatile *lock )
 {
   // TODO: return 0 != change_word_if_equal( lock, 0, workspace.core_number + 1 );
+  // Except that would be wrong. Don't do that.
   uint32_t failed;
   uint32_t value;
   uint32_t core = workspace.core_number+1;
 
+int tries = 0;
+#if 0
+if ((void*) 0xfffe4030 != lock) {
+WriteS( "Claim " ); WriteNum( lock );
+}
+#endif
   do {
+tries++;
     asm volatile ( "ldrex %[value], [%[lock]]"
                    : [value] "=&r" (value)
                    : [lock] "r" (lock) );
-
-    if (value == core) return true;
 
     if (value == 0) {
       // The failed and lock registers are not allowed to be the same, so
@@ -345,18 +351,49 @@ bool claim_lock( uint32_t volatile *lock )
                      : [value] "r" (core) );
     }
     else {
-      asm ( "clrex" );
+      asm volatile ( "clrex" );
+      asm volatile ( "wfe" );
+    
+      if (value == core) {
+#if 0
+if ((void*) 0xfffe4030 != lock) {
+WriteS( " (reclaim)" ); NewLine;
+}
+#endif
+        // No need for a barrier, the memory hasn't been changed
+        return true;
+      }
+
       failed = true;
     }
   } while (failed);
-  asm ( "dmb sy" );
+  asm volatile ( "dmb sy" );
 
+#if 0
+if ((void*) 0xfffe4030 != lock) {
+WriteS( " claimed " ); WriteNum( tries ); NewLine;
+}
+#endif
   return false;
 }
 
 void release_lock( uint32_t volatile *lock )
 {
+#if 0
+if ((void*) 0xfffe4030 != lock) {
+WriteS( "Release " ); WriteNum( lock ); Space; WriteNum( *lock );
+if (*lock != workspace.core_number+1) WriteS( " not owner" );
+NewLine;
+}
+#endif
   // Ensure that any changes made while holding the lock are visible before the lock is seen to have been released
-  asm ( "dmb sy" );
+  asm volatile ( "dmb sy" );
   *lock = 0;
+  asm volatile ( "dsb sy" );
+  asm volatile ( "sev" ); // Wake any other core waiting on this lock
+#if 0
+if ((void*) 0xfffe4030 != lock) {
+WriteS( "Released " ); WriteNum( lock ); Space; WriteNum( *lock ); NewLine;
+}
+#endif
 }

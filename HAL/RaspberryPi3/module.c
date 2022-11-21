@@ -38,7 +38,7 @@ NO_messages_file;
 
 #define C_CLOBBERED "r0-r3,r12"
 
-const char title[] = "HAL";
+const char title[] = "Raspberry Pi 3 HAL";
 
 typedef struct {
   uint32_t       control;
@@ -842,7 +842,6 @@ void led_blink( struct workspace *workspace, int n )
 
 void show_word( int x, int y, uint32_t number, uint32_t colour, struct workspace *ws )
 {
-  // Wow. Has this has never been right?
   static const char hex[] = "0123456789abcdef";
   for (int nibble = 0; nibble < 8; nibble++) {
     show_character( x+64-nibble*8, y, hex[number & 0xf], colour, ws );
@@ -1074,24 +1073,11 @@ static inline bool timer_interrupt_active()
   return (timer_status() & 4) != 0;
 }
 
-static int __attribute__(( noinline )) C_IrqV_handler( struct core_workspace *workspace
-
-
-, uint32_t irq_address ) // FIXME: remove!
-
+static int __attribute__(( noinline )) C_IrqV_handler( struct core_workspace *workspace )
 {
-  // This is where we will use the hardware to identify which devices have tried to
-  // interrupt the processor.
+  // This is where we will use the hardware to identify which devices have
+  // tried to interrupt the processor.
   QA7 volatile *qa7 = workspace->shared->qa7;
-
-    uint32_t this_core = core( workspace );
-  memory_read_barrier();
-    qa7->Core_write_clear[this_core].Mailbox[this_core] = 0xffffffff;
-    uint32_t old = qa7->Core_write_clear[this_core].Mailbox[3-this_core];
-    qa7->Core_write_clear[this_core].Mailbox[3-this_core] = 0xffffffff;
-  memory_read_barrier();
-    qa7->Core_write_set[this_core].Mailbox[this_core] = irq_address;
-    qa7->Core_write_set[this_core].Mailbox[3-this_core] = old+1;;
 
   memory_read_barrier();
   uint32_t source = qa7->Core_IRQ_Source[core( workspace )];
@@ -1158,7 +1144,7 @@ static void __attribute__(( naked )) IrqV_handler()
   asm ( "push { "C_CLOBBERED" }" );
   register struct core_workspace *workspace asm( "r12" );
   register uint32_t *sp asm( "sp" ); // Location of r0
-  *sp = C_IrqV_handler( workspace, *sp );
+  *sp = C_IrqV_handler( workspace );
   // Intercepting call (pops pc from the stack)
   asm ( "pop { "C_CLOBBERED", pc }" );
 }
@@ -1166,7 +1152,7 @@ static void __attribute__(( naked )) IrqV_handler()
 
 static void register_interrupt_sources( uint32_t count )
 {
-  register uint32_t request asm ( "r0" ) = NumberOfInterruptSources;
+  register uint32_t request asm ( "r0" ) = TaskOp_NumberOfInterruptSources;
   register uint32_t number asm ( "r1" ) = count;
 
   asm volatile ( "svc %[swi]"
@@ -1189,7 +1175,7 @@ static void disable_interrupts()
 
 static void wait_for_interrupt( uint32_t device )
 {
-  register uint32_t request asm ( "r0" ) = WaitForInterrupt;
+  register uint32_t request asm ( "r0" ) = TaskOp_WaitForInterrupt;
   register uint32_t dev asm ( "r1" ) = device;
 
   asm volatile ( "svc %[swi]"
@@ -1202,7 +1188,7 @@ static void wait_for_interrupt( uint32_t device )
 
 static void yield()
 {
-  register uint32_t request asm ( "r0" ) = Sleep;
+  register uint32_t request asm ( "r0" ) = TaskOp_Sleep;
   register uint32_t duration asm ( "r1" ) = 0;
 
   asm volatile ( "svc %[swi]"
@@ -1215,7 +1201,7 @@ static void yield()
 
 static void wait_until_woken()
 {
-  register uint32_t request asm ( "r0" ) = WaitUntilWoken;
+  register uint32_t request asm ( "r0" ) = TaskOp_WaitUntilWoken;
 
   asm volatile ( "svc %[swi]"
       :
@@ -1226,7 +1212,7 @@ static void wait_until_woken()
 
 static void resume_task( uint32_t handle )
 {
-  register uint32_t request asm ( "r0" ) = Resume;
+  register uint32_t request asm ( "r0" ) = TaskOp_Resume;
   register uint32_t h asm ( "r1" ) = handle;
 
   asm volatile ( "svc %[swi]"
@@ -1244,13 +1230,19 @@ static void tickerv_task( uint32_t handle, struct core_workspace *ws )
 {
   QA7 volatile *qa7 = ws->shared->qa7;
   int this_core = core( ws );
+  int ticks = 0;
   for (;;) {
     wait_until_woken();
-    WriteS( "I" );
+
+    ticks++;
+    if (ticks % 100 == 0) show_word( this_core * 1920/4, 1060, ticks, Green, ws->shared ); 
+
+/*
     for (int i = 0; i < 4; i++) {
       Space; WriteNum( qa7->Core_write_clear[i].Mailbox[3-i] );
     }
     NewLine;
+*/
     // Vector is called with interrupts disabled
     asm ( 
       "\n  mov r9, #0x1c// TickerV"
@@ -1287,10 +1279,10 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
         , "r" (cws)
         : "lr" );
 
-    tickerv_handle = handle;;
+    tickerv_handle = handle;
   }
 
-  // Write0( "Timer task claiming interrupt and entering loop " ); WriteNum( handle ); NewLine;
+  WriteS( "Timer task claiming interrupt and entering loop " ); WriteNum( handle ); NewLine;
 
   disable_interrupts();
 
@@ -1301,7 +1293,10 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
 
   memory_write_barrier(); // About to write to something else
 
-  timer_set_countdown( ticks_per_interval );
+  //timer_set_countdown( ticks_per_interval );
+  timer_set_countdown( 16 ); // Instant IRQ when enabled
+
+  memory_write_barrier(); // Maybe?
 
   const uint32_t tick_divider = 10;
   uint32_t ticks = 0;
@@ -1454,10 +1449,10 @@ void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_
 
   workspace->frame_buffer = map_screen_into_memory( workspace->fb_physical_address );
 
-show_word( this_core * 100, this_core * 16 + 16, this_core*0x11111111, first_entry ? Red : Green, workspace ); 
-show_word( this_core * 100, this_core * 16 + 32, workspace->gpio, first_entry ? Red : Green, workspace ); 
+show_word( this_core * (1920/4), 16, this_core*0x11111111, first_entry ? Red : Green, workspace ); 
+show_word( this_core * (1920/4), 32, workspace->gpio, first_entry ? Red : Green, workspace ); 
   QA7 volatile *qa7 = workspace->qa7;
-show_word( this_core * 100, this_core * 16 + 48, &qa7->Core_write_clear[this_core], first_entry ? Red : Green, workspace ); 
+show_word( this_core * (1920/4), 48, &qa7->Core_write_clear[this_core], first_entry ? Red : Green, workspace ); 
 
   workspace->core_specific[this_core].shared = workspace;
   workspace->core_specific[this_core].queued = 0; // VDU code queue size, including character that started it filling
@@ -1538,7 +1533,7 @@ show_word( this_core * 100, this_core * 16 + 48, &qa7->Core_write_clear[this_cor
   if (first_entry) {
     workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
 
-#if 1 // def QEMU
+#ifdef QEMU
     const int slower = 100;
     Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
     workspace->ticks_per_interval = workspace->ticks_per_interval * slower;
@@ -1555,10 +1550,13 @@ show_word( this_core * 100, this_core * 16 + 48, &qa7->Core_write_clear[this_cor
     workspace->qa7->Core_IRQ_Source[this_core] = 0xd;
   }
 
-  if (0) {
+  if (1) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
     yield();
+  }
+  else {
+    WriteS( "No timer interrupts" ); NewLine;
   }
 
   if (first_entry) {
@@ -1567,8 +1565,10 @@ show_word( this_core * 100, this_core * 16 + 48, &qa7->Core_write_clear[this_cor
 
     register void *callback asm( "r0" ) = start_display;
     register struct core_workspace *ws asm( "r1" ) = cws;
-    asm( "svc 0x20054" : : "r" (callback), "r" (ws) );
+    asm( "svc %[swi]" : : [swi] "i" (OS_AddCallBack | 0x20000), "r" (callback), "r" (ws) );
   }
+
+  clear_VF();
 }
 
 void __attribute__(( naked )) init( uint32_t this_core, uint32_t number_of_cores )

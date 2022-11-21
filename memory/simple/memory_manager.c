@@ -45,6 +45,14 @@ struct DynamicArea {
   DynamicArea *next;
 };
 
+static inline void InitialiseHeap( void *start, uint32_t size )
+{
+  register uint32_t code asm( "r0" ) = 0;
+  register void *heap asm( "r1" ) = start;
+  register uint32_t initial_size asm( "r3" ) = size;
+  asm ( "svc %[swi]" : : "r" (code), "r" (heap), "r" (initial_size), [swi] "i" (OS_Heap | 0x20000) : "lr", "memory" );
+}
+
 void Initialise_system_DAs()
 {
   // This isn't set in stone, but first go:
@@ -60,7 +68,6 @@ void Initialise_system_DAs()
   // Create a Relocatable Module Area, and initialise a heap in it.
 
   uint32_t initial_rma_size = 2 * natural_alignment;
-  svc_registers regs;
 
   bool reclaimed = claim_lock( &shared.memory.dynamic_areas_setup_lock ); 
   assert( !reclaimed ); // No question, only entered once
@@ -73,10 +80,7 @@ void Initialise_system_DAs()
 
   if (shared.memory.dynamic_areas == 0) {
     // First core here (need not be core zero)
-    uint32_t RMA = -1;
-
-    // But there may not be any memory to allocate, yet...
-    RMA = Kernel_allocate_pages( initial_rma_size, natural_alignment );
+    uint32_t RMA = Kernel_allocate_pages( initial_rma_size, natural_alignment );
     assert( RMA != -1 );
 
     MMU_map_shared_at( &rma_heap, RMA, initial_rma_size );
@@ -84,13 +88,8 @@ void Initialise_system_DAs()
 
     shared.memory.rma_memory = RMA;
 
-    regs.r[0] = 0;
-    regs.r[1] = (uint32_t) &rma_heap;
-    regs.r[3] = initial_rma_size;
+    InitialiseHeap( &rma_heap, initial_rma_size );
 
-    if (!do_OS_Heap( &regs )) {
-      for (;;) { asm ( "wfi" ); }
-    }
     // RMA heap initialised, can call rma_allocate
 
     { // RMA
@@ -132,6 +131,7 @@ void Initialise_system_DAs()
   // TODO Add names, handlers to DAs
     extern uint32_t free_pool;
 
+WriteS( "Free pool" ); NewLine;
     DynamicArea *da = rma_allocate( sizeof( DynamicArea ) );
     if (da == 0) goto nomem;
     da->number = 6;
@@ -143,6 +143,7 @@ void Initialise_system_DAs()
     da->start_page = Kernel_allocate_pages( da->actual_pages << 12, 1 << 12 ) >> 12;
     da->handler_routine = 0;
 
+if (da == workspace.memory.dynamic_areas) asm ( "bkpt 6" );
     da->next = workspace.memory.dynamic_areas;
     workspace.memory.dynamic_areas = da;
 
@@ -154,7 +155,9 @@ void Initialise_system_DAs()
     // UtilityModule requires its presence on initialisation
     extern uint32_t system_heap;
 
+    // This call is not happening!
     DynamicArea *da = rma_allocate( sizeof( DynamicArea ) );
+    da = rma_allocate( sizeof( DynamicArea ) );
     if (da == 0) goto nomem;
     da->number = 0;
     da->permissions = 6; // rw-
@@ -165,18 +168,13 @@ void Initialise_system_DAs()
     da->start_page = Kernel_allocate_pages( da->actual_pages << 12, 1 << 12 ) >> 12;
     da->handler_routine = 0;
 
+if (da == workspace.memory.dynamic_areas) asm ( "bkpt 6" );
     da->next = workspace.memory.dynamic_areas;
     workspace.memory.dynamic_areas = da;
 
     MMU_map_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
 
-    regs.r[0] = 0;
-    regs.r[1] = da->virtual_page << 12;
-    regs.r[3] = da->pages << 12;
-
-    if (!do_OS_Heap( &regs )) {
-      for (;;) { asm ( "wfi" ); }
-    }
+    InitialiseHeap( da->virtual_page << 12, da->pages << 12 );
   }
   return;
 
@@ -223,7 +221,7 @@ bool do_OS_ChangeDynamicArea( svc_registers *regs )
     // slot (application space).
     // For now, just log it and pretend to work
     // Is claiming UpCall 257 the difference between red and green sliders
-    // in the task manager?
+    // in the task manager? No, there's a DA flag for that (as well?)
 #ifdef DEBUG__FREE_POOL
     int32_t resize_by = (int32_t) regs->r[1];
     WriteS( "Free pool: " ); if (resize_by < 0) { WriteS( "-" ); WriteNum( -resize_by ); } else { WriteNum( resize_by ); } NewLine;

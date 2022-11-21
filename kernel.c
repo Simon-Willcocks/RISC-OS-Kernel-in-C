@@ -32,7 +32,8 @@ Drop support for: 26-bit modes
 
 // Kernel_default_irq in task_slot.c
 // Kernel_default_svc in swis.c
-// Kernel_default_prefetch, Kernel_default_data_abort in memory_manager.c
+// Kernel_default_prefetch in memory_manager.c
+// Kernel_default_prefetch in mmu.c
 
 void __attribute__(( noreturn, noinline )) Kernel_start()
 {

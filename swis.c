@@ -58,33 +58,39 @@ static uint32_t word_align( void *p )
   return (((uint32_t) p) + 3) & ~3;
 }
 
-// This routine is for SWIs implemented in the legacy kernel, 0-511, not in
-// modules, in ROM or elsewhere. (i.e. routines that return using SLVK.)
-bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
-{
-  clear_VF();
+struct swi_go {
+  svc_registers *regs;
+  uint32_t svc;
+};
 
+static void run_interruptable_swi( struct swi_go *go )
+{
   extern uint32_t JTABLE;
   uint32_t *jtable = &JTABLE;
+  uint32_t svc = go->svc;
+  svc_registers *regs = go->regs;
 
   register uint32_t non_kernel_code asm( "r10" ) = jtable[svc];
-  register uint32_t result asm( "r0" );
   register uint32_t swi asm( "r11" ) = svc;
   register svc_registers *regs_in asm( "r12" ) = regs;
+  register uint32_t result asm( "r0" );
 
-  asm (
+  // Legacy kernel SWI functions expect the flags to be stored in lr
+  // and the return address on the stack.
+
+  asm volatile (
       "\n  push { r12 }"
       "\n  ldm r12, { r0-r9 }"
-      "\n  adr lr, return"
+      "\n  adr lr, return_from_legacy_swi"
       "\n  push { lr } // return address, popped by SLVK"
 
       // Which SWIs use flags in r12 for input?
       "\n  ldr r12, [r12, %[spsr]]"
       "\n  bic lr, r12, #(1 << 28) // Clear V flags leaving original flags in r12"
-      // TODO re-enable interrupts if enabled in caller
 
       "\n  bx r10"
-      "\nreturn:"
+      "\nreturn_from_legacy_swi:"
+      "\n  cpsid i // FIXME: is this necessary, are SWIs required to restore interrupt state?"
       "\n  pop { r12 } // regs"
       "\n  stm r12, { r0-r9 }"
       "\n  ldr r0, [r12, %[spsr]]"
@@ -95,11 +101,21 @@ bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
       : "=r" (result)
       : "r" (regs_in)
       , "r" (non_kernel_code)
-      , [spsr] "i" (4 * (&regs->spsr - &regs->r[0]))
+      , [spsr] "i" (4 * (&go->regs->spsr - &go->regs->r[0]))
       , "r" (swi)
-      : "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "lr" );
+      : "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "lr", "memory" );
+}
 
-  return (result & VF) == 0;
+// This routine is for SWIs implemented in the legacy kernel, 0-511, not in
+// modules, in ROM or elsewhere. (i.e. routines that return using SLVK.)
+// TODO: Have a module flag to indicate its SWIs don't enable interrupts.
+bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
+{
+  struct swi_go go = { .regs = regs, .svc = svc };
+
+  TempTaskDo( run_interruptable_swi, &go );
+
+  return (regs->spsr & VF) == 0;
 }
 
 static bool do_OS_WriteS( svc_registers *regs )
@@ -135,9 +151,6 @@ static bool do_OS_Write0( svc_registers *regs )
   const char *s = (void*) regs->r[0];
   bool result = true;
 
-if (s[0] == 'R' && s[1] == 'e' && s[2] == 's' && s[3] == 'e' && s[4] == 't') {
-  WriteS( "Reset being printed " ); WriteNum( regs->lr ); NewLine;
-}
   while (*s != '\0' && result) {
     regs->r[0] = *s++;
     result = do_OS_WriteC( regs );
@@ -227,29 +240,84 @@ static bool do_OS_SetCallBack( svc_registers *regs ) { Write0( __func__ ); NewLi
 
 static bool do_OS_ReadUnsigned( svc_registers *regs )
 {
-  // FIXME, can overflow, ignores flags
-  // FIXME: Broken. Using legacy implementation
-  if (regs->r[4] == 0x45444957) asm ( "bkpt 80" );
   uint32_t base = regs->r[0] & 0x7f;
   if (base < 2 || base > 36) base = 10; // Can this really be a default?
+
+WriteS( "Task " ); WriteNum( workspace.task_slot.running ); NewLine;
+
+  bool maybe_reading_base = true;
   uint32_t result = 0;
+
+  uint32_t limit = 0xffffffff;
+  if (0 != (regs->r[0] & (1 << 29)))
+    limit = regs->r[2];
+  else if (0 != (regs->r[0] & (1 << 30)))
+    limit = 0xff;
+
   const char *c = (const char*) regs->r[1];
-  for (;;) {
-    unsigned char d = *c;
-    if (d < '0') break;
-    if (d >= 'a') d -= ('a' - 'A');
-    if (d > 'Z') break;
-    if (d > '9' && d < 'A') break;
-    if (d <= '9') d -= '0';
-    else d -= ('A' - 10);
-    if (d > base) break;
-    result = (result * base) + d;
+  const char *first_character = c;
+
+  if (*c == '&') {
+    base = 16;
     c++;
+    first_character = c; // First character of the number part
+    maybe_reading_base = false;
   }
+  for (;;) {
+    for (;;) {
+      unsigned char d = *c;
+      int n;
+      switch (d) {
+      case '0' ... '9': n = d - '0'; break;
+      case 'a' ... 'z': n = d - 'a' + 10; break;
+      case 'A' ... 'Z': n = d - 'A' + 10; break;
+      default: n = -1;
+      }
+      if (n >= base) break;
+      if (n == -1) break;
+      uint32_t new_value = (result * base) + n;
+      if (new_value < result) { // overflow
+        static const error_block error = { 0x16b, "Bad number" };
+        regs->r[0] = (uint32_t) &error;
+        return false;
+      }
+      if (new_value > limit) {
+        static const error_block error = { 0x16c, "Number too big" };
+        regs->r[0] = (uint32_t) &error;
+        return false;
+      }
+      result = new_value;
+      c++;
+    }
+
+    if (*c == '_' && maybe_reading_base) {
+      if (result >= 2 && result <= 36) {
+        maybe_reading_base = false;
+        base = result;
+        result = 0;
+        c++;
+        first_character = c; // Fail if there's no number
+      }
+      else {
+        static const error_block error = { 0x16a, "Bad base" };
+        regs->r[0] = (uint32_t) &error;
+        return false;
+      }
+    }
+    else {
+      break;
+    }
+  }
+
+  if ((0 != (regs->r[0] & (1 << 31)) && *c >= ' ')
+   || (c == first_character)) {
+    static const error_block error = { 0x16b, "Bad number" };
+    regs->r[0] = (uint32_t) &error;
+    return false;
+  }
+
   regs->r[1] = (uint32_t) c;
   regs->r[2] = result;
-
-WriteNum( result ); NewLine;
 
   return true;
 }
@@ -403,15 +471,15 @@ bool do_OS_GSTrans( svc_registers *regs )
 bool do_OS_GSTrans( svc_registers *regs )
 {
   WriteNum( regs->r[0] ); WriteNum( regs->lr );
-  WriteS( "GSTrans (in) \\\"" ); Write0( (char*) regs->r[0] ); WriteS( "\\\"\\n\\r" );
+  WriteS( "GSTrans (in) \"" ); Write0( (char*) regs->r[0] ); WriteS( "\"\n\r" );
   bool result = run_risos_code_implementing_swi( regs, OS_GSTrans );
-  WriteS( "GSTrans (out) \\\"" );
+  WriteS( "GSTrans (out) \"" );
   if (regs->r[1] != 0) {
     Write0( (char*) regs->r[1] );
   } else {
     WriteS( "NULL" );
   }
-  WriteS( "\\\"\\n\\r" );
+  WriteS( "\"\n\r" );
   return result;
 }
 
@@ -532,7 +600,7 @@ static void release_TickerV()
            , "r" (vector)
            , "r" (code)
            , "r" (private)
-           : "lr", "cc" );
+           : "lr", "cc", "memory" );
 }
 
 static void claim_TickerV()
@@ -547,7 +615,7 @@ static void claim_TickerV()
            , "r" (vector)
            , "r" (code)
            , "r" (private) 
-           : "lr", "cc" );
+           : "lr", "cc", "memory" );
 }
 
 static void __attribute__(( noinline )) C_TickerV_handler()
@@ -1388,7 +1456,7 @@ bool do_OS_SubstituteArgs32( svc_registers *regs )
 
 static bool do_OS_SynchroniseCodeAreas( svc_registers *regs )
 {
-  WriteS( "OS_SynchroniseCodeAreas" );
+  // WriteS( "OS_SynchroniseCodeAreas" );
 
   // FIXME: too much?
   clean_cache_to_PoC();
@@ -1759,7 +1827,7 @@ static bool Plot( svc_registers *regs )
   register uint32_t rt asm( "r0" ) = type;
   register uint32_t rx asm( "r1" ) = x;
   register uint32_t ry asm( "r2" ) = y;
-  asm ( "svc %[swi]" : : [swi] "i" (0x20045), "r" (rt), "r" (rx), "r" (ry) : "lr", "cc" );
+  asm ( "svc %[swi]" : : [swi] "i" (0x20045), "r" (rt), "r" (rx), "r" (ry) : "lr", "cc", "memory" );
 
   // FIXME Handle errors!
   return true;
@@ -1975,7 +2043,9 @@ bool do_OS_Heap( svc_registers *regs )
   // is non-zero. Masking interrupts is no longer a guarantee of atomicity.
   // OS_Heap appears to call itself, even without interrupts...
   bool reclaimed = claim_lock( &shared.memory.os_heap_lock );
-  assert( !reclaimed );
+
+  if (reclaimed) { WriteS( "OS_Heap, recursing: " ); WriteNum( regs->lr ); NewLine; }
+  // assert( !reclaimed );
 
   bool result = run_risos_code_implementing_swi( regs, OS_Heap );
   //Write0( "OS_Heap returns " ); WriteNum( regs->r[3] ); NewLine;
@@ -2028,7 +2098,7 @@ static swifn os_swis[256] = {
   [OS_Claim] =  do_OS_Claim,
 
   [OS_Release] =  do_OS_Release,
-  // [OS_ReadUnsigned] =  do_OS_ReadUnsigned,
+  [OS_ReadUnsigned] =  do_OS_ReadUnsigned,
   [OS_GenerateEvent] =  do_OS_GenerateEvent,
 
   [OS_ReadVarVal] =  do_OS_ReadVarVal,
@@ -2253,13 +2323,12 @@ static void trace_wimp_calls_in( svc_registers *regs, uint32_t number )
   register void *buf asm ( "r1" ) = buffer;
   register uint32_t size asm ( "r2" ) = sizeof( buffer );
 
-  register error_block *error asm ( "r0" );
   register uint32_t written asm ( "r2" );
 
-  asm ( "svc %[swi]\n  movvc r0, #0"
-      : "=r" (error), "=r" (written)
+  asm ( "svc %[swi]"
+      : "=r" (written)
       : [swi] "i" (OS_SWINumberToString), "r" (swi), "r" (buf), "r" (size)
-      : "lr" );
+      : "lr", "memory" );
 
   WriteN( buffer, written ); Space; WriteNum( 0x400c0 + number );
 
@@ -2302,11 +2371,7 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
   }
   bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
 
-  uint32_t r0 = regs->lr;
   bool result = Kernel_go_svc( regs, number );
-
-  // Just in case the SWI enabled interrupts
-  asm volatile ( "cpsid fi" );
 
   if (result) {
     // Worked
@@ -2328,15 +2393,22 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
         break;
       default:
         if (e->code != 0x1e4 && e->code != 0x124 && !read_var_val_for_length) {
+svc_registers copy = *regs;
           NewLine;
-          Write0( "Error: " );
+          WriteS( "Error: " );
           WriteNum( number );
-          Write0( " " );
+          Space;
           WriteNum( *(uint32_t *)(regs->r[0]) );
-          Write0( " " );
+          Space;
           Write0( (char *)(regs->r[0] + 4 ) );
+          Space;
+          WriteNum( regs );
+          Space;
+          WriteNum( regs->r[0] );
           NewLine;
+if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
         }
+        break;
       }
     }
 
@@ -2359,7 +2431,8 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
     // Call error handler
     WriteS( "Error from SWI " );
     WriteNum( number );
-    Space;
+    WriteS( ", block: " );
+    WriteNum( regs->r[0] ); Space;
     WriteNum( *(uint32_t*) regs->r[0] ); Space;
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
     WriteNum( regs->lr );
@@ -2377,8 +2450,15 @@ if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
   }
 }
 
-void run_transient_callbacks()
+void run_transient_callback( transient_callback *callback )
 {
+  run_handler( callback->code, callback->private_word );
+}
+
+static inline void run_transient_callbacks()
+{
+  if (workspace.kernel.transient_callbacks == 0) return;
+
   while (workspace.kernel.transient_callbacks != 0) {
     transient_callback *callback = workspace.kernel.transient_callbacks;
 
@@ -2393,7 +2473,7 @@ void run_transient_callbacks()
 #ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
   WriteS( "Call transient callback: " ); WriteNum( latest.code ); WriteS( ", " ); WriteNum( latest.private_word ); NewLine;
 #endif
-    run_handler( latest.code, latest.private_word );
+    TempTaskDo( run_transient_callback, &latest );
   }
 }
 

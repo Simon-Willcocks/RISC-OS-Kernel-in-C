@@ -65,6 +65,7 @@ struct callback {
 
 // Stacks sizes need to be checked (or use the zp memory)
 struct Kernel_workspace {
+  uint32_t frame_buffer_initialised; // FIXME: Remove: this is for debugging only, and only says the HAL module has been initialised
   uint32_t svc_stack[640]; // For use until SharedCLibrary-friendly stack set up.
 
   uint32_t debug_pipe;
@@ -117,6 +118,8 @@ struct Kernel_shared_workspace {
   uint32_t boot_lock;
   fs *filesystems;
   uint32_t fscontrol_lock;
+
+  uint32_t sysvars_lock;
 
   // Only one multiprocessing module can be initialised at at time (so the 
   // first has a chance to initialise their shared workspace).

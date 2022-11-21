@@ -175,6 +175,9 @@ static inline void set_pixel( uint32_t x, uint32_t y, uint32_t colour )
 {
   extern uint32_t frame_buffer;
   static uint32_t *const mapped_address = &frame_buffer;
+
+  if (!workspace.kernel.frame_buffer_initialised) return;
+
   mapped_address[x + y * 1920] = colour;
 }
 
@@ -195,6 +198,8 @@ static inline void show_nibble( uint32_t x, uint32_t y, uint32_t nibble, uint32_
 
 static inline void show_word( int x, int y, uint32_t number, uint32_t colour )
 {
+  if (!workspace.kernel.frame_buffer_initialised) return;
+
   for (int shift = 28; shift >= 0; shift -= 4) {
     show_nibble( x, y, (number >> shift) & 0xf, colour );
     x += 8;

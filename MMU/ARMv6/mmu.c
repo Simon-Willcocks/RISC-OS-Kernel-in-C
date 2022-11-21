@@ -561,6 +561,11 @@ static bool check_global_l1tt( uint32_t address, uint32_t type )
   l1tt_entry global = Global_L1TT->entry[pointer.section];
   Local_L1TT->entry[pointer.section] = global;
 
+  if (global.handler == check_global_l1tt) {
+    WriteS( "No memory at this address" ); NewLine;
+    return false;
+  }
+
   assert( global.handler != check_global_l1tt );
 
   return true;
@@ -787,6 +792,7 @@ static void setup_stack_pages( uint32_t *top, uint32_t *lim )
     l2tt = find_table_from_l1tt_entry( section );
     break;
   default:
+    asm ( "bkpt 667" );
     assert ( false ); // Bad stack configuration
   }
 
@@ -1001,6 +1007,9 @@ static bool __attribute__(( noinline )) handle_data_abort()
   return result;
 }
 
+#define MMU
+#include "trivial_display.h"
+
 void __attribute__(( naked, optimize( 0 ), noreturn )) Kernel_default_data_abort()
 {
   // TODO If data aborts start to need other tasks to fill in the missing memory,
@@ -1019,6 +1028,12 @@ void __attribute__(( naked, optimize( 0 ), noreturn )) Kernel_default_data_abort
       );
 
   if (!handle_data_abort()) {
+register uint32_t *sp asm ( "r13" );
+uint32_t *stack = sp;
+show_word( workspace.core_number * 100+ 960, 20, stack[6], Blue );
+uint32_t *ss = (void*) ((~0xff000 & (uint32_t) sp) | 0xff000);
+show_word( workspace.core_number * 100+ 960, 30, ss[-1], Yellow );
+show_word( workspace.core_number * 100+ 960, 40, ss[-2], Yellow );
     // Put the important information somewhere the developer can see it
     register uint32_t fa asm ( "r8" ) = fault_address();
     register uint32_t fault_type asm ( "r9" ) = data_fault_type();

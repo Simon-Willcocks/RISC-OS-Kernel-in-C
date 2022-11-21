@@ -56,6 +56,14 @@ struct TaskSlot_workspace {
 
   Task **irq_tasks;     // Array of tasks handling interrupts 
   char core_number_string[4]; // For OS_TaskSlot, 64 (CoreNumber)
+
+  // FIXME debug only
+  uint32_t irqs_usr;
+  uint32_t irqs_svc;
+  Task *last_interrupted[6];
+  uint32_t interrupted_at[6];
+  Task *lowest_temp;
+
 };
 
 struct TaskSlot_shared_workspace {
@@ -76,4 +84,9 @@ struct TaskSlot_shared_workspace {
 
   uint32_t number_of_interrupt_sources;
 };
+
+// Call only from SVC mode, runs func, passing p to it, with a temporary
+// Task. This protects the running Task user context from being overwritten
+// by an interrupt.
+void TempTaskDo( void (*func)( void *p ), void *p );
 

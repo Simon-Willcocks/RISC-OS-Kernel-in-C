@@ -681,7 +681,7 @@ static uint32_t read_file_size( const char *name )
       : [swi] "i" (OS_File)
       , "r" (os_file_code)
       , "r" (filename)
-      : "lr" );
+      : "lr", "memory" );
   return object_type == 1 ? file_size : 0;
 }
 
@@ -709,7 +709,7 @@ WriteS( "Memory = " ); WriteNum( (uint32_t) mem ); NewLine;
     register const char *filename asm( "r1" ) = name;
     register void *load_address asm( "r2" ) = words + 1;
     register uint32_t load_at_r2 asm( "r3" ) = 0;
-    asm volatile ( "svc %[swi]" : : [swi] "i" (OS_File), "r" (os_file_code), "r" (filename), "r" (load_address), "r" (load_at_r2) : "r4", "r5", "lr" );
+    asm volatile ( "svc %[swi]" : : [swi] "i" (OS_File), "r" (os_file_code), "r" (filename), "r" (load_address), "r" (load_at_r2) : "r4", "r5", "lr", "memory" );
   }
 
   return mem;
@@ -1846,7 +1846,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
         }
       }
       else if (regs[2] <= 0x7f) {
-        Write0( "Scan keyboard with timeout." ); NewLine;
+        WriteS( "Scan keyboard with timeout." ); NewLine;
         WriteNum( 10 * ((regs[2] << 8) | regs[1]) ); // FIXME This needs to start a sleep, or the caller needs to be fixed, somehow... Wimp calls this regularly
         regs[2] = 0xff;       // Timeout (no keyboard!)
       }
@@ -2872,7 +2872,7 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
                "\n  svc %[swi]"
         :
         : [swi] "i" (OS_ThreadOp)
-        : "r0", "r1", "lr" );
+        : "r0", "r1", "lr", "memory" );
 #ifdef DEBUG__SHOW_COMMANDS
     // WindowManager runs FontInstall but is initialised before FontManager
     // and ROMFonts. Let this one go... (and re-order the modules)
@@ -3036,7 +3036,7 @@ static void show_sprite()
                "\n  svc %[swi]"
         :
         : [swi] "i" (OS_ThreadOp)
-        : "r0", "r1", "lr" );
+        : "r0", "r1", "lr", "memory" );
     WriteNum( pixels ); Space; WriteS( "|" );
     int word_shifted = 32;
     uint32_t word;
@@ -3428,6 +3428,8 @@ static void setup_OS_vectors()
 static void __attribute__(( naked, noreturn )) idle_thread()
 {
   // This thread currently has no stack!
+  asm ( "mov sp, #0" ); // Avoid triggering any checks for privileged stack pointers in usr32 code 
+  asm ( "cpsie aif" );  // Non-interruptable idle thread is not helpful
   for (;;) {
     // Transfer control to the boot task.
     // Don't make a function call, there's no stack.
@@ -3437,7 +3439,7 @@ static void __attribute__(( naked, noreturn )) idle_thread()
                "\n  svc %[swi]"
         :
         : [swi] "i" (OS_ThreadOp)
-        : "r0", "r1", "lr" );
+        : "r0", "r1", "lr", "memory" );
     // TODO: Pootle around, tidying up memory, etc.
     // Don't do any I/O!
     // Don't forget to give it some stack!
@@ -3453,39 +3455,19 @@ extern void __attribute__(( noreturn )) UsrBoot();
 #include "include/pipeop.h"
 #endif
 
-void Boot()
+#include "trivial_display.h"
+
+void PreUsrBoot()
 {
   setup_OS_vectors();
 
   Initialise_system_DAs();
 
-  TaskSlot *slot = TaskSlot_new( "Root", 0 );
-
-  physical_memory_block block = { .physical_base = Kernel_allocate_pages( 65536, 4096 ), .virtual_base = 0x8000, .size = 65536 };
-  TaskSlot_add( slot, block );
-
-  // TODO I'm still not sure whether to have a TaskSlot for module tasks, or set it to zero.
-
-  // allocate_legacy_scratch_space();
-  // Pages used by legacy kernel code. Now allocated on demand by memory manager
-  //   DrawMod  0x4000
-  //   Eval     0x5000, 0x6000
-
   set_up_legacy_zero_page();
-
-  Task *idle_task = Task_new( slot );
-
-    // Initial state
-  idle_task->regs.r[0] = workspace.core_number;
-  idle_task->regs.pc = (uint32_t) idle_thread;
-  idle_task->regs.psr = 0x10;
-
-  workspace.task_slot.running->next = idle_task;
 
   // Start the HAL, a multiprocessing-aware module that initialises essential features before
   // the boot sequence can start.
   // It should register Resource:$.!Boot, which should perform the post-ROM module boot.
-  // TODO A code variable to read the current core number?
 
   {
 #ifndef NO_DEBUG_OUTPUT
@@ -3494,7 +3476,7 @@ void Boot()
     workspace.kernel.debug_space = PipeOp_WaitForSpace( workspace.kernel.debug_pipe, 2048 );
     PipeOp_PassingOff( workspace.kernel.debug_pipe, 0 ); // The task doesn't exist yet
 #endif
-    Write0( "Kernel starting HAL" ); NewLine;
+    WriteS( "Kernel starting HAL" ); NewLine;
 
     char args[] = "HAL ########";
     uint32_t tmp = workspace.kernel.debug_pipe;
@@ -3506,27 +3488,64 @@ void Boot()
     extern void _binary_Modules_HAL_start();
     // Can't use OS_Module because it doesn't pass arguments to init
     svc_registers regs = { 0 };
+#ifdef DEBUG__SHOW_MODULE_INIT
+  NewLine;
+  WriteS( "INIT HAL: " );
+  Write0( title_string( (void*) (1 + (uint32_t*) &_binary_Modules_HAL_start ) ) ); NewLine;
+#endif
+
     initialise_module( &regs, (void*) &_binary_Modules_HAL_start, args );
   }
-  MMU_switch_to( slot ); // Only done so late so it shows up in the debug. TODO move just after creating the slot.
+
+workspace.kernel.frame_buffer_initialised = 1;
+
+show_word( workspace.core_number * (1920/4), 70, &workspace.task_slot.running, Green ); 
+}
+
+void Boot()
+{
+  TaskSlot *slot = TaskSlot_new( 0, 0 ); // Root slot, does not require RMA or regs
+
+  assert( slot != 0 );
+  assert( workspace.task_slot.running != 0 );
+  assert( workspace.task_slot.running->slot == slot );
+
+  MMU_switch_to( slot );
+
+  Task *idle_task = Task_new( slot );
+
+  // Initial state
+  idle_task->regs.r[0] = workspace.core_number;
+  idle_task->regs.pc = (uint32_t) idle_thread;
+  idle_task->regs.psr = 0x10;
+  idle_task->regs.banked_sp_usr = 0; // No stack
+
+  // Get ready to run
+  idle_task->next = workspace.task_slot.running->next;
+  workspace.task_slot.running->next = idle_task;
+
+  PreUsrBoot();
+
+  // No App memory initially, but a small stack on the RMA
+  // physical_memory_block block = { .physical_base = Kernel_allocate_pages( 65536, 4096 ), .virtual_base = 0x8000, .size = 65536 };
+  // TaskSlot_add( slot, block );
 
   // The HAL will have ensured that no extraneous interrupts are occuring,
-  // so we can reset the SVC stack enable interrupts and drop to USR mode.
+  // so we can reset the SVC stack, enable interrupts and drop to USR mode.
   static uint32_t const root_stack_size = 1024;
   uint32_t *stack = rma_allocate( root_stack_size * sizeof( uint32_t ) );
   extern uint32_t svc_stack_top;
 
-  register uint32_t core_number asm ( "r0" ) = workspace.core_number;
-  register uint32_t *stack_top asm ( "r1" ) = &svc_stack_top;
-  register uint32_t *usr_stack_top asm ( "r2" ) = &stack[root_stack_size];
+  // Named registers so that no banked register is used
+  register uint32_t *stack_top asm ( "r0" ) = &svc_stack_top;
+  register uint32_t *usr_stack_top asm ( "r1" ) = &stack[root_stack_size];
 
-  asm ( "mov sp, r1"
+  asm ( "mov sp, r0"
     "\n  cpsie aif, #0x10"
-    "\n  mov sp, r2"
+    "\n  mov sp, r1"
     "\n  b UsrBoot"
     :
-    : "r" (core_number)
-    , "r" (stack_top)
+    : "r" (stack_top)
     , "r" (usr_stack_top)
     : "sp", "lr" );
 

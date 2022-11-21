@@ -20,6 +20,8 @@
 
 bool do_OS_ReadVarVal( svc_registers *regs )
 {
+  bool reclaimed = claim_lock( &shared.kernel.sysvars_lock );
+
 #ifdef DEBUG__SHOW_SYSTEM_VARIABLE
 #if DEBUG__SHOW_SYSTEM_VARIABLE & 1
   if (0 > (int) regs->r[2]) {
@@ -66,11 +68,15 @@ bool do_OS_ReadVarVal( svc_registers *regs )
   }
 #endif
 #endif
+  if (!reclaimed) release_lock( &shared.kernel.sysvars_lock );
+
   return result;
 }
 
 bool do_OS_SetVarVal( svc_registers *regs )
 {
+  bool reclaimed = claim_lock( &shared.kernel.sysvars_lock );
+
 #ifdef DEBUG__SHOW_SYSTEM_VARIABLE
 #if DEBUG__SHOW_SYSTEM_VARIABLE & 2
   if (0 > (int) regs->r[2]) {
@@ -104,6 +110,7 @@ bool do_OS_SetVarVal( svc_registers *regs )
   if (result) WriteS( "success!" ); else WriteS( "FAILED" );
   NewLine;
 #endif
+  if (!reclaimed) release_lock( &shared.kernel.sysvars_lock );
   return result;
 }
 
