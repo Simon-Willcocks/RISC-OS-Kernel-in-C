@@ -151,6 +151,7 @@ if (da == workspace.memory.dynamic_areas) asm ( "bkpt 6" );
   }
 
   { // System heap, one per core (I think)
+    // COMPLETELY WRONG! FIXME.
     // This is where system variables are stored by the legacy code
     // UtilityModule requires its presence on initialisation
     extern uint32_t system_heap;
@@ -174,7 +175,7 @@ if (da == workspace.memory.dynamic_areas) asm ( "bkpt 6" );
 
     MMU_map_at( (void*) (da->virtual_page << 12), da->start_page << 12, da->pages << 12 );
 
-    InitialiseHeap( da->virtual_page << 12, da->pages << 12 );
+    InitialiseHeap( (void*) (da->virtual_page << 12), da->pages << 12 );
   }
   return;
 
@@ -411,8 +412,13 @@ WriteS( " Post-shrink" );
   }
 
   {
-    regs->r[1] = 0x4e; // Service_MemoryMoved
-    do_OS_ServiceCall( regs );
+    // Service_MemoryMoved
+    register uint32_t code asm( "r1" ) = 0x4e;
+    asm ( "svc %[swi]"
+        :
+        : [swi] "i" (OS_ServiceCall | Xbit)
+        , "r" (code)
+        : "lr", "cc", "memory" );
   }
 
   regs->r[1] = resize_by_pages << 12;
@@ -553,14 +559,21 @@ shared.memory.last_da_address &= ~(natural_alignment-1);
   WriteS( "DA " ); WriteNum( da->number ); Space; WriteNum( da->virtual_page << 12 ); Space; WriteNum( da->start_page << 12 ); NewLine;
 #endif
       if (regs->r[2] > 0) {
-        svc_registers cda;
-        cda.r[0] = da->number;
-        cda.r[1] = regs->r[2];
+        register uint32_t number asm ( "r0" ) = da->number;
+        register uint32_t r2 asm ( "r1" ) = regs->r[2];
+        error_block *error;
 
-        cda.lr = 0xfeeef000;
+        asm volatile ( "svc %[swi]"
+                   "\n  movvc %[error], #0"
+                   "\n  movvs %[error], r0"
+                   : [error] "=r" (error)
+                   : [swi] "i" (OS_ChangeDynamicArea | Xbit)
+                   , "r" (number)
+                   , "r" (r2)
+                   : "lr", "cc", "memory" );
 
-        if (!do_OS_ChangeDynamicArea( &cda )) {
-          regs->r[0] = cda.r[0];
+        if (error != 0) {
+          regs->r[0] = (uint32_t) error;
           return false;
         }
       }
@@ -569,7 +582,11 @@ shared.memory.last_da_address &= ~(natural_alignment-1);
         // Service_DynamicAreaCreate 5a-50
         register uint32_t code asm( "r1" ) = 0x90;
         register uint32_t area asm( "r2" ) = da->number;
-        asm ( "svc 0x30" : : "r" (code), "r" (area) );
+        asm ( "svc %[swi]"
+            :
+            : [swi] "i" (OS_ServiceCall | Xbit)
+            , "r" (code), "r" (area)
+            : "lr", "cc", "memory" );
       }
 
       break;

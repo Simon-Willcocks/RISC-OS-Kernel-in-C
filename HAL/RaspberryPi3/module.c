@@ -1553,7 +1553,8 @@ show_word( this_core * (1920/4), 48, &qa7->Core_write_clear[this_core], first_en
   if (1) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
-    yield();
+
+    yield(); // Let the task start the timer
   }
   else {
     WriteS( "No timer interrupts" ); NewLine;
@@ -1608,7 +1609,7 @@ void start_wimp( uint32_t *regs, struct core_workspace *workspace )
 {
   if (workspace->shared->wimp_started == 0) {
     workspace->shared->wimp_started = 1;
-    regs[0] = "<Boot$Dir>.!Blocks.!Run";
+    regs[0] = (uint32_t) "<Boot$Dir>.!Blocks.!Run";
     regs[1] = 0; // Claim service
     // FIXME deal with Wimp exiting StartedWimp/Reset
   }

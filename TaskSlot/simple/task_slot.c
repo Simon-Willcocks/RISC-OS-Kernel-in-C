@@ -59,7 +59,7 @@ extern Task tasks[];
 // #ifdef DEBUG__SHOW_TASK_SWITCHES
 static void show_task( Task *task )
 {
-  Write0( "task " ); WriteNum( task ); NewLine;
+  WriteS( "task " ); WriteNum( task ); NewLine;
   for (int  i = 0; i < 13; i++) {
     WriteNum( task->regs.r[i] ); if (i != 7) Space; else NewLine;
   }
@@ -155,9 +155,17 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
 
   handler *h = &slot->handlers[regs[0]];
 
-  if (regs[0] == 14 || regs[0] == 0) {
-    // Memory Limit or Application Space (special cases)
-    // R2 and R3 are ignored, set to "random" values by callers.
+  if (regs[0] == 0 || regs[0] == 14) {
+    //  0 Memory Limit (special case)
+    // 14 Application Space (special case)
+    //    When are they different?
+    //    Only 0 is writable, afaict.
+
+    // R2 and R3 are ignored, may be set to "random" values by callers.
+
+    if (regs[0] == 0 && regs[1] != 0) {
+      TaskSlot_adjust_app_memory( slot, (regs[1] + 0xfff) & ~0xfff );
+    }
 
     h->code = (uint32_t) TaskSlot_Himem( workspace.task_slot.running->slot );
   }
@@ -174,7 +182,7 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
   }
 
 #ifdef DEBUG__SHOW_ENVIRONMENT_CHANGES
-  Write0( "Changed environment " ); WriteNum( regs[0] ); NewLine;
+  WriteS( "Changed environment " ); WriteNum( regs[0] ); NewLine;
   WriteNum( regs[1] ); Space; WriteNum( regs[2] ); Space; WriteNum( regs[3] ); NewLine;
   WriteNum( old.code ); Space; WriteNum( old.private_word ); Space; WriteNum( old.buffer ); NewLine;
   WriteNum( h->code ); Space; WriteNum( h->private_word ); Space; WriteNum( h->buffer ); NewLine;
@@ -225,7 +233,7 @@ physical_memory_block Kernel_physical_address( uint32_t va )
     for (int i = 0; i < 4096/sizeof( Task ); i++) {
       if (0 == (tasks[i].regs.pc & 1)) {
         NewLine;
-        Write0( "Task: " ); 
+        WriteS( "Task: " ); 
         WriteNum( i );
         Space;
         WriteNum( tasks[i].regs.pc );
@@ -421,7 +429,7 @@ void __attribute__(( noinline )) save_context( Task *running, svc_registers *reg
     asm volatile ( "mrs %[lr], lr_svc" : [lr] "=r" (running->regs.banked_lr_svc) );
   }
 #ifdef DEBUG__SHOW_TASK_SWITCHES
-  Write0( "Saved for later " ); show_task( running ); Space; WriteNum( regs ); NewLine;
+  WriteS( "Saved for later " ); show_task( running ); Space; WriteNum( regs ); NewLine;
 #endif
 #if 0
 if (running->regs.banked_sp > 0x80000000 && (running->regs.psr & 0xf) == 0) {
@@ -455,7 +463,7 @@ static const handler default_handlers[17] = {
   { ExitHandler, 0, 0 },       // Exit
   { 0xbadf00dc, 0, 0 },       // Unused SWI
   { 0xbadf00dd, 0, 0 },       // Exception registers
-  { 0, 0, 0 },                // Application space (When does this not = RAM Limit?)
+  { 0, 0, 0 },                // Application space limit
   { 0xbadf00df, 0, 0 },       // Currently Active Object
   { ignore_event, 0, 0 }        // UpCall handler
 };
@@ -510,7 +518,7 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
   if (task != 0) {
     // When resumed, it will return to the point of the SWI that caused this call
     // FIXME This could well be wrong behaviour!
-    Write0( "Saving creator: " );
+    WriteS( "Saving creator: " );
     save_context( task, regs ); 
 
     // Not the first task in the first slot for this core
@@ -571,10 +579,10 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
   result->waiting = 0;
 
 #ifdef DEBUG__WATCH_TASK_SLOTS
-  Write0( "TaskSlot_new " ); WriteNum( (uint32_t) result ); NewLine;
-  Write0( "Command " ); Write0( result->command ); NewLine;
-  Write0( "Name " ); Write0( result->name ); NewLine;
-  Write0( "Tail " ); Write0( result->tail ); NewLine;
+  WriteS( "TaskSlot_new " ); WriteNum( (uint32_t) result ); NewLine;
+  WriteS( "Command " ); Write0( result->command ); NewLine;
+  WriteS( "Name " ); Write0( result->name ); NewLine;
+  WriteS( "Tail " ); Write0( result->tail ); NewLine;
 #endif
 
   assert( workspace.task_slot.running != 0 );
@@ -663,24 +671,63 @@ Task *Task_new( TaskSlot *slot )
   return result;
 }
 
-void TaskSlot_add( TaskSlot *slot, physical_memory_block memory )
+void TaskSlot_adjust_app_memory( TaskSlot *slot, uint32_t new_limit )
 {
-  bool reclaimed = claim_lock( &shared.mmu.lock );
-  for (int i = 0; i < number_of( slot->blocks ); i++) {
-    if (slot->blocks[i].size == 0) {
-      slot->blocks[i] = memory;
-#ifdef DEBUG__WATCH_TASK_SLOTS
-  Write0( "TaskSlot_add " ); WriteNum( (uint32_t) slot ); Write0( " " ); WriteNum( slot->blocks[i].virtual_base ); Write0( " " ); WriteNum( slot->blocks[i].size ); NewLine;
-#endif
+  extern int app_memory_base;
+  extern int app_memory_limit;
 
-      break;
+  assert( (new_limit & 0xfff) == 0 );
+  assert( new_limit <= (uint32_t) &app_memory_limit );
+
+  bool reclaimed = claim_lock( &shared.mmu.lock );
+
+  int i = 0;
+  while (slot->blocks[i].size != 0
+      && slot->blocks[i].virtual_base < (uint32_t) &app_memory_base) {
+    i++;
+  }
+  // slots->blocks[i] is the first block after any low page blocks.
+  int first_app_block = i;
+  int above = i; // Will be the entry above the last app block
+  uint32_t top = &app_memory_base; // Whether or not there's an app block
+
+  while (slot->blocks[i].size != 0) {
+    uint32_t block_top = slot->blocks[i].virtual_base + slot->blocks[i].size;
+    if (block_top <= (uint32_t) &app_memory_limit) {
+      top = block_top;
+      above = i+1;
     }
+    i++;
+  }
+  int first_unused_block = i;
+
+  // slots->blocks[i] is the first empty block in the array
+  assert( first_unused_block < number_of( slot->blocks ) ); // FIXME get rid of hard limit
+
+  if (top > new_limit) {
+    // Ignore shrinking, for now FIXME
+  }
+  else if (top < new_limit) {
+    for (int j = first_unused_block; j > above; j--) {
+      slot->blocks[j] = slot->blocks[j-1];
+    }
+    slot->blocks[above].size = new_limit - top;
+    slot->blocks[above].virtual_base = top;
+    slot->blocks[above].physical_base = Kernel_allocate_pages( new_limit - top, 4096 );
+
+    assert( slot->blocks[above].physical_base != 0xffffffff ); // FIXME
   }
 
-  // FIXME: This is a massive assumption, that there's only one memory section
-  slot->handlers[0].code = memory.virtual_base + memory.size;
-  slot->handlers[14].code = memory.virtual_base + memory.size;
+  // Thoughts:
+  // Memory manager module that performs the equivalent of Kernel_allocate_pages
+  // Has its own TaskSlot (module tasks with slots?)
+  // Single tasking, requesting tasks report their desires, then wait until woken.
+  // Maybe a second task, or allow calling tasks that are freeing memory to immediately
+  // add to the free pool.
+  // These kinds of memory actions are not suitable for interrupt handlers.
 
+  slot->handlers[0].code = new_limit;
+  slot->handlers[14].code = new_limit;
 
   if (!reclaimed) release_lock( &shared.mmu.lock );
 }
@@ -689,7 +736,7 @@ uint32_t TaskSlot_asid( TaskSlot *slot )
 {
   uint32_t result = (slot - task_slots) + 1;
 #ifdef DEBUG__WATCH_TASK_SLOTS
-Write0( "TaskSlot_asid " ); WriteNum( result ); NewLine;
+WriteS( "TaskSlot_asid " ); WriteNum( result ); NewLine;
 #endif
   return result;
 }
@@ -703,7 +750,7 @@ uint32_t TaskSlot_Himem( TaskSlot *slot )
   bool reclaimed = claim_lock( &shared.mmu.lock );
 
 #ifdef DEBUG__WATCH_TASK_SLOTS
-  Write0( "TaskSlot_Himem " ); WriteNum( (uint32_t) slot ); Write0( " " ); WriteNum( slot->blocks[0].virtual_base ); Write0( " " ); WriteNum( slot->blocks[0].size ); NewLine;
+  WriteS( "TaskSlot_Himem " ); WriteNum( (uint32_t) slot ); WriteS( " " ); WriteNum( slot->blocks[0].virtual_base ); WriteS( " " ); WriteNum( slot->blocks[0].size ); NewLine;
 #endif
 
   result = slot->blocks[0].size + 0x8000; // slot->blocks[0].virtual_base;
@@ -768,24 +815,20 @@ void __attribute__(( noinline )) do_FSControl( uint32_t *regs )
 
 static void __attribute__(( noinline )) c_default_ticker()
 {
-  workspace.vectors.MetroGnome++;;
+  workspace.vectors.zp.MetroGnome++;
+
   // Interrupts disabled, core-specific
   if (workspace.task_slot.sleeping != 0) {
     if (0 == --workspace.task_slot.sleeping->regs.r[1]) {
-      // FIXME: Choice to make: newly woken more important than running
-      // task, or put at the head of the tail of tasks or the tail of the tail?
-      // Going for more important, so that resource-hogs get pre-empted.
-
-      // Since this is called from an interrupt, the running task's context has 
-      // already been stored and the task stored in running will be resumed.
-      // BUT! The running task might be in a SWI
-      // Solution(?): queue them after the irq_task and wait for the SWI to complete
-      // (or call OS_LeaveOS?)
+      // Called from an interrupt task, can safely be placed as running->next,
+      // since running is the irq_task, and the sleeping task will resume
+      // after the SWI it called (or possibly re-try the SWI, in some cases).
 
       Task *first_woken = workspace.task_slot.sleeping;
       Task *still_sleeping = first_woken;
       Task *last_resume = first_woken;
 
+      // r[1] contains the number of ticks left to sleep for
       while (still_sleeping != 0 && still_sleeping->regs.r[1] == 0) {
         last_resume = still_sleeping;
         still_sleeping = still_sleeping->next;
@@ -798,7 +841,7 @@ static void __attribute__(( noinline )) c_default_ticker()
       last_resume->next = workspace.task_slot.running->next;
       workspace.task_slot.running->next = first_woken;
 
-      // Remove them (all) from sleeping list
+      // Remove them from sleeping list
       workspace.task_slot.sleeping = still_sleeping;
     }
   }
@@ -886,17 +929,23 @@ if (svc_stack_task( resume ) && lowest != 0 && resume > lowest) {
 
   asm volatile ( "msr sp_usr, %[sp]" : : [sp] "r" (resume->regs.banked_sp_usr) );
   asm volatile ( "msr lr_usr, %[lr]" : : [lr] "r" (resume->regs.banked_lr_usr) );
-  uint32_t cpsr;
-  asm ( "mrs %[cpsr], cpsr" : [cpsr] "=r" (cpsr) );
-  if (3 != (0xf & cpsr)) {
-    asm volatile ( "msr sp_svc, %[sp]" : : [sp] "r" (resume->regs.banked_sp_svc) );
-    asm volatile ( "msr lr_svc, %[lr]" : : [lr] "r" (resume->regs.banked_lr_svc) );
+  assert( (get_CPSR() & 0x1f) == 0x13 ); // Always called in SVC mode
+
+  if (resume->regs.banked_sp_svc > (uint32_t) (regs+1)) {
+    show_word( 1500, 20, (uint32_t) running->regs.banked_sp_svc, Yellow );
+    show_word( 1500, 30, (uint32_t) resume->regs.banked_sp_svc, Yellow );
+    show_word( 1500, 40, (uint32_t) regs, Yellow );
+    show_word( 1500, 50, (uint32_t) running, Yellow );
+    show_word( 1500, 60, (uint32_t) resume, Yellow );
+    register uint32_t *sp asm ( "sp" ) = &running;
+    for (int i = 0; i < 10; i++)
+      show_word( 1600, 10 * i, sp[i], White );
+    asm ( "bkpt 6" );
   }
-  else {
-    assert( running->regs.banked_sp_svc < (uint32_t) regs );
-    asm volatile ( "mov sp, %[sp]" : : [sp] "r" (running->regs.banked_sp_svc) );
-    asm volatile ( "mov lr, %[lr]" : : [lr] "r" (running->regs.banked_lr_svc) );
-  }
+
+  assert( resume->regs.banked_sp_svc >= (uint32_t) regs );
+  asm volatile ( "mov sp, %[sp]" : : [sp] "r" (resume->regs.banked_sp_svc) );
+  asm volatile ( "mov lr, %[lr]" : : [lr] "r" (resume->regs.banked_lr_svc) );
 
   for (int i = 0; i < 13; i++) {
     regs->r[i] = resume->regs.r[i];
@@ -1280,7 +1329,7 @@ bool __attribute__(( optimize( "O4" ) )) do_OS_ThreadOp( svc_registers *regs )
   Task *next = running->next;
 
 #if 0
-Write0( "Running: " ); WriteNum( running ); 
+WriteS( "Running: " ); WriteNum( running ); 
 while (next != 0) { Space; WriteNum( next ); next = next->next; }
 next = running->next;
 NewLine;
@@ -1349,8 +1398,8 @@ NewLine;
       new_task->regs.pc = regs->r[1];
       new_task->regs.banked_lr_usr = (uint32_t) task_exit;
       new_task->regs.banked_sp_usr = regs->r[2];
-      new_task->regs.banked_lr_svc = 0x77777777;
-      new_task->regs.banked_sp_svc = 0x77777777;
+      new_task->regs.banked_lr_svc = 3;
+      new_task->regs.banked_sp_svc = 3;
       new_task->regs.r[0] = handle_from_task( new_task );
       new_task->regs.r[1] = regs->r[3];
       new_task->regs.r[2] = regs->r[4];
@@ -1376,7 +1425,7 @@ NewLine;
       assert( resume != 0 || regs->r[1] == 0 ); // Idle thread never sleeps (or otherwise gets removed from the running queue)
 
 #ifdef DEBUG__SHOW_TASK_SWITCHES
-Write0( "Sleeping " ); WriteNum( running ); Write0( ", waking " ); WriteNum( resume ); NewLine;
+WriteS( "Sleeping " ); WriteNum( running ); WriteS( ", waking " ); WriteNum( resume ); NewLine;
 #endif
 
       if (regs->r[1] == 0) {
@@ -1601,7 +1650,7 @@ static uint32_t debug_pipe_receiver_va()
 static uint32_t local_sender_va( TaskSlot *slot, os_pipe *pipe )
 {
 #if 0
-Write0( "local_sender_va " ); WriteNum( pipe->sender );
+WriteS( "local_sender_va " ); WriteNum( pipe->sender );
 if (pipe->sender != 0) {
   WriteNum( pipe->sender->slot ); WriteNum( slot );
 }
@@ -1676,9 +1725,9 @@ physical_memory_block Pipe_physical_address( TaskSlot *slot, uint32_t va )
 
 #ifdef DEBUG__PIPEOP
   Write0( __func__ ); 
-  Write0( " " ); WriteNum( result.virtual_base ); 
-  Write0( " " ); WriteNum( result.physical_base ); 
-  Write0( " " ); WriteNum( result.size );  NewLine;
+  WriteS( " " ); WriteNum( result.virtual_base ); 
+  WriteS( " " ); WriteNum( result.physical_base ); 
+  WriteS( " " ); WriteNum( result.size );  NewLine;
 #endif
 
   return result;
@@ -1753,7 +1802,7 @@ static bool PipeCreate( svc_registers *regs )
   pipe->allocated_mem = allocated_mem;
   pipe->physical = Kernel_allocate_pages( 4096, 4096 );
   // Now debug output uses PipeOp, PipeOp can't do debug output
-  // Write0( "Physical memory: " ); WriteNum( pipe->physical ); NewLine;
+  // WriteS( "Physical memory: " ); WriteNum( pipe->physical ); NewLine;
 
   // The following will be updated on the first blocking calls 
   // to WaitForSpace and WaitForData, respectively.
@@ -1800,7 +1849,7 @@ static uint32_t allocate_virtual_address( TaskSlot *slot, os_pipe *pipe )
     this_pipe = this_pipe->next;
   }
 
-  // Write0( "Allocated pipe VA " ); WriteNum( va - 2 * pipe->max_block_size ); NewLine;
+  // WriteS( "Allocated pipe VA " ); WriteNum( va - 2 * pipe->max_block_size ); NewLine;
 
   return va - 2 * pipe->max_block_size;
 }
@@ -1860,7 +1909,7 @@ static bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
     regs->r[3] = write_location( pipe, slot );
 
 #ifdef DEBUG__PIPEOP
-    // Write0( "Space immediately available: " ); WriteNum( amount ); Write0( ", total: " ); WriteNum( space_in_pipe( pipe ) ); Write0( ", at " ); WriteNum( write_location( pipe, slot ) ); NewLine;
+    // WriteS( "Space immediately available: " ); WriteNum( amount ); WriteS( ", total: " ); WriteNum( space_in_pipe( pipe ) ); WriteS( ", at " ); WriteNum( write_location( pipe, slot ) ); NewLine;
 #endif
   }
   else {
@@ -1919,7 +1968,7 @@ static bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
     regs->r[3] = write_location( pipe, slot );
 
 #ifdef DEBUG__PIPEOP
-    // Write0( "Filled " ); WriteNum( amount ); Write0( ", remaining: " ); WriteNum( regs->r[2] ); Write0( ", at " ); WriteNum( regs->r[3] ); NewLine;
+    // WriteS( "Filled " ); WriteNum( amount ); WriteS( ", remaining: " ); WriteNum( regs->r[2] ); WriteS( ", at " ); WriteNum( regs->r[3] ); NewLine;
 #endif
 
     if (pipe->receiver_waiting_for > 0
@@ -1927,7 +1976,7 @@ static bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
       Task *receiver = pipe->receiver;
 
 #ifdef DEBUG__PIPEOP
-      // Write0( "Data finally available: " ); WriteNum( pipe->receiver_waiting_for ); Write0( ", remaining: " ); WriteNum( data_in_pipe( pipe ) ); Write0( ", at " ); WriteNum( read_location( pipe, slot ) ); NewLine;
+      // WriteS( "Data finally available: " ); WriteNum( pipe->receiver_waiting_for ); WriteS( ", remaining: " ); WriteNum( data_in_pipe( pipe ) ); WriteS( ", at " ); WriteNum( read_location( pipe, slot ) ); NewLine;
 #endif
 
       pipe->receiver_waiting_for = 0;
@@ -2015,7 +2064,7 @@ static bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
     pipe->receiver_waiting_for = amount;
 
 #ifdef DEBUG__PIPEOP
-  // Write0( "Blocking receiver" ); NewLine;
+  // WriteS( "Blocking receiver" ); NewLine;
 #endif
     running->next = 0;
 
@@ -2058,7 +2107,7 @@ static bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
     regs->r[3] = read_location( pipe, slot );
 
 #ifdef DEBUG__PIPEOP
-    // Write0( "Consumed " ); WriteNum( amount ); Write0( ", remaining: " ); WriteNum( regs->r[2] ); Write0( ", at " ); WriteNum( regs->r[3] ); NewLine;
+    // WriteS( "Consumed " ); WriteNum( amount ); WriteS( ", remaining: " ); WriteNum( regs->r[2] ); WriteS( ", at " ); WriteNum( regs->r[3] ); NewLine;
 #endif
 
     if (pipe->sender_waiting_for > 0
@@ -2066,7 +2115,7 @@ static bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
       Task *sender = pipe->sender;
 
 #ifdef DEBUG__PIPEOP
-      // Write0( "Space finally available: " ); WriteNum( pipe->sender_waiting_for ); Write0( ", remaining: " ); WriteNum( space_in_pipe( pipe ) ); Write0( ", at " ); WriteNum( write_location( pipe, slot ) ); NewLine;
+      // WriteS( "Space finally available: " ); WriteNum( pipe->sender_waiting_for ); WriteS( ", remaining: " ); WriteNum( space_in_pipe( pipe ) ); WriteS( ", at " ); WriteNum( write_location( pipe, slot ) ); NewLine;
 #endif
 
       asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME Invalidate cache for updated area, only if sender on a different core
@@ -2112,7 +2161,7 @@ static bool PipeNotListening( svc_registers *regs, os_pipe *pipe )
 bool do_OS_PipeOp( svc_registers *regs )
 {
 #ifdef DEBUG__PIPEOP
-  // Write0( __func__ ); Write0( " " ); WriteNum( regs->r[0] ); NewLine;
+  // Write0( __func__ ); WriteS( " " ); WriteNum( regs->r[0] ); NewLine;
 #endif
   enum { Create,
          WaitForSpace,  // Block task until N bytes may be written
@@ -2123,8 +2172,9 @@ bool do_OS_PipeOp( svc_registers *regs )
          WaitForData,   // Block task until N bytes may be read
          DataConsumed,  // I don't need the first N bytes written any more
          PassingOff,    // Another task is going to take over listening at this pipe
-         NotListening   // I don't want any more data, thanks
-         };
+         NotListening,  // I don't want any more data, thanks
+         WaitUntilEmpty // Block task until all bytes have been consumed TODO?
+         }; // FIXME: This is duplicated in include/pipeop.h
   /*
     OS_PipeOp
     (SWI &fa)
@@ -2304,7 +2354,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
 
   Task *running = workspace.task_slot.running;
 
-// show_task_state( running, Blue );
+show_task_state( running, Blue );
 
   for (int i = 1; i < number_of( workspace.task_slot.last_interrupted ); i++) {
     workspace.task_slot.last_interrupted[i] = workspace.task_slot.last_interrupted[i-1];
@@ -2420,8 +2470,8 @@ retry: {}
       WriteS( "Open file \"" ); Write0( regs->r[1] ); WriteS( "\"" ); NewLine;
     }
 #ifdef DEBUG__SHOW_ALL_FS_VECTOR_CALLS
-    Write0( "Claimed lock" ); Space; if (reclaimed) Write0( " (reclaimed) " ); NewLine;
-    Write0( "Running vector " ); WriteNum( operation ); NewLine;
+    WriteS( "Claimed lock" ); Space; if (reclaimed) WriteS( " (reclaimed) " ); NewLine;
+    WriteS( "Running vector " ); WriteNum( operation ); NewLine;
     WriteNum( regs->r[0] ); Space;
     WriteNum( regs->r[1] ); Space;
     WriteNum( regs->r[2] ); Space;
@@ -2453,18 +2503,18 @@ retry: {}
       // There's no tasks queued, no need for anything clever with STREX etc.
       shared.task_slot.filesystem_lock = 0;
 #ifdef DEBUG__SHOW_ALL_FS_VECTOR_CALLS
-      Write0( "Released lock" ); NewLine;
+      WriteS( "Released lock" ); NewLine;
 #endif
     }
     else {
 #ifdef DEBUG__SHOW_ALL_FS_VECTOR_CALLS
-      Write0( "Keeping lock" ); NewLine;
+      WriteS( "Keeping lock" ); NewLine;
 #endif
     }
     return true;
   }
   else if ((regs->spsr & 0xf) == 0) { // usr32 mode caller, allowed to be switched out
-    Write0( "Lock is held by " ); WriteNum( old ); NewLine;
+    WriteS( "Lock is held by " ); WriteNum( old ); NewLine;
 
     regs->lr -= 4; // Yield in such a way that the task will re-try the SWI
 
@@ -2609,6 +2659,8 @@ show_word( 900, 60, 0xffdff000 - (uint32_t)regs, Yellow );
 //show_word( 1080, 0xffdf000 - (uint32_t)regs, regs, Green );
 }
     save_and_resume( running, receiver, regs );
+
+    __builtin_unreachable();
   }
 }
 
@@ -2732,11 +2784,15 @@ if (old_lowest != 0 && &interruptable > old_lowest) {
 
   func( p );
 
-/*
-show_word( workspace.core_number * (1920/4), 992, running, Yellow );
-show_word( workspace.core_number * (1920/4), 1000, workspace.task_slot.running, Yellow );
-show_word( workspace.core_number * (1920/4), 1008, &interruptable, Yellow );
-*/
+uint32_t psr;
+asm ( "mrs %[psr], cpsr" : [psr] "=r" (psr) );
+
+asm ( "cpsid aif" );
+if (0 == (psr & 0x80)) {
+  // Interrupts enabled on return from legacy code.
+  // I think this is a Bad Thing, but disabling them above can cope.
+}
+
 workspace.task_slot.lowest_temp = old_lowest;
 
   // If the func starts a new thread, it probably shouldn't get here.

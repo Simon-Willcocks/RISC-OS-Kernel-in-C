@@ -18,7 +18,6 @@
 
 enum { Create,
        WaitForSpace,  // Block task until N bytes may be written
-       // WaitUntilEmpty,// Block task until all bytes have been consumed TODO?
        SpaceFilled,   // I've filled this many bytes
        PassingOver,   // Another task is going to take over filling this pipe
        UnreadData,    // Useful, in case data can be dropped or consolidated (e.g. mouse movements)
@@ -26,7 +25,8 @@ enum { Create,
        WaitForData,   // Block task until N bytes may be read (or WaitUntilEmpty, NoMoreData called)
        DataConsumed,  // I don't need the first N bytes that were written any more
        PassingOff,    // Another task is going to take over listening at this pipe
-       NotListening   // I don't want any more data, thanks
+       NotListening,  // I don't want any more data, thanks
+       WaitUntilEmpty // Block task until all bytes have been consumed TODO?
        };
 
 #ifndef __KERNEL_H

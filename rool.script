@@ -32,6 +32,7 @@ SECTIONS
   tasks                 = 0xfff80000 ; /* probably needs more space */
   devices               = 0xfff90000 ;
   pipes_top             = 0x00100000 ; /* FIXME: This area is only sensible for early testing */
+  app_memory_base       = 0x00008000 ; /* Must be a page boundary */
   app_memory_limit      = 0x20000000 ; /* Must be a MiB boundary */
   rma_base              = 0x20000000 ;
   rma_heap              = 0x20000000 ;

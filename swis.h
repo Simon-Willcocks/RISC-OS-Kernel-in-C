@@ -127,17 +127,22 @@ extern uint32_t rma_heap; // Linker generated
 
 static inline void rma_free( uint32_t block )
 {
-  // FIXME
+  register uint32_t code asm( "r0" ) = 3;
+  register void *heap asm( "r1" ) = &rma_heap;
+  register void *memory asm( "r2" ) = block;
+
+  asm ( "svc %[swi]" : : [swi] "i" (OS_Heap | 0x20000), "r" (code), "r" (heap), "r" (memory) : "memory", "lr", "cc" );
 }
 
-static void *rma_allocate( uint32_t size )
+static inline void *rma_allocate( uint32_t size )
 {
   register uint32_t code asm( "r0" ) = 2;
   register void *heap asm( "r1" ) = &rma_heap;
   register uint32_t bytes asm( "r3" ) = size;
   register void *memory asm( "r2" );
 
-  asm ( "svc %[swi]" : "=r" (memory) : [swi] "i" (OS_Heap | 0x20000), "r" (code), "r" (heap), "r" (bytes) : "memory", "lr" );
+  // FIXME error handling
+  asm ( "svc %[swi]" : "=r" (memory) : [swi] "i" (OS_Heap | 0x20000), "r" (code), "r" (heap), "r" (bytes) : "memory", "lr", "cc" );
 
   return memory;
 }

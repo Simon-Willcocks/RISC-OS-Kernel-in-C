@@ -238,6 +238,61 @@ if (svc == 0x41b40 || svc == 0x61b40) {
 vector do_nothing;
 #endif
 
+struct vector_go {
+  vector *v;
+  svc_registers *regs;
+};
+
+static void run_interruptable_vector( struct vector_go *go )
+{
+  // "If your routine passes the call on, you can deliberately alter some of
+  // the registers values to change the effect of the call, however, you must
+  // arrange for control to return to your routine again to restore to those
+  // that the original routine would have returned. It should then return
+  // control back to the calling program."
+  // The only way I can see this working is if the code:
+  //    Stores the intercept return point (and its private word?)
+  //    Replaces it with an address in its own code
+  //    Returns with mov pc, lr (allowing other handlers to execute)
+  // AND the final, default, action of every vector handler is pop {pc}.
+  struct svc_registers *regs = go->regs;
+
+  register vector *v asm( "r10" ) = go->v;
+
+  // Code always exits via intercepted.
+  asm volatile (
+      "\n  adr r0, intercepted  // Interception address, to go onto stack"
+      "\n  push { r0, %[regs] } // Save location of register storage at sp+4"
+      "\n  ldm %[regs], { r0-r9 }"
+      "\n0:"
+      "\n  ldr r14, [%[v], %[code]]"
+      "\n  ldr r12, [%[v], %[private]]"
+      "\n  blx r14"
+      "\n  ldr %[v], [%[v], %[next]]"
+      "\n  cmp %[v], #0 // I don't think this should happen, but carry on if it does"
+      "\n  bne 0b"
+      "\n  pop {lr} // intercepted"
+      "\nintercepted:"
+      "\n  pop { r14 } // regs (intercepted already popped)"
+      "\n  stm r14, { r0-r9 }"
+      "\n  ldr r1, [r14, %[spsr]] // Update spsr with cpsr flags"
+      "\n  mrs r2, cpsr"
+      "\n  bic r1, #0xf0000000"
+      "\n  and r2, r2, #0xf0000000"
+      "\n  orr r1, r1, r2"
+      "\n  str r1, [r14, %[spsr]]"
+      : "=r" (v) // Updated by code
+      : [regs] "r" (regs)
+      , [v] "r" (v)
+
+      , [next] "i" ((char*) &((vector*) 0)->next)
+      , [private] "i" ((char*) &((vector*) 0)->private_word)
+      , [code] "i" ((char*) &((vector*) 0)->code)
+      , [spsr] "i" (4 * (&regs->spsr - &regs->r[0]))
+
+      : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r12", "r14" );
+}
+
 bool run_vector( svc_registers *regs, int vec )
 {
 #ifdef DEBUG__SHOW_VECTORS_VERBOSE
@@ -256,68 +311,15 @@ bool run_vector( svc_registers *regs, int vec )
     NewLine;
   }
 #endif
-
-  {
-    vector *v = workspace.kernel.vectors[vec];
-    while (v != 0) {
-      v = v->next;
-    }
-  }
-
-  // "If your routine passes the call on, you can deliberately alter some of
-  // the registers values to change the effect of the call, however, you must
-  // arrange for control to return to your routine again to restore to those
-  // that the original routine would have returned. It should then return
-  // control back to the calling program."
-  // The only way I can see this working is if the code:
-  //    Stores the intercept return point (and its private word?)
-  //    Replaces it with an address in its own code
-  //    Returns with mov pc, lr (allowing other handlers to execute)
-  // AND the final, default, action of every vector handler is pop {pc}.
-  register vector *v asm( "r10" ) = workspace.kernel.vectors[vec];
-  register uint32_t flags asm( "r1" );
-
-  // Code always exits via intercepted.
-  asm volatile (
-      "\n  adr r0, intercepted  // Interception address, to go onto stack"
-      "\n  push { r0, %[regs] } // Save location of register storage at sp+4"
-      "\n  ldm %[regs], { r0-r9 }"
-      "\n0:"
-      "\n  ldr r14, [%[v], %[code]]"
-      "\n  ldr r12, [%[v], %[private]]"
-      "\n  blx r14"
-      "\n  ldr %[v], [%[v], %[next]]"
-      "\n  cmp %[v], #0 // I don't think this should happen, but carry on if it does"
-      "\n  bhs 0b"
-      "\n  pop {lr} // intercepted"
-      "\nintercepted:"
-      "\n  pop { r14 } // regs (intercepted already popped)"
-      "\n  stm r14, { r0-r9 }"
-      "\n  ldr r1, [r14, %[spsr]] // Update spsr with cpsr flags"
-      "\n  mrs r2, cpsr"
-      "\n  bic r1, #0xf0000000"
-      "\n  and r2, r2, #0xf0000000"
-      "\n  orr r1, r1, r2"
-      "\n  str r1, [r14, %[spsr]]"
-      : "=r" (flags)
-
-      : [regs] "r" (regs)
-      , [v] "r" (v)
-
-      , [next] "i" ((char*) &((vector*) 0)->next)
-      , [private] "i" ((char*) &((vector*) 0)->private_word)
-      , [code] "i" ((char*) &((vector*) 0)->code)
-      , [spsr] "i" (4 * (&regs->spsr - &regs->r[0]))
-
-      : "r0", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r12", "r14" );
-
+  struct vector_go go = { .v = workspace.kernel.vectors[vec], .regs = regs };
+  TempTaskDo( run_interruptable_vector, &go );
 #ifdef DEBUG__SHOW_VECTORS_VERBOSE
   if (vec != 3 && vec != 0x1c && workspace.kernel.vectors[3] != &do_nothing)
   {
     Write0( "Vector " ); WriteNum( vec ); Space; WriteNum( flags ); NewLine;
   }
 #endif
-  return (flags & VF) == 0;
+  return (regs->spsr & VF) == 0;
 }
 
 static inline char const *swi_decoding_table( module_header *header )
@@ -753,15 +755,35 @@ static module *new_module( module *base, module_header *m, const char *postfix )
 static void pre_init_service( uint32_t *size_ptr )
 {
   module_header *m = (void*) (size_ptr+1);
-  svc_registers serviceregs = { .r = { [0] = (uint32_t) m, [1] = 0xb9, [2] = *size_ptr, [7] = 0x11111111 } };
-  do_OS_ServiceCall( &serviceregs );
+  uint32_t size = *size_ptr;
+
+  // Service_MemoryMoved
+  register module_header* header asm( "r0" ) = m;
+  register uint32_t code asm( "r1" ) = 0xb9;
+  register uint32_t length_plus_four asm( "r2" ) = size;
+  asm ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ServiceCall | Xbit)
+      , "r" (code), "r" (header), "r" (length_plus_four)
+      : "lr", "cc", "memory" );
 }
 
 static void post_init_service( uint32_t *size_ptr )
 {
   module_header *m = (void*) (size_ptr+1);
-  svc_registers serviceregs = { .r = { [0] = (uint32_t) m, [1] = 0xda, [2] = (uint32_t) title_string( m ), [7] = 0x22222222 } };
-  do_OS_ServiceCall( &serviceregs );
+  uint32_t size = *size_ptr;
+  char const *module_title = title_string( m );
+
+  // Service_MemoryMoved
+  register module_header* header asm( "r0" ) = m;
+  register uint32_t code asm( "r1" ) = 0xda;
+  register char const *title asm( "r2" ) = module_title;
+
+  asm ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ServiceCall | Xbit)
+      , "r" (code), "r" (header), "r" (title)
+      : "lr", "cc", "memory" );
 }
 
 static bool initialise_module( svc_registers *regs, uint32_t *memory, char const* parameters )
@@ -2789,43 +2811,36 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
     // Not found in any module
     register uint32_t reason asm ( "r0" ) = 5; // Read catalogue information
     register void const *filename asm ( "r1" ) = command;     // File name
-    register uint32_t Rword1 asm( "r2" );
-    register uint32_t Rword2 asm( "r3" );
-    register uint32_t Rsize asm( "r4" );
-    register uint32_t Rattrs asm( "r5" );
-    register uint32_t Rtype asm( "r0" );
+    struct __attribute__(( packed )) {
+      uint32_t type;
+      uint32_t timestamp_MSB:8;
+      uint32_t filetype:12;
+      uint32_t timestamped:12;
+      uint32_t word2;
+      uint32_t size;
+      uint32_t attrs;
+    } file_info;
+
     asm volatile (
-        "svc 0x20008"
+        "svc %[swi]"
     "\n  movvs %[error], r0"
     "\n  movvc %[error], #0"
-        : "=r" (Rtype)
-        , "=r" (Rword1)
-        , "=r" (Rword2)
-        , "=r" (Rsize)
-        , "=r" (Rattrs)
-        , [error] "=r" (error)
-        : "r" (reason)
+    "\n  stmvc %[info], { r0, r2, r3, r4, r5 }"
+        : [error] "=r" (error)
+        : [swi] "i" (OS_File | Xbit)
+        , "r" (reason)
         , "r" (filename)
-        : "lr" );
-    // The register variables seem to get overwritten if you're not careful
-    uint32_t type = Rtype;
-    uint32_t word1 = Rword1;
-    if (error == 0 && type == 1) {
-      // and...?
-      union {
-        struct {
-          uint32_t timestamp_MSB:8;
-          uint32_t filetype:12;
-          uint32_t timestamped:12;
-        };
-        uint32_t raw;
-      } info = { .raw = word1 };
-      char runtype[] = "Alias$@RunType_XXX";
-      runtype[15] = hex[(info.filetype >> 8) & 0xf];
-      runtype[16] = hex[(info.filetype >> 4) & 0xf];
-      runtype[17] = hex[(info.filetype >> 0) & 0xf];
+        , [info] "r" (&file_info)
+        , "m" (file_info)
+        : "lr", "cc", "memory" );
 
-      Write0( "Found file, type " ); WriteNum( info.filetype ); NewLine;
+    if (error == 0 && file_info.type == 1) {
+      char runtype[] = "Alias$@RunType_XXX";
+      runtype[15] = hex[(file_info.filetype >> 8) & 0xf];
+      runtype[16] = hex[(file_info.filetype >> 4) & 0xf];
+      runtype[17] = hex[(file_info.filetype >> 0) & 0xf];
+
+      Write0( "Found file, type " ); WriteNum( file_info.filetype ); NewLine;
       Write0( "Looking for " ); Write0( runtype ); NewLine;
 
       char template[256];
@@ -2835,24 +2850,38 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
       register uint32_t context asm( "r3" ) = 0;
       register uint32_t convert asm( "r4" ) = 0;
       error_block *error;
-      asm volatile ( "svc 0x20023\n  movvs %[err], r0\n  movvc %[err], #0"
+      asm volatile ( "svc 0x20023"
+                 "\n  movvs %[err], r0"
+                 "\n  movvc %[err], #0"
           : "=r" (size), [err] "=r" (error)
           : "r" (var_name), "r" (value), "r" (size), "r" (context), "r" (convert)
-          : "lr", "cc" );
+          : "lr", "cc", "memory" );
+
       uint32_t varlen = size;
 
       if (error == 0) {
         template[varlen] = '\0';
-        Write0( runtype ); Write0( " variable found " ); Space; WriteS( "\"" ); Write0( template ); WriteS( "\"" ); NewLine;
+        Write0( runtype ); WriteS( " variable found \"" ); Write0( template ); WriteS( "\"" ); NewLine;
         char to_run[1024];
-        svc_registers call_regs = {
-            .r[0] = (uint32_t) command,
-            .r[1] = (uint32_t) to_run,
-            .r[2] = sizeof( to_run ),
-            .r[3] = (uint32_t) template,
-            .r[4] = varlen };
-        if (!do_OS_SubstituteArgs32( &call_regs )) {
-          regs[0] = call_regs.r[0];
+        register char const *c asm ( "r0" ) = command;
+        register char *r asm ( "r1" ) = to_run;
+        register uint32_t rs asm ( "r2" ) = sizeof( to_run );
+        register char const *t asm ( "r3" ) = template;
+        register uint32_t ts asm ( "r4" ) = varlen;
+        asm volatile ( "svc %[swi]"
+                   "\n  movvs %[err], r0"
+                   "\n  movvc %[err], #0"
+                   : [err] "=r" (error)
+                   : [swi] "i" (OS_SubstituteArgs32 | Xbit)
+                   , "r" (c)
+                   , "r" (r)
+                   , "r" (rs)
+                   , "r" (t)
+                   , "r" (ts)
+                   , "m" (to_run)
+                   : "lr", "cc", "memory" );
+        if (error != 0) {
+          regs[0] = (uint32_t) error;
           return false;
         }
 
@@ -2860,8 +2889,12 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
         error = run_module_command( to_run );
         Write0( "Command returned" ); NewLine;
       }
+      else {
+        WriteS( "No Alias$@RunType for this file found" ); NewLine;
+        Write0( error->desc ); NewLine;
+      }
     }
-    else if (error == 0 && type == 2) {
+    else if (error == 0 && file_info.type == 2) {
       // Application directory?
       WriteS( "Run any !Run file in the directory - TODO" ); NewLine; // TODO
     }
@@ -3526,9 +3559,7 @@ void Boot()
 
   PreUsrBoot();
 
-  // No App memory initially, but a small stack on the RMA
-  // physical_memory_block block = { .physical_base = Kernel_allocate_pages( 65536, 4096 ), .virtual_base = 0x8000, .size = 65536 };
-  // TaskSlot_add( slot, block );
+  // No App memory initially, but a small stack in the RMA
 
   // The HAL will have ensured that no extraneous interrupts are occuring,
   // so we can reset the SVC stack, enable interrupts and drop to USR mode.

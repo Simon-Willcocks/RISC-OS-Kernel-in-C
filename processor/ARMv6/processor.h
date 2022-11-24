@@ -102,6 +102,13 @@ static inline void set_VF()
   asm ( "msr cpsr_f, #(1 << 28)" );
 }
 
+static inline uint32_t get_CPSR()
+{
+  uint32_t cpsr;
+  asm ( "mrs %[cpsr], cpsr" : [cpsr] "=r" (cpsr) );
+  return cpsr;
+}
+
 static inline uint32_t fault_address()
 {
   uint32_t result;

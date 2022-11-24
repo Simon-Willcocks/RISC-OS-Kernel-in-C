@@ -994,7 +994,7 @@ static bool __attribute__(( noinline )) handle_data_abort()
     asm ( "mov %[sp], sp" : [sp] "=r" (stack) );
     WriteNum( &stack[9] );
     WriteS( "Fault type: " ); WriteNum( ft ); WriteS( " @ " ); WriteNum( fa ); WriteS( " address " ); WriteNum( stack[9] ); NewLine;
-    assert( false );
+    return false;
   }
   about_to_remap_memory();
 
