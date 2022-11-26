@@ -58,17 +58,11 @@ static uint32_t word_align( void *p )
   return (((uint32_t) p) + 3) & ~3;
 }
 
-struct swi_go {
-  svc_registers *regs;
-  uint32_t svc;
-};
-
-static void run_interruptable_swi( struct swi_go *go )
+static void run_interruptable_swi( uint32_t regs_ptr, uint32_t svc )
 {
   extern uint32_t JTABLE;
   uint32_t *jtable = &JTABLE;
-  uint32_t svc = go->svc;
-  svc_registers *regs = go->regs;
+  svc_registers *regs = (void*) regs_ptr;
 
   register uint32_t non_kernel_code asm( "r10" ) = jtable[svc];
   register uint32_t swi asm( "r11" ) = svc;
@@ -101,7 +95,7 @@ static void run_interruptable_swi( struct swi_go *go )
       : "=r" (result)
       : "r" (regs_in)
       , "r" (non_kernel_code)
-      , [spsr] "i" (4 * (&go->regs->spsr - &go->regs->r[0]))
+      , [spsr] "i" (4 * (&regs->spsr - &regs->r[0]))
       , "r" (swi)
       : "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "lr", "memory" );
 }
@@ -111,9 +105,7 @@ static void run_interruptable_swi( struct swi_go *go )
 // TODO: Have a module flag to indicate its SWIs don't enable interrupts.
 bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
 {
-  struct swi_go go = { .regs = regs, .svc = svc };
-
-  TempTaskDo( run_interruptable_swi, &go );
+  TempTaskDo2( run_interruptable_swi, (uint32_t) regs, svc );
 
   return (regs->spsr & VF) == 0;
 }
@@ -841,7 +833,7 @@ Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); 
   else {
     h->code = code;
     h->r12 = r12;
-    h->slot = workspace.task_slot.running->slot; // May be 0
+    h->slot = TaskSlot_now();
   }
   release_lock( &workspace.interrupts.lock );
 
@@ -2350,26 +2342,67 @@ static void trace_wimp_calls_out( svc_registers *regs, uint32_t number )
     NewLine;
 }
 
-static void __attribute__(( noinline )) do_svc( svc_registers *regs, uint32_t number )
+static bool special_case( svc_registers *regs, uint32_t number )
 {
-  regs->spsr &= ~VF;
-
-if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
-  regs->spsr &= ~CF;
-  return;
-}
+  if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
+    regs->spsr &= ~CF;
+    return true;
+  }
 
   switch (number & ~Xbit) { // FIXME
-  case 0x406c0 ... 0x406ff: return; // Hourglass
+  case 0x406c0 ... 0x406ff: return true; // Hourglass
   case 0x400c0 ... 0x400ff:
     trace_wimp_calls_in( regs, number & 0x3f );
-    if ((number & 0x3f) == 0x1e) { StartTask( regs ); regs->r[0] = 0x66666666; return; } // FIXME: should be handle returned from Wimp_Initialise, and return only when Wimp_Poll is called...
+    if ((number & 0x3f) == 0x1e) { StartTask( regs ); regs->r[0] = 0x66666666; return true; } // FIXME: should be handle returned from Wimp_Initialise, and return only when Wimp_Poll is called...
     break;
-  case 0x80146: regs->r[0] = 0; return; // PDriver_CurrentJob (called from Desktop?!)
+  case 0x80146: regs->r[0] = 0; return true; // PDriver_CurrentJob (called from Desktop?!)
   // case 0x41506: WriteS( "Translating error " ); Write0( regs->r[0] + 4 ); NewLine; break;
-  case 0x487c0: regs->r[0] = (uint32_t) "HD Monitor"; return;
+  case 0x487c0: regs->r[0] = (uint32_t) "HD Monitor"; return true;
   }
+
+  return false;
+}
+
+void run_transient_callback( transient_callback *callback )
+{
+  run_handler( callback->code, callback->private_word );
+}
+
+static inline void run_transient_callbacks()
+{
+  if (workspace.kernel.transient_callbacks == 0) return;
+
+  while (workspace.kernel.transient_callbacks != 0) {
+    transient_callback *callback = workspace.kernel.transient_callbacks;
+
+    // In case the callback registers a callback, make a private copy of the
+    // callback details and sort out the list before making the call. 
+    transient_callback latest = *callback;
+
+    callback->next = workspace.kernel.transient_callbacks_pool;
+    workspace.kernel.transient_callbacks_pool = callback;
+    workspace.kernel.transient_callbacks = latest.next;
+
+#ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
+  WriteS( "Call transient callback: " ); WriteNum( latest.code ); WriteS( ", " ); WriteNum( latest.private_word ); NewLine;
+#endif
+    TempTaskDo( run_transient_callback, &latest );
+  }
+}
+
+void __attribute__(( noinline )) execute_swi( svc_registers *regs )
+{
+  uint32_t number = get_swi_number( regs->lr );
+
+  // FIXME What should happen if you call CallASWI using CallASWI?
+  if ((number & ~Xbit) == OS_CallASWI) number = regs->r[9];
+  else if ((number & ~Xbit) == OS_CallASWIR12) number = regs->r[12];
+
+  regs->spsr &= ~VF;
+
+  if (special_case( regs, number )) return;
   bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
+
 
   bool result = Kernel_go_svc( regs, number );
 
@@ -2448,105 +2481,8 @@ if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
     trace_wimp_calls_out( regs, number & 0x3f );
     break;
   }
-}
-
-void run_transient_callback( transient_callback *callback )
-{
-  run_handler( callback->code, callback->private_word );
-}
-
-static inline void run_transient_callbacks()
-{
-  if (workspace.kernel.transient_callbacks == 0) return;
-
-  while (workspace.kernel.transient_callbacks != 0) {
-    transient_callback *callback = workspace.kernel.transient_callbacks;
-
-    // In case the callback registers a callback, make a private copy of the
-    // callback details and sort out the list before making the call. 
-    transient_callback latest = *callback;
-
-    callback->next = workspace.kernel.transient_callbacks_pool;
-    workspace.kernel.transient_callbacks_pool = callback;
-    workspace.kernel.transient_callbacks = latest.next;
-
-#ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
-  WriteS( "Call transient callback: " ); WriteNum( latest.code ); WriteS( ", " ); WriteNum( latest.private_word ); NewLine;
-#endif
-    TempTaskDo( run_transient_callback, &latest );
-  }
-}
-
-void __attribute__(( naked, noreturn )) Kernel_default_svc()
-{
-  // Some SWIs preserve all registers
-  // SWIs have the potential to update the first 10 registers
-  // The implementations are passed values in r11 and r12, which must not
-  // be seen by the caller, and r10 may also be corrupted.
-  // The SVC stack pointer should be maintained by the implementation.
-
-  // C functions may corrupt r0-r3, r9, and r10-12, and r14 (lr)
-  // Note: r9 is optionally callee-saved, use C_CLOBBERED
-
-  // Gordian knot time.
-  // Store r0-r12 on the stack, plus the exception return details (srs)
-  // Call C functions to find and call the appropriate handler, storing the returned
-  // r0-r9 over the original values on return (and updating the stored SPSR flags).
-  // The savings of not always having to save r4-r8 (into non-shared, cached memory)
-  // will be minor compared to messing about trying to avoid it.
-
-  svc_registers *regs;
-  uint32_t lr;
-  asm ( "  srsdb sp!, #0x13"
-      "\n  push { r0-r12 }"
-      "\n  mov %[regs], sp"
-      "\n  mov %[lr], lr"
-      : [regs] "=r" (regs)
-      , [lr] "=r" (lr)
-      );
-
-  uint32_t number = get_swi_number( lr );
-
-uint32_t banked_sp;
-asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (banked_sp) );
-if (0 && (regs->spsr & 0xf) == 0) {
-NewLine;
-WriteS( "Running: " ); WriteNum( workspace.task_slot.running ); NewLine;
-uint32_t banked_lr;
-asm volatile ( "mrs %[lr], lr_usr" : [lr] "=r" (banked_lr) );
-  for (int i = 0; i < 13; i++) {
-    WriteNum( regs->r[i] ); if (i == 7) NewLine; else Space;
-  }
-  WriteNum( banked_sp ); Space;
-  WriteNum( banked_lr ); Space;
-  WriteNum( regs->lr ); Space;
-  WriteNum( regs->spsr ); NewLine;
-}
-if (banked_sp > 0x80000000 && (regs->spsr & 0xf) == 0) {
-  asm ( "bkpt 3001" );
-}
-
-  // FIXME What should happen if you call CallASWI using CallASWI?
-  if ((number & ~Xbit) == OS_CallASWI) number = regs->r[9];
-  else if ((number & ~Xbit) == OS_CallASWIR12) number = regs->r[12];
-
-  do_svc( regs, number );
 
   if (0x10 == (regs->spsr & 0x1f)) {
     run_transient_callbacks();
   }
-  if (0x10 == (regs->spsr & 0x1f)) {
-    swi_returning_to_usr_mode( regs );
-  }
-  if (0x10 == (regs->spsr & 0x1f)) {
-    uint32_t banked_sp;
-    asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (banked_sp) );
-    assert( banked_sp < 0x80000000 );
-  }
-
-  asm ( "pop { r0-r12 }"
-    "\n  rfeia sp!" );
-
-  __builtin_unreachable();
 }
-

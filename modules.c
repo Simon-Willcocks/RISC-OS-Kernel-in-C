@@ -3535,27 +3535,38 @@ workspace.kernel.frame_buffer_initialised = 1;
 show_word( workspace.core_number * (1920/4), 70, &workspace.task_slot.running, Green ); 
 }
 
+static uint32_t start_idle_task()
+{
+  register uint32_t request asm ( "r0" ) = 0; // Create Thread
+  register void *code asm ( "r1" ) = idle_thread;
+  register void *stack_top asm ( "r2" ) = 0;
+  register uint32_t core_number asm( "r3" ) = workspace.core_number;
+
+  register uint32_t handle asm ( "r0" );
+
+  asm volatile ( "svc %[swi]"
+      : "=r" (handle)
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (code)
+      , "r" (stack_top)
+      , "r" (core_number)
+      : "lr" );
+
+  return handle;
+}
+
 void Boot()
 {
   TaskSlot *slot = TaskSlot_new( 0, 0 ); // Root slot, does not require RMA or regs
 
   assert( slot != 0 );
   assert( workspace.task_slot.running != 0 );
-  assert( workspace.task_slot.running->slot == slot );
+  assert( TaskSlot_now() == slot );
 
   MMU_switch_to( slot );
 
-  Task *idle_task = Task_new( slot );
-
-  // Initial state
-  idle_task->regs.r[0] = workspace.core_number;
-  idle_task->regs.pc = (uint32_t) idle_thread;
-  idle_task->regs.psr = 0x10;
-  idle_task->regs.banked_sp_usr = 0; // No stack
-
-  // Get ready to run
-  idle_task->next = workspace.task_slot.running->next;
-  workspace.task_slot.running->next = idle_task;
+  start_idle_task(); // The one that's always there
 
   PreUsrBoot();
 

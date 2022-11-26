@@ -176,3 +176,7 @@ extern mode_selector_block const only_one_mode;
 
 // From swis.c, to allow veneers on OS_ SWIs.
 bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc );
+
+// Provided by swis.c, for use by TaskSlot only.
+// regs contains the state of the registers at the moment of the call.
+void execute_swi( svc_registers *regs );

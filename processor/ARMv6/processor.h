@@ -17,17 +17,6 @@
 // This should probably go into a separate BuildEnvironment directory structure.
 #define C_CLOBBERED "r0-r3,r12"
 
-// WARNING: The order of these fields is used in assembler code
-typedef struct __attribute__(( packed )) {
-  uint32_t r[13];
-  uint32_t banked_sp_usr;
-  uint32_t banked_lr_usr;
-  uint32_t banked_sp_svc;
-  uint32_t banked_lr_svc;
-  uint32_t pc;
-  uint32_t psr;
-} integer_registers;
-
 // Take the existing value from a system register, clear the bits that
 // are set in bits, and toggle the bits that are in new_values (which
 // sets any bits that are set in both bits and new_values).

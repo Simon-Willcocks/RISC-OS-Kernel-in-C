@@ -41,13 +41,6 @@ physical_memory_block Kernel_physical_address( uint32_t va );
 void __attribute__(( noinline )) do_FSControl( uint32_t *regs );
 void __attribute__(( noinline )) do_UpCall( uint32_t *regs );
 
-struct Task {
-  integer_registers regs; // WARNING: Keep at start of struct!
-  int32_t resumes;
-  TaskSlot *slot;
-  Task *next;
-};
-
 struct TaskSlot_workspace {
   Task *running;        // The task that is running on this core
   Task *runnable;       // The tasks that may only run on this core
@@ -85,8 +78,13 @@ struct TaskSlot_shared_workspace {
   uint32_t number_of_interrupt_sources;
 };
 
-// Call only from SVC mode, runs func, passing p to it, with a temporary
-// Task. This protects the running Task user context from being overwritten
-// by an interrupt.
-void TempTaskDo( void (*func)( void *p ), void *p );
+// Call only from SVC mode, runs func, passing parameter(s) to it, with
+// a temporary Task.
+// Do these need to be public, any more? 24/11/22 FIXME
+
+void TempTaskDo2( void (*func)( uint32_t p1, uint32_t p2 ), uint32_t p1, uint32_t p2 );
+static inline void TempTaskDo( void (*func)( uint32_t p ), uint32_t p )
+{
+  TempTaskDo2( (void (*)( uint32_t p1, uint32_t p2 )) func, p, 0 );
+}
 

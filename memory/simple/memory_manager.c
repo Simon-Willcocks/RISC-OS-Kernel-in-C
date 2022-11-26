@@ -434,7 +434,7 @@ bool do_OS_ReadDynamicArea( svc_registers *regs )
 
   if (regs->r[0] == 0xffffffff) {
     // Special case, PRM 5a-43
-    TaskSlot *slot = workspace.task_slot.running->slot;
+    TaskSlot *slot = TaskSlot_now();
     regs->r[0] = 0x8000;
     regs->r[1] = slot == 0 ? 0x8000 : TaskSlot_Himem( slot );
     if (0 != regs->r[1]) regs->r[1] = regs->r[1] - 0x8000;

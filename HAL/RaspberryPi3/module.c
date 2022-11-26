@@ -1508,6 +1508,7 @@ show_word( this_core * (1920/4), 48, &qa7->Core_write_clear[this_core], first_en
     }
 
     if (pipe != 0) {
+add_string( "starting console task", &workspace->core_specific[this_core] );
       uint32_t handle = start_console_task( &workspace->core_specific[this_core], pipe );
     }
   }
@@ -1553,7 +1554,7 @@ show_word( this_core * (1920/4), 48, &qa7->Core_write_clear[this_core], first_en
   if (1) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
-
+add_string( "yielding to timer task", &workspace->core_specific[this_core] );
     yield(); // Let the task start the timer
   }
   else {
