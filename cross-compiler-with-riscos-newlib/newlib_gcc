@@ -4,13 +4,13 @@
 
 echo This script should build a gcc suitable for RISC OS
 echo
-echo It builds a gcc that's suitable for compiling your libgloss
+echo It builds a gcc that\'s suitable for compiling your libgloss
 echo without any OS-specific code.
 echo
 echo Then it builds another using it that should allow you to
 echo compile executables to run on RISC OS.
 echo
-echo Initially, you'll have to make a binary from the elf file
+echo Initially, you\'ll have to make a binary from the elf file
 echo using arm-riscos-eabi-objcopy and filetype it. But an ELF
 echo loader should be easy to create using GNU tools.
 echo

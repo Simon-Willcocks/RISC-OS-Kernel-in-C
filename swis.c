@@ -235,8 +235,6 @@ static bool do_OS_ReadUnsigned( svc_registers *regs )
   uint32_t base = regs->r[0] & 0x7f;
   if (base < 2 || base > 36) base = 10; // Can this really be a default?
 
-WriteS( "Task " ); WriteNum( workspace.task_slot.running ); NewLine;
-
   bool maybe_reading_base = true;
   uint32_t result = 0;
 
@@ -803,15 +801,16 @@ static bool do_OS_ClaimDeviceVector( svc_registers *regs )
 {
 Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); NewLine;
   asm ( "bkpt 1" );
-  // TODO Emulate the traditional mechanism by creating a Task that will call the desired
-  // vector.
+  // TODO Emulate the traditional mechanism by creating a Task that will
+  // call the desired vector.
 
   uint32_t device = regs->r[0];
   void (*code) = (void*) regs->r[1];
   uint32_t r12 = regs->r[2];
 
   if (device == 8 || device == 13) {
-    // No expansion cards supported, whoever ports this to RiscPC (or wants to use this mechanism for USB?) can fix it.
+    // No expansion cards supported, whoever ports this to RiscPC (or wants 
+    // to use this mechanism for USB?) can fix it.
     return Kernel_Error_UnimplementedSWI( regs );
   }
 
@@ -870,7 +869,8 @@ static bool do_OS_AddCallBack( svc_registers *regs )
   else {
     workspace.kernel.transient_callbacks_pool = callback->next;
   }
-  // Most recently requested gets called first, I don't know if that's right or not.
+  // Most recently requested gets called first, I don't know if that's
+  // right or not.
   callback->next = workspace.kernel.transient_callbacks;
   workspace.kernel.transient_callbacks = callback;
   callback->code = regs->r[0];
@@ -2352,7 +2352,7 @@ static bool special_case( svc_registers *regs, uint32_t number )
   switch (number & ~Xbit) { // FIXME
   case 0x406c0 ... 0x406ff: return true; // Hourglass
   case 0x400c0 ... 0x400ff:
-    trace_wimp_calls_in( regs, number & 0x3f );
+    //trace_wimp_calls_in( regs, number & 0x3f );
     if ((number & 0x3f) == 0x1e) { StartTask( regs ); regs->r[0] = 0x66666666; return true; } // FIXME: should be handle returned from Wimp_Initialise, and return only when Wimp_Poll is called...
     break;
   case 0x80146: regs->r[0] = 0; return true; // PDriver_CurrentJob (called from Desktop?!)
@@ -2365,6 +2365,7 @@ static bool special_case( svc_registers *regs, uint32_t number )
 
 void run_transient_callback( transient_callback *callback )
 {
+  WriteS( "Running callback " ); WriteNum( callback->code ); NewLine;
   run_handler( callback->code, callback->private_word );
 }
 
@@ -2478,7 +2479,7 @@ if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
 
   switch (number & ~Xbit) {
   case 0x400c0 ... 0x400ff:
-    trace_wimp_calls_out( regs, number & 0x3f );
+    //trace_wimp_calls_out( regs, number & 0x3f );
     break;
   }
 

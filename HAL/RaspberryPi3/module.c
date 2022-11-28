@@ -1358,7 +1358,9 @@ static uint32_t start_timer_interrupt_task( struct core_workspace *ws, int devic
 static void console_task( uint32_t handle, struct core_workspace *ws, uint32_t read_pipe )
 {
   PipeSpace data = { 0, 0, 0 };
-  add_string( "Starting console task\n\r", ws );
+  add_string( "Starting console task, pipe: ", ws );
+  add_num( read_pipe, ws );
+  add_string( "\r\n", ws );
 
   for (;;) {
     if (data.available == 0) {
@@ -1508,12 +1510,13 @@ show_word( this_core * (1920/4), 48, &qa7->Core_write_clear[this_core], first_en
     }
 
     if (pipe != 0) {
-add_string( "starting console task", &workspace->core_specific[this_core] );
+add_string( "starting console task ", &workspace->core_specific[this_core] );
+add_num( pipe, &workspace->core_specific[this_core] );
       uint32_t handle = start_console_task( &workspace->core_specific[this_core], pipe );
+
+      yield();
     }
   }
-
-  yield();
 
 #define QEMU
   workspace->qa7->timer_prescaler = 0x06AAAAAB;
@@ -1554,7 +1557,7 @@ add_string( "starting console task", &workspace->core_specific[this_core] );
   if (1) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
-add_string( "yielding to timer task", &workspace->core_specific[this_core] );
+
     yield(); // Let the task start the timer
   }
   else {

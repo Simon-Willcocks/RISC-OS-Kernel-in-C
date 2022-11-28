@@ -680,7 +680,7 @@ static uint32_t read_file_size( const char *name )
       , "=r" (word1)
       , "=r" (word2)
       , "=r" (attributes)
-      : [swi] "i" (OS_File)
+      : [swi] "i" (OS_File | Xbit) // FIXME Error return?
       , "r" (os_file_code)
       , "r" (filename)
       : "lr", "memory" );
@@ -2809,7 +2809,6 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
 Write0( "Looking for file " ); Write0( command ); NewLine;
 
     // Not found in any module
-    register uint32_t reason asm ( "r0" ) = 5; // Read catalogue information
     register void const *filename asm ( "r1" ) = command;     // File name
     struct __attribute__(( packed )) {
       uint32_t type;
@@ -2822,17 +2821,18 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
     } file_info;
 
     asm volatile (
-        "svc %[swi]"
+        "mov r0, %[reason]" 
+    "\n  svc %[swi]"
     "\n  movvs %[error], r0"
     "\n  movvc %[error], #0"
     "\n  stmvc %[info], { r0, r2, r3, r4, r5 }"
-        : [error] "=r" (error)
+        : [error] "=&r" (error)
         : [swi] "i" (OS_File | Xbit)
-        , "r" (reason)
+        , [reason] "i" (5) // Read catalogue information
         , "r" (filename)
         , [info] "r" (&file_info)
         , "m" (file_info)
-        : "lr", "cc", "memory" );
+        : "r0", "r2", "r3", "r4", "r5", "lr", "cc", "memory" );
 
     if (error == 0 && file_info.type == 1) {
       char runtype[] = "Alias$@RunType_XXX";
@@ -3498,9 +3498,10 @@ void PreUsrBoot()
 
   set_up_legacy_zero_page();
 
-  // Start the HAL, a multiprocessing-aware module that initialises essential features before
-  // the boot sequence can start.
-  // It should register Resource:$.!Boot, which should perform the post-ROM module boot.
+  // Start the HAL, a multiprocessing-aware module that initialises 
+  // essential features before the boot sequence can start.
+  // It should register Resource:$.!Boot, which should perform the
+  // post-ROM module boot.
 
   {
 #ifndef NO_DEBUG_OUTPUT

@@ -82,7 +82,6 @@ bool do_OS_ExitAndDie( svc_registers *regs );
 bool do_OS_ThreadOp( svc_registers *regs );
 bool do_OS_PipeOp( svc_registers *regs ); // because it blocks tasks
 bool do_OS_ReadDefaultHandler( svc_registers *regs );
-void swi_returning_to_usr_mode( svc_registers *regs );
 
 // memory/
 
@@ -125,13 +124,19 @@ bool Kernel_Error_UnimplementedSWI( svc_registers *regs );
 extern uint32_t rma_base; // Linker generated
 extern uint32_t rma_heap; // Linker generated
 
-static inline void rma_free( uint32_t block )
+static inline void rma_free( void *block )
 {
   register uint32_t code asm( "r0" ) = 3;
   register void *heap asm( "r1" ) = &rma_heap;
   register void *memory asm( "r2" ) = block;
 
-  asm ( "svc %[swi]" : : [swi] "i" (OS_Heap | 0x20000), "r" (code), "r" (heap), "r" (memory) : "memory", "lr", "cc" );
+  asm ( "svc %[swi]"
+        :
+        : [swi] "i" (OS_Heap | 0x20000)
+        , "r" (code)
+        , "r" (heap)
+        , "r" (memory)
+        : "memory", "lr", "cc" );
 }
 
 static inline void *rma_allocate( uint32_t size )
@@ -142,7 +147,13 @@ static inline void *rma_allocate( uint32_t size )
   register void *memory asm( "r2" );
 
   // FIXME error handling
-  asm ( "svc %[swi]" : "=r" (memory) : [swi] "i" (OS_Heap | 0x20000), "r" (code), "r" (heap), "r" (bytes) : "memory", "lr", "cc" );
+  asm ( "svc %[swi]"
+        : "=r" (memory)
+        : [swi] "i" (OS_Heap | 0x20000)
+        , "r" (code)
+        , "r" (heap)
+        , "r" (bytes)
+        : "memory", "lr", "cc" );
 
   return memory;
 }

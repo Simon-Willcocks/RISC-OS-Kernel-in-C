@@ -54,7 +54,7 @@ struct TaskSlot {
   Task *waiting;       // 0 or more tasks waiting for locks
 };
 
-struct Task {
+struct __attribute__(( packed, aligned( 4 ) )) Task {
   svc_registers regs;
   uint32_t banked_sp_usr; // Only stored when leaving usr or sys mode
   uint32_t banked_lr_usr; // Only stored when leaving usr or sys mode
@@ -364,13 +364,9 @@ static void __attribute__(( naked )) ErrorHandler()
 static bool save_context( Task *running, svc_registers *regs )
 {
   // Save task context (integer only), including the usr stack pointer and link register
-  // The register values when the task is resumed
-  for (int i = 0; i < 13; i++) {
-    running->regs.r[i] = regs->r[i];
-  }
+  // The register values when the task is resumed (optimiser friendly)
+  running->regs = *regs;
 
-  running->regs.lr = regs->lr;
-  running->regs.spsr = regs->spsr;
   asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (running->banked_sp_usr) );
   asm volatile ( "mrs %[lr], lr_usr" : [lr] "=r" (running->banked_lr_usr) );
 }
@@ -442,11 +438,10 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
 
   assert( 0 != new_task );
   if (workspace.task_slot.running != 0) {
-    // When resumed, it will return to the point of the SWI that caused this call
+    // When resumed, it will return to the point of the SWI that caused
+    // this call.
     // FIXME This could well be wrong behaviour!
     Task *task = workspace.task_slot.running;
-
-    save_context( task, regs ); 
 
     // Not the first task in the first slot for this core
     result->creator = task;
@@ -466,7 +461,8 @@ WriteS( "Allocated TaskSlot " ); Write0( command_line ); WriteNum( i ); NewLine;
 
   assert( workspace.task_slot.running == new_task );
 
-  // CAO unique to each TaskSlot, with luck, this should stop the Wimp from messing with Application memory space.
+  // CAO unique to each TaskSlot, with luck, this should stop the Wimp
+  // from messing with Application memory space.
   result->handlers[15].code = (void*) result;
 
   if (command_line != 0) {
@@ -592,7 +588,8 @@ Task *Task_new( TaskSlot *slot )
 
   // FIXME remove
   for (int i = 0; i < 13; i++) {
-    result->regs.r[i] = 0x44444444;
+    result->regs.r[i] = 0x11111111U * i;
+    result->regs.r[i] = (uint32_t) result;
   }
 
   assert( result != 0 );
@@ -807,17 +804,33 @@ static inline void show_task_state( Task *t, uint32_t colour )
   if (svc_stack_task( t )) {
     extern int svc_stack_top;
     const uint32_t top = (uint32_t) &svc_stack_top;
-    x = 1900 - (top - (uint32_t) t) / 16;
+    x = 1860 - (top - (uint32_t) t) / 16;
   }
   else {
     x = (t - tasks) * 80;
   }
   
+  show_word( x, 780, t, Red );
+
   for (int i = 0; i < 22; i++) {
     show_word( x, 800 + 8 * i, t->regs.r[i], colour );
   }
 }
 
+static inline void show_running_queue( int x )
+{
+  Task *t = workspace.task_slot.running;
+  int y = 100;
+  WriteS( "Running: " );
+  do {
+    WriteNum( t ); Space;
+    show_word( x, y, (uint32_t) t, Green );
+    t = t->next;
+    y += 10;
+  } while (t != workspace.task_slot.running);
+  show_word( x, y, 0, Red );
+  NewLine;
+}
 
 /* Lock states: 
  *   Idle: 0
@@ -1233,11 +1246,16 @@ NewLine;
       // task, then have the task try to claim it on startup. When the
       // lock is released, the child will continue.
       assert( running != 0 );
-      Task *tail = running->next; // Leave running at the head of the list
-      dll_attach_Task( new_task, &tail );
-      assert( tail == new_task );
-      assert( running->next == new_task );
-      assert( new_task->prev == running );
+
+//show_running_queue( 1000 );
+
+      // Add new task...
+      dll_attach_Task( new_task, &workspace.task_slot.running );
+
+      // ... at the end of the list
+      workspace.task_slot.running = workspace.task_slot.running->next;
+
+//show_running_queue( 1100 );
 
       new_task->regs.spsr = 0x10; // Tasks always start in usr32 mode
       new_task->regs.lr = regs->r[1];
@@ -1250,6 +1268,9 @@ NewLine;
       new_task->regs.r[4] = regs->r[6];
       new_task->regs.r[5] = regs->r[7];
       new_task->regs.r[6] = regs->r[8];
+
+WriteS( "New Task " ); WriteNum( new_task ); Space; WriteNum( new_task->regs.lr ); NewLine;
+show_task_state( new_task, Blue );
 
       regs->r[0] = handle_from_task( new_task );
 
@@ -1303,17 +1324,22 @@ t = t->next;
 } while (t != workspace.task_slot.running);
 }
 
-          assert( resume->next != running );
           Task *tail = resume->next;
           Task *old_tail = tail;
-          assert( tail != running );
-          // There is no danger that tail points to running, there's always
-          // the idle thread (which only ever calls yield from usr mode).
-          dll_detatch_Task( running );
-          dll_attach_Task( running, &tail );
+          if (tail != running) {
+            // Famous last words (wrong!):
+            // There is no danger that tail points to running, there's always
+            // the idle thread (which only ever calls yield from usr mode).
+
+            // If resume is the idle thread, resume->next may be running.
+
+            dll_detatch_Task( running );
+            dll_attach_Task( running, &tail );
+          }
+
           assert( workspace.task_slot.running == resume );
-          assert( resume->next == running );
-          assert( running->next == old_tail );
+          // assert( resume->next == running );
+          assert( old_tail == running || running->next == old_tail );
         }
         else {
           // This thread is willing to give all the other ones a go,
@@ -1357,39 +1383,46 @@ t = t->next;
 
   case TaskOp_WaitUntilWoken:
     {
-        asm ( "bkpt 999" );
-      // TODO: Perhaps return the number of resumes instead of making the Task repeatedly call this?
+      Task *running = workspace.task_slot.running;
+      assert( running != 0 );
+
+      // TODO: Perhaps return the number of resumes instead of making the
+      // Task repeatedly call this?
       // FIXME Lock, in case TaskOp_tasks are on separate cores
       running->resumes--;
       if (running->resumes < 0) {
-        assert( next != 0 );
-        running->next = 0;
+        Task *resume = running->next;
+        assert( running != resume );
+        workspace.task_slot.running = resume;
 
-        // running is now detatched
+        assert( workspace.task_slot.running != 0 );
+        assert( workspace.task_slot.running != running );
 
-        if (!reclaimed) release_lock( &slot->lock );
-
-        asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
-        // save_and_resume( running, next, regs );
+        // It's up to the programmer to remember the handle for this Task,
+        // so it can resume it.
+        dll_detatch_Task( running );
       }
     }
     break;
 
   case TaskOp_Resume:
     {
-        asm ( "bkpt 999" );
       // FIXME validate input
-      // TODO Is this right? The task is returned to runnable status, but won't execute until the caller blocks.
-      // This behaviour is necessary for interrupt handling tasks prodding second/third level handlers.
+      // TODO Is this right? The task is returned to runnable status, but 
+      // won't execute until the caller blocks.
+      // This behaviour is necessary for interrupt handling tasks prodding 
+      // second/third level handlers.
       // FIXME Lock, in case TaskOp_tasks are on separate cores
+      // ... or STREX the resumes word...
+
       Task *waiting = task_from_handle( regs->r[1] );
       waiting->resumes++;
       if (waiting->resumes == 0) {
         // Is waiting, detatched from the running list
-        Task *task = task_from_handle( regs->r[1] );
-        assert( task->next == 0 );
-        task->next = running->next;
-        running->next = task;
+        // Don't replace head, place at head of tail
+        Task *tail = running->next;
+        assert( tail != running );
+        dll_attach_Task( waiting, &tail );
       }
     }
     break;
@@ -1421,7 +1454,7 @@ t = t->next;
       // a source that doesn't have a task waiting is a fatal error (or will be ignored?).
       WriteS( "Interrupt is off" ); NewLine;
       regs->spsr &= ~0x80; // Enable interrupts
-
+assert( false ); // Not called, yet!
       // Before we resume the caller with interrupts enabled, handle any outstanding
       // interrupts without.
       Task *irq_task = next_irq_task();
@@ -1693,7 +1726,6 @@ static bool PipeCreate( svc_registers *regs )
   shared.kernel.pipes = pipe;
 
   if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
-  // First release UUU
 
   regs->r[1] = handle_from_pipe( pipe );
 
@@ -1704,7 +1736,8 @@ extern uint32_t pipes_top;
 
 static uint32_t allocate_virtual_address( TaskSlot *slot, os_pipe *pipe )
 {
-  // Proof of concept locates pipes at the top of the first megabyte of virtual RAM
+  // Proof of concept locates pipes at the top of the first megabyte of
+  // virtual RAM
   // This is, of course, ridiculous.
   // Fix that in rool.script and data abort handler
   // Doesn't cope with removing pipes FIXME
@@ -1798,7 +1831,6 @@ static bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
   }
 
   if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
-  // Second release UUU
 
   return true;
 }
@@ -1822,8 +1854,8 @@ static bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
     return PipeOp_NotYourPipe( regs );
   }
 
-  // TODO: Flush only that area, and only as far as necessary (are the two slots
-  // only single core and running on the same core?)
+  // TODO: Flush only that area, and only as far as necessary (are the two
+  // slots only single core and running on the same core?)
   asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME
 
   bool reclaimed = claim_lock( &shared.kernel.pipes_lock );
@@ -1837,6 +1869,7 @@ static bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
   else {
     pipe->write_index += amount;
 
+    // Update the caller's idea of the state of the pipe
     regs->r[2] = available - amount;
     regs->r[3] = write_location( pipe, slot );
 
@@ -1844,9 +1877,17 @@ static bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
     // WriteS( "Filled " ); WriteNum( amount ); WriteS( ", remaining: " ); WriteNum( regs->r[2] ); WriteS( ", at " ); WriteNum( regs->r[3] ); NewLine;
 #endif
 
+    Task *receiver = pipe->receiver;
+
+    // If there is no receiver, there's nothing to wait for data.
+    assert( receiver != 0 || (pipe->receiver_waiting_for == 0) );
+    // If the receiver is running, it is not waiting for data.
+    assert( (receiver != running) || (pipe->receiver_waiting_for == 0) );
+
+    // Special case: the debug_pipe is sometimes filled from the reader task
+
     if (pipe->receiver_waiting_for > 0
      && pipe->receiver_waiting_for <= data_in_pipe( pipe )) {
-      Task *receiver = pipe->receiver;
 
 #ifdef DEBUG__PIPEOP
       // WriteS( "Data finally available: " ); WriteNum( pipe->receiver_waiting_for ); WriteS( ", remaining: " ); WriteNum( data_in_pipe( pipe ) ); WriteS( ", at " ); WriteNum( read_location( pipe, slot ) ); NewLine;
@@ -1857,18 +1898,17 @@ static bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
       receiver->regs.r[2] = data_in_pipe( pipe );
       receiver->regs.r[3] = read_location( pipe, slot );
 
-      // "Returns" from SWI next time running task (the sender) blocks
-      // Special case: the debug_pipe is sometimes filled from the reader task
-      if (receiver != running) {
-        receiver->next = running->next;
-        running->next = receiver;
-      }
-      else asm ( "bkpt 256" ); // FIXME
+      // Make the receiver ready to run when the sender blocks (likely when
+      // the pipe is full).
+      dll_attach_Task( receiver, &workspace.task_slot.running );
+      workspace.task_slot.running = workspace.task_slot.running->next;
+
+      assert( receiver->next = running );
+      assert( running->prev == receiver );
     }
   }
 
   if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
-  // Forth release UUU
 
   return error == 0;
 }
@@ -1941,17 +1981,16 @@ static bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
 #endif
     workspace.task_slot.running = next;
 
+    assert( workspace.task_slot.running != running );
+
     // Blocked, waiting for data.
     dll_detatch_Task( running );
 
-    if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
-
-    // asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
-    //save_and_resume( running, next, regs );
+    regs->r[2] = 0x22002200; // FIXME remove; just something to look for in the qemu log
+    regs->r[3] = 0x33003300; // FIXME remove; just something to look for in the qemu log
   }
 
   if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
-  // Third release UUU
 
   return true;
 }
@@ -2001,8 +2040,8 @@ static bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
 
       // "Returns" from SWI next time scheduled
       if (sender != running) {
-        sender->next = running->next;
-        running->next = sender;
+        Task *tail = running->next;
+        dll_attach_Task( sender, &tail );
       }
     }
   }
@@ -2011,7 +2050,6 @@ static bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
   }
 
   if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
-  // Fifth release UUU
 
   return true;
 }
@@ -2212,6 +2250,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
   asm volatile (
         "  sub lr, lr, #4"
       "\n  srsdb sp!, #0x12 // Store return address and SPSR (IRQ mode)" 
+      "\n  cpsie af"
       );
 
   Task *interrupted_task;
@@ -2231,8 +2270,12 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
       "\n  stm lr, { r0, r1, r2, r3 }"
       "\n  sub %[task], lr, #13*4"
       : [task] "=r" (interrupted_task)
+      , "=r" (running) // lr clobbered
       : "r" (running)
       ); // Calling task state saved, except for SVC sp & lr
+  asm volatile ( "" : : "r" (running) ); 
+  // lr really, really used (Oh! Great Optimiser, please don't 
+  // assume it's still pointing to workspace.task_slot.running!
   }
 
   svc_registers *regs = &interrupted_task->regs;
@@ -2255,7 +2298,8 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
                "\n  sub r0, r0, #8"
                "\n  msr sp_svc, r0"
                "\n  stm r0, { r1, r2 }"
-               : : "r" (resume) : "r0", "r1", "memory" );
+               : "=r" (resume) : "r" (resume) : "r0", "r1", "memory" );
+    asm volatile ( "" : : "r" (resume) ); // FIXME, isn't there a prefix for this problem, like "+r"?
     regs->lr = (uint32_t) ResumeSVC;
   }
 
@@ -2263,10 +2307,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
 
   assert( irq_task != 0 ); // Should probably resume the interrupted task on the basis that the HAL will have disabled the signal
 
-  irq_task->next = interrupted_task;
-  irq_task->prev = interrupted_task->prev;
-  interrupted_task->prev = irq_task;
-  workspace.task_slot.running = irq_task;
+  dll_attach_Task( irq_task, &workspace.task_slot.running );
 
   if (irq_task->slot != interrupted_task->slot) {
     MMU_switch_to( irq_task->slot );
@@ -2452,7 +2493,7 @@ bool __attribute__(( noreturn )) do_OS_ExitAndDie( svc_registers *regs )
 
 #include "include/pipeop.h"
 
-void swi_returning_to_usr_mode( svc_registers *regs )
+void swi_returning_to_usr_mode()
 {
   // Push any debug text written in SVC mode to the pipe.
   // No need to lock the pipes in this routine since:
@@ -2483,23 +2524,13 @@ void swi_returning_to_usr_mode( svc_registers *regs )
   else {
     workspace.kernel.debug_written = 0;
     workspace.kernel.debug_space = PipeOp_SpaceFilled( pipe, written );
-    assert( p->receiver_waiting_for == 0 ); // Woken (only certain if receiver waits for just one byte)
-    assert( running->next == receiver );
 
-    // Yield to the receiver, only
-    running->next = receiver->next;
-    receiver->next = running;
-if (regs == (void*) 0xffdfefc4) {
-show_word( 1000, 10, regs->spsr, Green );
-}
-else {
-show_word( 900, 40, regs, Yellow );
-show_word( 900, 60, 0xffdff000 - (uint32_t)regs, Yellow );
-//show_word( 1000, 0xffdf000 - (uint32_t)regs, regs->spsr, Green );
-//show_word( 1080, 0xffdf000 - (uint32_t)regs, regs, Green );
-}
-    asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
-    // save_and_resume( running, receiver, regs );
+    if (workspace.task_slot.running->prev == receiver) {
+      // Rather than wait for the debug pipe to fill up, we'll yield to
+      // the receiver.
+      assert( p->receiver_waiting_for == 0 ); // Woken
+      workspace.task_slot.running = workspace.task_slot.running->prev;
+    }
   }
 }
 
@@ -2611,18 +2642,16 @@ void TempTaskDo2( void (*func)( uint32_t p1, uint32_t p2 ), uint32_t p1, uint32_
 
   Task *running = workspace.task_slot.running;
 
-  if (running != 0) {
-    dll_replace_Task( running, &interruptable, &workspace.task_slot.running );
-    interruptable.slot = running->slot;
-  }
+  assert( running != 0 );
+
+  dll_replace_Task( running, &interruptable, &workspace.task_slot.running );
+  interruptable.slot = running->slot;
 
 Task *old_lowest = workspace.task_slot.lowest_temp;
 workspace.task_slot.lowest_temp = &interruptable;
 if (old_lowest != 0 && &interruptable > old_lowest) {
   asm ( "bkpt 4" );
 }
-
-  workspace.task_slot.running = &interruptable;
 
   func( p1, p2 );
 
@@ -2636,67 +2665,109 @@ workspace.task_slot.lowest_temp = old_lowest;
   if (running != 0) {
     dll_replace_Task( &interruptable, running, &workspace.task_slot.running );
   }
+/*
+  else if (workspace.task_slot.running == &interruptable) {
+    workspace.task_slot.running = workspace.task_slot.running->next;
+    if (workspace.task_slot.running == &interruptable) {
+      // Only item in the list
+      workspace.task_slot.running = 0;
+    }
+    else {
+      dll_detatch_Task( &interruptable );
+    }
+  }
+*/
+  else asm ( "bkpt 1" );
+}
 
-  if (workspace.task_slot.running == &interruptable)
-    workspace.task_slot.running = running;
+void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
+{
+  svc_registers copy = *regs;
+  Task *caller = workspace.task_slot.running;
+
+  execute_swi( regs );
+
+  Task *resume = workspace.task_slot.running;
+
+  uint32_t changes = 0;
+  for (int i = 0; i < 13; i++) {
+    if (regs->r[i] != copy.r[i]) changes |= (1 << i);
+  }
+  if (regs->spsr != copy.spsr) changes |= (1 << 13);
+  if (regs->lr != copy.lr) changes |= (1 << 14);
+  // WriteS( "SWI at " ); WriteNum( regs->lr - 4 ); WriteS( " changed: " ); WriteNum( changes ); NewLine;
+
+  if (resume != caller) {
+#ifdef DEBUG__SHOW_TASK_SWITCHES
+//show_running_queue( 1200 );
+    WriteNum( caller ); WriteS( " resumed " ); WriteNum( resume ); NewLine;
+#endif
+  }
+
+  if (resume == caller) {
+    // FIXME? This could be a return from interrupt, not from a SWI...
+    // It's also at a time when the registers on the stack don't match the
+    // current task
+    // Temporary solution, only do this when there's no task swap.
+    if (0x10 == (resume->regs.spsr & 0x1f)) {
+      // THIS MIGHT CHANGE workspace.task_slot.running!
+      swi_returning_to_usr_mode();
+      resume = workspace.task_slot.running;
+    }
+  }
+
+  if (resume == caller) {
+    // Just continue
+    asm volatile (
+        "\n  mov sp, %[sp]"
+        "\n  pop {r0-r12}"
+        "\n  rfeia sp! // Restore execution and SPSR"
+        : 
+        : [sp] "r" (regs) );
+  }
+  else {
+    save_context( caller, regs );
+
+    if (resume->slot != caller->slot) {
+      MMU_switch_to( resume->slot );
+    }
+
+    register Task *now asm( "r0" ) = resume;
+    asm volatile (
+        "\n  add sp, %[regs], %[stacked]"
+        "\n  add lr, r0, %[banked]"
+        "\n  ldm lr, {r1-r2} // Load usr sp, lr"
+        "\n  msr sp_usr, r1"
+        "\n  msr lr_usr, r2"
+        "\n  mov lr, r0"
+        "\n  ldm lr!, {r0-r12}"
+        "\n  rfeia lr // Restore execution and SPSR"
+        : 
+        : "r" (now)
+        , [regs] "r" (regs)
+        , [stacked] "i" (sizeof( svc_registers ))
+        , [banked] "i" ((char*)&((Task*)0)->banked_sp_usr) );
+  }
+
+  __builtin_unreachable();
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_svc()
 {
+  svc_registers *regs;
+
   asm volatile (
       "\n  srsdb sp!, #0x13 // Store return address and SPSR (SVC mode)" 
+      "\n  cpsie af"
+      "\n  push { r0-r12 }"
+      "\n  mov %[regs], sp"
+      : [regs] "=r" (regs)
       );
 
-  uint32_t regs;
-
-  {
-  // Need to be careful with this, that the compiler doesn't insert any code to
-  // set up lr using another register, corrupting it.
-  register Task **running asm ( "lr" ) = &workspace.task_slot.running;
-  register Task *optimiser_this_is_really_changed asm ( "lr" );
-
-  asm volatile (
-        "  ldr lr, [lr]"
-      "\n  stm lr!, {r0-r12}  // lr -> banked_sp_usr"
-      "\n  pop { r0, r1 }     // Resume address, SPSR"
-      "\n  ands r2, r1, #0xf  // 0 => usr32"
-      "\n  cmpne r2, #0xf     // sys32"
-      "\n  mrseq r2, sp_usr   // This is skipped on the basis that mrs"
-      "\n  mrseq r3, lr_usr   // is slower than a normal instruction TODO: check!"
-      "\n  stm lr, { r0, r1, r2, r3 }"
-      "\n  sub %[regs], lr, #13*4"
-      : [regs] "=r" (regs)
-      , "=r" (optimiser_this_is_really_changed)
-      : "r" (running)
-      ); // Calling task state saved
-  asm volatile ( "" : : "r" (optimiser_this_is_really_changed) ); // Force the optimiser to accept that lr has been changed
-  }
-
-  Task *caller = workspace.task_slot.running;
-
-  TempTaskDo( execute_swi, regs );
+  c_execute_swi( regs );
 
   // The new state of the task that called this SWI has been established.
   // It may have changed the running task. Resume the running task.
-
-  Task *resume = workspace.task_slot.running;
-
-  if (resume->slot != caller->slot) {
-    MMU_switch_to( resume->slot );
-  }
-
-  register Task *now asm( "r0" ) = resume;
-  asm volatile (
-      "\n  add lr, r0, %[sp]"
-      "\n  ldm lr, {r1-r2} // Load usr sp, lr"
-      "\n  msr sp_usr, r1"
-      "\n  msr lr_usr, r2"
-      "\n  mov lr, r0"
-      "\n  ldm lr!, {r0-r12}"
-      "\n  rfeia lr // Restore execution and SPSR"
-      : 
-      : "r" (now)
-      , [sp] "i" ((char*)&((Task*)0)->banked_sp_usr) );
 
   __builtin_unreachable();
 }
