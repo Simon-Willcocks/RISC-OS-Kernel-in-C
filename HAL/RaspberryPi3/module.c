@@ -105,20 +105,46 @@ struct __attribute__(( packed, aligned( 256 ) )) gpio {
   uint32_t test;
 };
 
+typedef struct __attribute__(( packed )) {
+  uint32_t data;                                // 0x00
+  uint32_t receive_status_error_clear;          // 0x04
+  uint32_t res0[4];
+  uint32_t flags;                               // 0x18
+  uint32_t res1[2];
+  uint32_t integer_baud_rate_divisor;           // 0x24
+  uint32_t fractional_baud_rate_divisor;        // 0x28
+  uint32_t line_control;                        // 0x2c
+  uint32_t control;                             // 0x30
+  uint32_t interrupt_fifo_level_select;         // 0x34
+  uint32_t interrupt_mask_set_clear;            // 0x38
+  uint32_t raw_interrupt_status;                // 0x3c
+  uint32_t masked_interrupt_status;             // 0x40
+  uint32_t interrupt_clear;                     // 0x44
+  uint32_t dma_control;                         // 0x48
+  uint32_t res2[(0x80-0x4c)/4];
+  uint32_t test_control;                        // 0x80
+  uint32_t integration_test_input;              // 0x84
+  uint32_t integration_test_output;             // 0x88
+  uint32_t test_data;                           // 0x8c
+} UART;
 
 struct workspace {
   uint32_t lock;
   uint32_t *mbox;
 
   struct gpio *gpio;
-  uint32_t *uart;
-  QA7      *qa7;
+  UART        *uart;
+  QA7         *qa7;
 
   void *mailbox_request;
   uint32_t fb_physical_address;
   uint32_t *frame_buffer;
   uint32_t graphics_driver_id;
   uint32_t ticks_per_interval;
+
+  struct uart_task_stack {
+    uint32_t stack[64];
+  } uart_task_stack;
 
   uint32_t wimp_started;
 
@@ -480,17 +506,16 @@ static void new_line( struct core_workspace *workspace )
     row[x] = ' ';
 }
 
-static inline void add_string( const char *s, struct core_workspace *workspace );
-static void add_to_display( char c, struct core_workspace *workspace )
+static inline void add_to_display( char c, struct core_workspace *workspace )
 {
   if (core( workspace ) == 0) {
     // Duplicate core 0 output on uart (no checks for overflows)
     if (c < ' ' && c != '\r' && c != '\n') {
-      workspace->shared->uart[0] = '|';
-      workspace->shared->uart[0] = c + '@';
+      workspace->shared->uart->data = '|';
+      workspace->shared->uart->data = c + '@';
     }
     else
-      workspace->shared->uart[0] = c;
+      workspace->shared->uart->data = c;
   }
 
   if (workspace->x == 58 || c == '\n') {
@@ -550,6 +575,9 @@ static void update_display( struct core_workspace *workspace )
   }
 }
 
+// FIXME This is totally in the wrong place!
+// It's a legacy of when I was using the output stream for debugging
+// data.
 void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace *workspace )
 {
   static const uint8_t bytes[32] = { 1, 2, 1, 1,  1, 1, 1, 1,
@@ -638,11 +666,11 @@ static void GraphicsV_ReadItems( uint32_t item, uint32_t *buffer, uint32_t len )
       for (int i = 0; i < len; i++) {
         WriteS( "GraphicsV control list item: " ); WriteNum( buffer[i] );
       }
-    asm ( "bkpt 1" );
+    asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   default:
-    asm ( "bkpt 1" );
+    asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   };
 }
 
@@ -984,7 +1012,7 @@ static void GraphicsV_DeviceReady( uint32_t number )
 // Not static, or it won't be seen by inline assembler
 void __attribute__(( noinline )) c_start_display( struct core_workspace *workspace )
 {
-  if (0 != workspace->shared->graphics_driver_id) asm ( "bkpt 1" );
+  if (0 != workspace->shared->graphics_driver_id) asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
 
   WriteS( "BCM28xx" ); NewLine;
 
@@ -1186,10 +1214,10 @@ static void wait_for_interrupt( uint32_t device )
       : "lr" );
 }
 
-static void yield()
+static void Sleep( uint32_t time )
 {
   register uint32_t request asm ( "r0" ) = TaskOp_Sleep;
-  register uint32_t duration asm ( "r1" ) = 0;
+  register uint32_t duration asm ( "r1" ) = time;
 
   asm volatile ( "svc %[swi]"
       :
@@ -1197,6 +1225,11 @@ static void yield()
       , "r" (request)
       , "r" (duration)
       : "lr" );
+}
+
+static void yield()
+{
+  Sleep( 0 );
 }
 
 static void wait_until_woken()
@@ -1235,8 +1268,16 @@ static void tickerv_task( uint32_t handle, struct core_workspace *ws )
     wait_until_woken();
 
     ticks++;
-    if (ticks % 100 == 0) show_word( this_core * 1920/4, 1060, ticks, Green, ws->shared ); 
+    if (ticks % 10 == 0) show_word( this_core * 1920/4, 1060, ticks, Green, ws->shared ); 
+{
+  register uint32_t request asm ( "r0" ) = 255;
 
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      : "lr", "cc" );
+}
 /*
     for (int i = 0; i < 4; i++) {
       Space; WriteNum( qa7->Core_write_clear[i].Mailbox[3-i] );
@@ -1293,18 +1334,15 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
 
   memory_write_barrier(); // About to write to something else
 
-  //timer_set_countdown( ticks_per_interval );
-  timer_set_countdown( 16 ); // Instant IRQ when enabled
+  timer_set_countdown( ticks_per_interval );
 
-  memory_write_barrier(); // Maybe?
+  memory_write_barrier(); // Maybe needed?
 
   const uint32_t tick_divider = 10;
   uint32_t ticks = 0;
 
   do {
     wait_for_interrupt( device );
-
-    // Running with interrupts disabled
 
     int32_t timer = timer_get_countdown();
     uint32_t missed_ticks = 0;
@@ -1353,6 +1391,81 @@ static uint32_t start_timer_interrupt_task( struct core_workspace *ws, int devic
   return handle;
 }
 
+// TODO This will be the interrupt from the GPU, ths HAL should report a
+// larger number of interrupts, including one for each of the GPU interrupt
+// sources.
+static void uart_interrupt_task( uint32_t handle, struct core_workspace *ws, int device )
+{
+  int this_core = core( ws );
+
+  QA7 volatile *qa7 = ws->shared->qa7;
+  UART volatile *uart = ws->shared->uart;
+
+  WriteS( "Listening to UART" ); NewLine;
+  uart->control = 0x31; // enable, tx & rx
+
+  for (;;) {
+    Sleep( 100 );
+    WriteS( "UART: " ); WriteNum( uart->raw_interrupt_status );
+    Space; WriteNum( uart->receive_status_error_clear );
+    Space; WriteNum( uart->flags );
+    Space; WriteNum( uart->line_control );
+    Space; WriteNum( uart->control );
+    if (0 != (uart->raw_interrupt_status & (1 << 4))) {
+      uint32_t c = uart->data;
+      char buffer[2] = { c, 0 };
+      WriteS( "Keyboard input: " ); 
+      WriteN( buffer, 1 );
+      NewLine;
+    }
+  }
+
+  disable_interrupts();
+
+  memory_write_barrier(); // About to write to QA7
+
+  // Let the generic ARM uart interrupt this core
+  //qa7->Core_???_Interrupt_control[this_core] = 15; // 2; // Generic ARM uart irq
+
+  memory_write_barrier(); // About to write to something else
+
+  ws->shared->uart->control |= (1 << 9); // Receive enable
+
+  memory_write_barrier(); // Maybe needed?
+
+  do {
+    wait_for_interrupt( device );
+
+    // Discard the character, no matter what it is
+    asm volatile ( "" : : "r" (ws->shared->uart->data) );
+
+    asm volatile ( "mov r0, #255\n  svc 0xf9" : : : "r0" );
+  } while (true); // Could check a flag in ws, in case of shutdown
+}
+
+static uint32_t start_uart_interrupt_task( struct core_workspace *ws, int device )
+{
+  register uint32_t request asm ( "r0" ) = 0; // Create Thread
+  register void *code asm ( "r1" ) = uart_interrupt_task;
+  register void *stack_top asm ( "r2" ) = (uint32_t) (&ws->shared->uart_task_stack+1);
+  register struct core_workspace *workspace asm( "r3" ) = ws;
+  register uint32_t dev asm( "r4" ) = device;
+
+  register uint32_t handle asm ( "r0" );
+
+  asm volatile ( "svc %[swi]"
+      : "=r" (handle) 
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (code)
+      , "r" (stack_top)
+      , "r" (workspace)
+      , "r" (dev)
+      : "lr" );
+
+  return handle;
+}
+
 #include "include/pipeop.h"
 
 static void console_task( uint32_t handle, struct core_workspace *ws, uint32_t read_pipe )
@@ -1372,7 +1485,7 @@ static void console_task( uint32_t handle, struct core_workspace *ws, uint32_t r
       }
       if (data.available == 0) {
         add_string( "PipeOp_WaitForData returned zero bytes", ws ); update_display( ws );
-        for (;;) asm ( "bkpt 1" ); // FIXME
+        for (;;) asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); // FIXME
       }
     }
     while (data.available > 0) {
@@ -1441,7 +1554,7 @@ void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_
   workspace->uart = map_device_page( 0x3f201000 );
   workspace->qa7 = map_device_page( 0x40000000 );
 
-  workspace->uart[0] = '0' + this_core;
+  workspace->uart->data = '0' + this_core;
 
   if (first_entry) {
     asm volatile ( "dsb" );
@@ -1505,7 +1618,7 @@ show_word( this_core * (1920/4), 48, &qa7->Core_write_clear[this_core], first_en
       if (c >= 'a' && c <= 'f') c = c - 'a' + 10;
       else if (c >= 'A' && c <= 'F') c = c - 'A' + 10;
       else if (c >= '0' && c <= '9') c = c - '0';
-      else asm ( "bkpt 1" ); // FIXME
+      else asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); // FIXME
       pipe = (pipe << 4) | c;
     }
 
@@ -1538,7 +1651,7 @@ add_num( pipe, &workspace->core_specific[this_core] );
     workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
 
 #ifdef QEMU
-    const int slower = 100;
+    const int slower = 10;
     Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
     workspace->ticks_per_interval = workspace->ticks_per_interval * slower;
 #endif
@@ -1562,6 +1675,16 @@ add_num( pipe, &workspace->core_specific[this_core] );
   }
   else {
     WriteS( "No timer interrupts" ); NewLine;
+  }
+
+  if (first_entry) {
+    uint32_t handle = start_uart_interrupt_task( &workspace->core_specific[this_core], 99 );
+    Write0( "UART task: " ); WriteNum( handle ); NewLine;
+
+    yield(); // Let the task start listening to the uart
+  }
+  else {
+    WriteS( "No uart interrupts" ); NewLine;
   }
 
   if (first_entry) {
@@ -1687,6 +1810,6 @@ N 	-1 (terminator)
     "\n  0:" );
 
     asm (
-    "\n  bkpt 1" );
+    "\n  bkpt %[line]" : : [line] "i" (__LINE__) );
 }
 

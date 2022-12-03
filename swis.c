@@ -667,26 +667,31 @@ static bool do_OS_CallEvery( svc_registers *regs )
 
 static bool do_OS_RemoveTickerEvent( svc_registers *regs )
 {
+  // FIXME Is is necessary to return an error if it's not found?
   ticker_event **queue = &workspace.kernel.ticker_queue;
+  bool found = false;
 
   uint32_t code = regs->r[0];
   uint32_t private_word = regs->r[1];
 
-  while (*queue != 0) {
+  while (*queue != 0 && !found) {
     ticker_event *e = *queue;
     if (e->code == code && e->private_word == private_word) {
+      found = true;
       if (e->next != 0) {
         e->next->remaining += e->remaining;
       }
       *queue = e->next;
       e->next = workspace.kernel.ticker_event_pool;
       workspace.kernel.ticker_event_pool = e;
-      break;
     }
-    queue = &e->next;
+    else {
+      queue = &e->next;
+    }
   }
 
-  if (workspace.kernel.ticker_queue == 0) {
+  // Don't release the vector if the event wasn't found
+  if (found && workspace.kernel.ticker_queue == 0) {
     release_TickerV();
   }
 
@@ -800,7 +805,7 @@ static bool do_OS_ReadRAMFsLimits( svc_registers *regs )
 static bool do_OS_ClaimDeviceVector( svc_registers *regs )
 {
 Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); NewLine;
-  asm ( "bkpt 1" );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   // TODO Emulate the traditional mechanism by creating a Task that will
   // call the desired vector.
 
@@ -1028,7 +1033,7 @@ bool read_kernel_value( svc_registers *regs )
     regs->r[2] = SysInfo[regs->r[2]];
 
     // Fail early, fail hard! (Then make a note of what uses it and fix it here or there.)
-    if ((regs->r[2] & 0xffff0000) == 0xbaad0000) asm ( "bkpt 1" );
+    if ((regs->r[2] & 0xffff0000) == 0xbaad0000) asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
 
     return true;
   }
@@ -1311,7 +1316,7 @@ static bool do_OS_PlatformFeatures( svc_registers *regs )
   return false;
 }
 
-static bool do_OS_AMBControl( svc_registers *regs ) { Write0( __func__ ); NewLine; asm ( "bkpt 1" ); return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_AMBControl( svc_registers *regs ) { Write0( __func__ ); NewLine; asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_SpecialControl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_EnterUSR32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
@@ -1362,7 +1367,7 @@ bool do_OS_SubstituteArgs32( svc_registers *regs )
         }
       }
       if (c != '"') {
-        asm ( "bkpt 1" ); // Mismatched quote
+        asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); // Mismatched quote
       }
       args++; // Include the '"'
     }
@@ -1713,7 +1718,7 @@ static bool SetTextColour( svc_registers *regs )
 {
   Write0( __func__ );
   VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
-  asm ( "bkpt 1" );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
 
   return true;
 }
@@ -1721,7 +1726,7 @@ static bool SetTextColour( svc_registers *regs )
 static bool SetGraphicsColour( svc_registers *regs )
 {
   Write0( __func__ );
-  asm ( "bkpt 1" );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   return true;
 }
 
@@ -1869,8 +1874,8 @@ static bool do_OS_VduCommand( svc_registers *regs )
 
   switch (regs->r[0]) {
   case 0: break; // do nothing, surely shouldn't be called
-  case 1: WriteNum( regs->lr ); asm ( "bkpt 1" ); break; // Send next character to printer if enabled, ignore next char otherwise
-  case 2: asm ( "bkpt 1" ); break; // "enable printer"
+  case 1: WriteNum( regs->lr ); asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); break; // Send next character to printer if enabled, ignore next char otherwise
+  case 2: asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); break; // "enable printer"
   case 3: return true; break; // do nothing, "disable printer"
   case 4: workspace.vectors.zp.vdu_drivers.ws.CursorFlags |= ~(1 << 30); return true;
   case 5: workspace.vectors.zp.vdu_drivers.ws.CursorFlags |= (1 << 30); return true;
@@ -2365,7 +2370,7 @@ static bool special_case( svc_registers *regs, uint32_t number )
 
 void run_transient_callback( transient_callback *callback )
 {
-  WriteS( "Running callback " ); WriteNum( callback->code ); NewLine;
+  // WriteS( "Running callback " ); WriteNum( callback->code ); NewLine;
   run_handler( callback->code, callback->private_word );
 }
 
@@ -2483,7 +2488,7 @@ if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
     break;
   }
 
-  if (0x10 == (regs->spsr & 0x1f)) {
+  if (0x10 == (regs->spsr & 0x9f)) { // Not if interrupts disabled
     run_transient_callbacks();
   }
 }

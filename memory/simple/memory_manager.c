@@ -800,7 +800,7 @@ Write0( "OS_Memory operation " ); WriteNum( regs->r[0] ); Write0( " VA " ); Writ
     break;
   default:
     WriteS( "OS_Memory: " ); WriteNum( regs->r[0] ); WriteS( " " ); WriteNum( regs->r[1] ); NewLine;
-    asm ( "bkpt 1" );
+    asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   }
   return Kernel_Error_UnimplementedSWI( regs );
 }

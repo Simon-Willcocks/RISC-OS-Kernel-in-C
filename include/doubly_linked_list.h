@@ -96,5 +96,34 @@ static inline void dll_replace_##T( T *i1, T *i2, T **l ) { \
     i1->next = i1; \
     if (*l == i1) *l = i2; \
   } \
+} \
+/* Detatch all the items between the head and last from the list */ \
+static inline void dll_detatch_##T##s_until( T **l, T *last ) { \
+  T *first = *l; \
+  if (last->next == first) { \
+    /* Removing whole list */ \
+    *l = 0; /* now empty */ \
+  } \
+  else { \
+    T *new_head = last->next; \
+    *l = new_head; \
+    new_head->prev = first->prev; \
+    first->prev->next = new_head; \
+    last->next = first; \
+    first->prev = last; \
+  } \
+} \
+static inline void dll_insert_##T##_list_at_head( T *head, T **l ) { \
+  T *old_head = *l; \
+  if (old_head != 0) { \
+    T *old_last = old_head->prev; \
+    T *last = head->prev; \
+    last->next = old_head; \
+    old_head->prev = last; \
+    head->prev = old_last; \
+    old_last->next = head; \
+  } \
+ \
+  *l = head; \
 }
 

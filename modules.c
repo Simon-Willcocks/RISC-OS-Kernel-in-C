@@ -42,6 +42,16 @@ static bool Kernel_Error_SWINameNotKnown( svc_registers *regs )
   return false;
 }
 
+static inline void Yield()
+{
+  asm volatile ( "mov r0, #3 // Sleep"
+             "\n  mov r1, #0 // For no time - yield"
+             "\n  svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      : "r0", "r1", "lr", "memory" );
+}
+
 // Linker generated:
 extern uint32_t _binary_AllMods_start;
 extern uint32_t rma_base;
@@ -102,30 +112,32 @@ static inline bool run_initialisation_code( const char *env, module *m, uint32_t
   register uint32_t this_core asm( "r0" ) = workspace.core_number;
   register uint32_t number_of_cores asm( "r1" ) = processor.number_of_cores;
 
-  asm goto (
+  error_block *error;
+
+  asm volatile (
         "  blx r14"
-      "\n  bvs %l[failed]"
-      :
+      "\n  movvs %[error], r0"
+      "\n  movvc %[error], #0"
+      : [error] "=r" (error)
       : "r" (non_kernel_code)
       , "r" (private_word)
       , "r" (_instance)
       , "r" (environment)
       , "r" (this_core)
       , "r" (number_of_cores)
-      : "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"
-      : failed );
+      : "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9" );
 
   // No changes to the registers by the module are of any interest,
   // so avoid corrupting any by simply not storing them
 
-  return true;
+  // FIXME return error_block * instead of bool
+  if (error != 0) {
+    NewLine;
+    Write0( "\005Failed\005" );
+    NewLine;
+  }
 
-failed:
-  NewLine;
-  Write0( "\005Failed\005" );
-  NewLine;
-
-  return false;
+  return error == 0;
 }
 
 static inline uint32_t finalisation_code( module_header *header )
@@ -340,6 +352,11 @@ static inline const char *title_string( module_header *header )
 static inline const char *help_string( module_header *header )
 {
   return pointer_at_offset_from( header, header->offset_to_help_string );
+}
+
+static inline const char *module_commands( module_header *header )
+{
+  return pointer_at_offset_from( header, header->offset_to_help_and_command_keyword_table );
 }
 
 bool do_module_swi( svc_registers *regs, uint32_t svc )
@@ -571,7 +588,7 @@ NewLine;
 
 static inline void show_module_commands( module_header *header )
 {
-  const char *cmd = (void*) (header->offset_to_help_and_command_keyword_table + (uint32_t) header);
+  const char *cmd = module_commands( header );
   while (cmd[0] != '\0') {
     NewLine; Write0( cmd );
     int len = strlen( cmd );
@@ -796,7 +813,7 @@ static bool initialise_module( svc_registers *regs, uint32_t *memory, char const
   TaskSlot_new_application( title_string( new_mod ), parameters );
 
   if (0 != (new_mod->offset_to_initialisation & (1 << 31))) {
-    Write0( "Is this module squashed? I can't cope with that." ); asm ( "bkpt 1" );
+    Write0( "Is this module squashed? I can't cope with that." ); asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   }
 
   // "During initialisation, your module is not on the active module list, and
@@ -938,7 +955,7 @@ Write0( "Start address: " ); WriteNum( start_address ); NewLine;
       : "r" (reason)
       : "lr" );
     if (!allowed) {
-      asm ( "bkpt 1" ); // FIXME ErrorBlock_CantStartApplication
+      asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); // FIXME ErrorBlock_CantStartApplication
     }
   }
 
@@ -950,7 +967,7 @@ Write0( "Start address: " ); WriteNum( start_address ); NewLine;
       : "r" (service)
       : "lr" );
     if (!allowed) {
-      asm ( "bkpt 1" ); // FIXME ErrorBlock_CantStartApplication, but this time with feeling!
+      asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); // FIXME ErrorBlock_CantStartApplication, but this time with feeling!
     }
   }
 
@@ -1226,7 +1243,7 @@ static bool do_Module_CreateNewInstantiation( svc_registers *regs )
   module *m = find_module( module_name );
 
   if (m == 0) {
-    asm ( "bkpt 1" );
+    asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   }
 Write0( __func__ ); Space; Write0( title_string( m->header ) ); NewLine;
 Write0( __func__ ); Space; Write0( module_name ); NewLine;
@@ -1236,7 +1253,7 @@ Write0( __func__ ); Space; WriteNum( module_name ); NewLine;
   while (*extension != '%' && *extension > ' ') extension++;
 
   if (*extension != '%') {
-    asm ( "bkpt 1" );
+    asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   }
 
 Write0( __func__ ); Space; Write0( extension ); NewLine;
@@ -1493,7 +1510,7 @@ bool do_OS_Module( svc_registers *regs )
 bool do_OS_CallAVector( svc_registers *regs )
 {
   if (regs->r[9] > number_of( workspace.kernel.vectors )) {
-    asm ( "bkpt 1" );
+    asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   }
   return run_vector( regs, regs->r[9] );
 }
@@ -1654,7 +1671,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
       }
       else {
         regs[1] = 255; // Observed behaviour
-        asm ( "bkpt 1" );
+        asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
       }
     }
     break;
@@ -1666,7 +1683,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
       }
       else {
         regs[1] = 255; // Observed behaviour
-        asm ( "bkpt 1" );
+        asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
       }
     }
     break;
@@ -1905,7 +1922,7 @@ static void __attribute__(( noinline )) default_os_word_c( uint32_t *regs )
   switch (regs[0]) {
   case 0x00:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x01:
@@ -1921,107 +1938,107 @@ workspace.vectors.zp.EnvTime[0]++;
     break;
   case 0x02:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x03:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x04:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x05:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x06:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x07:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x08:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x09:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x0a:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x0b:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x0c:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x0d:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x0e:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x0f:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x10:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x11:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x12:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x13:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x14:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x15:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   case 0x16:
     {
-    asm( "bkpt 1" );
+    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   default: asm ( "bkpt 91" );
@@ -2653,67 +2670,109 @@ static uint32_t count_params( const char *p )
   return result;
 }
 
-static error_block *run_module_command( const char *command )
+static inline error_block *Send_Service_UKCommand( char const *command )
 {
-  module *m = workspace.kernel.module_list_head;
+  register char const *cmd asm ( "r0" ) = command;
+  register uint32_t service asm ( "r1" ) = 4;
+
+  register error_block *error asm ( "r0" );
+  register bool claimed asm ( "r1" );
+
+  asm ( "svc %[swi]"
+    : "=r" (error)
+    , "=r" (claimed)
+    : [swi] "i" (OS_ServiceCall)
+    , "r" (command)
+    , "r" (service)
+    : "memory", "lr", "cc", "r2", "r3", "r4", "r5", "r6", "r7", "r8" );
+
+  if (!claimed) {
+    WriteS( "UKCommand not claimed, passing to file system" );
+
+    static error_block not_found = { 214, "Command not found" };
+
+    return &not_found;
+  }
+
+  return error;
+}
+
+typedef struct __attribute__(( packed, aligned( 4 ) )) {
+  uint32_t code_offset;
+  uint32_t info_word;
+  uint32_t invalid_syntax_offset;
+  uint32_t help_offset;
+} module_command;
+
+static module_command *find_module_command( module_header *header, char const *command )
+{
 #ifdef DEBUG__SHOW_ALL_COMMANDS
   char *sep = "Is it ";
 #endif
+
+  const char *cmd = module_commands( header );
+
+  if (cmd == 0) return 0;
+
+  while (cmd[0] != '\0') {
+#ifdef DEBUG__SHOW_ALL_COMMANDS
+Write0( sep ); sep = ", "; Write0( cmd );
+#endif
+    int len = strlen( cmd );
+
+    module_command *c = (void*) &cmd[(len+4)&~3]; // +4 because len is strlen, not including terminator
+
+    if (riscoscmp( cmd, command )) {
+
+#ifdef DEBUG__SHOW_ALL_COMMANDS
+      NewLine; Write0( "Yes! " ); WriteNum( c->code_offset ); Space; WriteNum( c->info_word ); Space; WriteNum( c->invalid_syntax_offset ); Space; WriteNum( c->help_offset ); NewLine;
+      if (c->help_offset != 0) { Write0( pointer_at_offset_from( header, c->help_offset ) ); }
+      if (c->invalid_syntax_offset != 0) { Write0( pointer_at_offset_from( header, c->invalid_syntax_offset ) ); }
+#endif
+
+      return c;
+    }
+
+    cmd = (char const *) (cmd + 1);
+  }
+
+  return 0;
+}
+
+static error_block *run_module_command( const char *command )
+{
+  module *m = workspace.kernel.module_list_head;
+
   while (m != 0) {
     module_header *header = m->header;
 
-    const char *cmd = pointer_at_offset_from( header, header->offset_to_help_and_command_keyword_table );
-    while (cmd != 0 && cmd[0] != '\0') {
-#ifdef DEBUG__SHOW_ALL_COMMANDS
-  Write0( sep ); sep = ", "; Write0( cmd );
-#endif
-      int len = strlen( cmd );
-      if (riscoscmp( cmd, command )) {
-        struct {
-          uint32_t code_offset;
-          uint32_t info_word;
-          uint32_t invalid_syntax_offset;
-          uint32_t help_offset;
-        } *c = (void*) &cmd[(len+4)&~3]; // +4 because len is strlen, not including terminator
+    module_command *c = find_module_command( header, command );
 
-#ifdef DEBUG__SHOW_ALL_COMMANDS
-        NewLine; Write0( "Yes! " ); WriteNum( c->code_offset ); Space; WriteNum( c->info_word ); Space; WriteNum( c->invalid_syntax_offset ); Space; WriteNum( c->help_offset ); NewLine;
-        if (c->help_offset != 0) { Write0( pointer_at_offset_from( header, c->help_offset ) ); }
-        if (c->invalid_syntax_offset != 0) { Write0( pointer_at_offset_from( header, c->invalid_syntax_offset ) ); }
-#endif
+    if (c != 0) {
+      if (c->code_offset != 0) {
+        const char *params = command;
+        while (*params > ' ') params++;
+        while (*params == ' ') params++;
+        uint32_t count = count_params( params );
 
-        if (c->code_offset != 0) {
-          const char *params = command + len;
-          while (*params == ' ') params++;
-          uint32_t count = count_params( params );
-
-          if (count == -1) {
-            static error_block mistake = { 4, "Mistake" };
-            return &mistake;
-          }
+        if (count == -1) {
+          static error_block mistake = { 4, "Mistake" };
+          return &mistake;
+        }
 
 #ifdef DEBUG__SHOW_COMMANDS
-          Write0( "Running command " ); Write0( command ); Write0( " in " ); Write0( title_string( header ) ); Write0( " at " ); WriteNum( c->code_offset + (uint32_t) header ); NewLine;
+        Write0( "Running command " ); Write0( command ); Write0( " in " ); Write0( title_string( header ) ); Write0( " at " ); WriteNum( c->code_offset + (uint32_t) header ); NewLine;
 #endif
 
-          return run_command( m, c->code_offset, params, count );
-        }
-#ifdef DEBUG__SHOW_COMMANDS
-        else {
-          void *help = pointer_at_offset_from( header, c->help_offset );
-          NewLine; Write0( "Found " ); Write0( cmd ); Write0( ", but no code!" );
-          if (c->help_offset != 0) Write0( help );
-        }
-#endif
+        return run_command( m, c->code_offset, params, count );
       }
-
-      cmd = &cmd[(len+20)&~3]; // +4 for terminator and alignment, +16 for words
     }
+
 #ifdef DEBUG__SHOW_ALL_COMMANDS
-  if (header->offset_to_help_and_command_keyword_table != 0) {
-    NewLine; WriteS( "From " ); Write0( title_string( m->header ) ); NewLine;
-    sep = "\n\r";
-  }
+    if (header->offset_to_help_and_command_keyword_table != 0) {
+      NewLine; WriteS( "From " ); Write0( title_string( m->header ) ); NewLine;
+      sep = "\n\r";
+    }
 #endif
     m = m->next;
   }
@@ -2721,9 +2780,7 @@ static error_block *run_module_command( const char *command )
   NewLine;
 #endif
 
-  static error_block not_found = { 214, "Command not found" };
-
-  return &not_found;
+  return Send_Service_UKCommand( command );
 }
 
 static bool is_file_command( char const *command )
@@ -2750,20 +2807,24 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
   command = discard_leading_characters( command );
   if (*command == '|') return true; // Comment, nothing to do
   if (*command < ' ') return true; // Nothing on line, nothing to do
-  bool run = (*command == '/');
-  if (run) {
+  bool run = false;
+  if (*command == '/') {
     command++;
+    run = true;
   }
-  else {
-    run = ((command[0] == 'R' || command[0] == 'r') &&
+  else if ((command[0] == 'R' || command[0] == 'r') &&
            (command[1] == 'U' || command[1] == 'u') &&
            (command[2] == 'N' || command[2] == 'n') &&
            (command[3] == ' '  || command[3] == '\0' ||
-            command[3] == '\t' || command[3] == '\n'));
-    if (run) {
-      command += 3;
-      command = discard_leading_characters( command );
-    }
+            command[3] == '\t' || command[3] == '\n')) {
+    command += 3;
+    run = true;
+  }
+
+  if (run) {
+    command = discard_leading_characters( command );
+
+    // Can't use FSControl; it probably resets the SVC stack if it doesn't return
   }
 
   bool is_file = is_file_command( command );
@@ -2797,9 +2858,9 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
         : "r" (var_name), "r" (value), "r" (size), "r" (context), "r" (convert)
         : "lr", "cc" );
     if (error == 0) {
-      Write0( "Alias$ variable found" ); NewLine;
-      Write0( variable ); Write0( "Exists: " ); Write0( result );
-      asm ( "bkpt 41" );
+      WriteS( "Alias$ variable found" ); NewLine;
+      Write0( variable ); WriteS( "Exists: " ); Write0( result );
+      for (;;) asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
   }
 
@@ -2899,20 +2960,10 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
       WriteS( "Run any !Run file in the directory - TODO" ); NewLine; // TODO
     }
     else {
-      WriteS( "No file " ); Write0( command ); NewLine;
-    asm volatile ( "mov r0, #3 // Sleep"
-               "\n  mov r1, #0 // For no time - yield"
-               "\n  svc %[swi]"
-        :
-        : [swi] "i" (OS_ThreadOp)
-        : "r0", "r1", "lr", "memory" );
-#ifdef DEBUG__SHOW_COMMANDS
-    // WindowManager runs FontInstall but is initialised before FontManager
-    // and ROMFonts. Let this one go... (and re-order the modules)
-    static const char exception[] = "FontInstall";
-    if (!module_name_match( command, exception ))
-      asm( "bkpt 51" );
-#endif
+      for (;;) {
+        WriteS( "No file " ); Write0( command ); NewLine;
+        Yield();
+      }
     }
   }
 
@@ -2986,7 +3037,7 @@ static void __attribute__(( naked )) finish_vector()
 
 static void __attribute__(( naked )) break_vector()
 {
-  asm volatile ( "bkpt 1" );
+  asm volatile ( "bkpt %[line]" : : [line] "i" (__LINE__) );
 }
 
 // SwiSpriteOp does BranchNotJustUs, which accesses internal kernel structures. Avoid this, by going directly
@@ -3226,7 +3277,7 @@ static void set_up_legacy_zero_page()
     uint8_t BTable[256];
     uint8_t STable[256];
   } *palette = rma_allocate( sizeof( struct PV ) );
-  if (sizeof( struct PV ) != 0x1850) { asm ( "bkpt 1" ); }
+  if (sizeof( struct PV ) != 0x1850) { asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); }
 
   memset( palette, 0, sizeof( struct PV ) );
   workspace.vectors.zp.vdu_drivers.ws.BlankPalAddr = (uint32_t) &palette->LogFirst;
@@ -3460,7 +3511,7 @@ static void setup_OS_vectors()
 
 static void __attribute__(( naked, noreturn )) idle_thread()
 {
-  // This thread currently has no stack!
+  // This thread currently needs no stack!
   asm ( "mov sp, #0" ); // Avoid triggering any checks for privileged stack pointers in usr32 code 
   asm ( "cpsie aif" );  // Non-interruptable idle thread is not helpful
   for (;;) {
@@ -3476,7 +3527,8 @@ static void __attribute__(( naked, noreturn )) idle_thread()
     // TODO: Pootle around, tidying up memory, etc.
     // Don't do any I/O!
     // Don't forget to give it some stack!
-    // asm volatile ( "wfi" );
+    //asm volatile ( "wfi" );
+    //asm volatile ( "mov r0, #255\n  svc 0xf9" : : : "r0" );
   }
 
   __builtin_unreachable();

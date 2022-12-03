@@ -44,8 +44,8 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
     // This check should ring alarm bells (in qemu).
     char *ws = (void*) &workspace;
     char *sh = (void*) &shared;
-    if ((ws > sh) && (ws - sh) < sizeof( shared )) asm ( "bkpt 1" );
-    if ((ws < sh) && (sh - ws) < sizeof( workspace )) asm ( "bkpt 1" );
+    if ((ws > sh) && (ws - sh) < sizeof( shared )) asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
+    if ((ws < sh) && (sh - ws) < sizeof( workspace )) asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   }
 
   // This is just an initial block until RAM has been reported to memory manager

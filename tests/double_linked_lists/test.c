@@ -49,14 +49,19 @@ void show_list( char const *heading, item *list )
 
 dll_type( item );
 
+item *new_item( char const *s )
+{
+  item *i = malloc( sizeof( item ) );
+  dll_new_item( i );
+  i->string = s;
+  return i;
+}
+
 int main( int argc, char const *argv[] )
 {
   item *list = 0;
   for (int a = 1; a < argc; a++) {
-    item *i = malloc( sizeof( item ) );
-    dll_new_item( i );
-    i->string = argv[a];
-    dll_attach_item( i, &list );
+    dll_attach_item( new_item( argv[a] ), &list );
   }
   show_list( "Initial list", list );
 
@@ -97,6 +102,29 @@ int main( int argc, char const *argv[] )
     show_list( "item 1", i1 );
     show_list( "item 2", i2 );
     show_list( "list", list );
+  }
+
+  {
+    item *list = 0;
+    item *last;
+    dll_attach_item( new_item( "FF" ), &list );
+    dll_attach_item( new_item( "EE" ), &list );
+    dll_attach_item( new_item( "DD" ), &list );
+    dll_attach_item( last = new_item( "CC" ), &list );
+    dll_attach_item( new_item( "BB" ), &list );
+    dll_attach_item( new_item( "AA" ), &list );
+    show_list( "Initial list", list );
+    item *extracted = list;
+    dll_detatch_items_until( &list, last );
+    show_list( "Remaining list, starts with DD", list );
+    show_list( "Extracted list, starts with AA", extracted );
+
+    item *other_list = 0;
+    dll_insert_item_list_at_head( extracted, &other_list );
+    show_list( "Inserted into empty list", other_list );
+
+    dll_insert_item_list_at_head( extracted, &list );
+    show_list( "Restored list", list );
   }
 
   return 0;

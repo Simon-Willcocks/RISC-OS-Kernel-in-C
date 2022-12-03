@@ -185,7 +185,7 @@ static bool fault_on_existing_section( uint32_t address, uint32_t type )
   asm ( "push { r4-r11 }\n  mov %[p], sp" : [p] "=r" (p) );
   Write0( "Fault on existing section, " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
   for (int i = 0; i < 32; i++) { WriteNum( p[i] ); if (0 == (i & 3)) NewLine; else Space; }
-  asm ( "bkpt 1" );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   return false;
 }
 
@@ -236,7 +236,7 @@ static uint32_t physical_address( void *p )
     break;
   }
 
-  asm ( "bkpt 1" );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
 
   return -1;
 }
@@ -357,20 +357,20 @@ static void map_shared_work_area( Level_two_translation_table *l2tt, shared_work
 static bool free_l2tt_table( uint32_t address, uint32_t type )
 {
   // Marker, will not be called (because it won't be in an active L2TT
-  asm ( "bkpt 1" );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   return false;
 }
 
 static bool last_free_l2tt_table( uint32_t address, uint32_t type )
 {
   // Marker, will not be called (because it won't be in an active L2TT
-  asm ( "bkpt 1" );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   return false;
 }
 
 static bool just_allocated( uint32_t address, uint32_t type )
 {
-  asm ( "bkpt 1" );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   return false;
 }
 
@@ -398,7 +398,7 @@ if (l2tt->entry[0].handler == last_free_l2tt_table) { asm ( "bkpt 4" ); }
 static bool never_happens( uint32_t address, uint32_t type )
 {
   // Marker, will not be called (because it won't be in an active L2TT
-  asm ( "bkpt 1" );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   return false;
 }
 
@@ -491,7 +491,7 @@ static bool check_task_slot_l2( uint32_t address, uint32_t type )
     return true;
   }
 
-  asm ( "bkpt 1" );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   return false;
 }
 
@@ -578,7 +578,7 @@ static bool check_global_l2tt( uint32_t address, uint32_t type )
   asm ( "push { r4-r11 }\n  mov %[p], sp" : [p] "=r" (p) );
   Write0( "Check global l2tt, " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
   for (int i = 0; i < 32; i++) { WriteNum( p[i] ); if (0 == (i & 3)) NewLine; else Space; }
-  asm ( "bkpt 1" );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
 #endif
 
   arm32_ptr pointer = { .raw = address };
@@ -792,6 +792,7 @@ static void setup_stack_pages( uint32_t *top, uint32_t *lim )
     l2tt = find_table_from_l1tt_entry( section );
     break;
   default:
+    l2tt = 0; // Avoid compiler warning
     asm ( "bkpt 667" );
     assert ( false ); // Bad stack configuration
   }
@@ -861,6 +862,8 @@ void __attribute__(( noreturn, noinline )) MMU_enter( core_workspace *ws, startu
 {
 #ifdef SINGLE_CORE
 if (ws->core_number > 0) { 
+#elif defined SHOW_TASKS
+if (ws->core_number != 0 && ws->core_number != 3) { 
 #else
 if (ws->core_number > 3) {  // Max cores for HD display
 #endif
@@ -1079,7 +1082,7 @@ void MMU_switch_to( TaskSlot *slot )
 
   for (int i = 1; i < (((uint32_t)&app_memory_limit) >> 20); i++) {
     if (Local_L1TT->entry[i].type == 1) {
-      asm ( "bkpt 1" ); // Free the l2tt.
+      asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); // Free the l2tt.
     }
 
     Local_L1TT->entry[i].handler = check_task_slot_l1;
