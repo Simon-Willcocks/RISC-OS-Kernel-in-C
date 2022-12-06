@@ -70,7 +70,7 @@ extern Task tasks[];
 // For debugging only FIXME
 #include "trivial_display.h"
 
-static bool svc_stack_task( Task *t )
+static bool is_svc_stack_task( Task *t )
 {
   extern int svc_stack_top;
   uint32_t m = (uint32_t) t;
@@ -85,7 +85,7 @@ static inline void show_task_state( Task *t, uint32_t colour )
 
   if (0 != (t->regs.lr & 3)) return;
 
-  if (svc_stack_task( t )) {
+  if (is_svc_stack_task( t )) {
     extern int svc_stack_top;
     const uint32_t top = (uint32_t) &svc_stack_top;
     x = 1860 - (top - (uint32_t) t) / 16;
@@ -101,7 +101,7 @@ static inline void show_task_state( Task *t, uint32_t colour )
   }
 }
 
-bool is_irq_task( Task *t )
+static inline bool is_irq_task( Task *t )
 {
   for (int i = 0; i < shared.task_slot.number_of_interrupt_sources; i++) {
     if (workspace.task_slot.irq_tasks[i] == t) return true;
@@ -111,6 +111,7 @@ bool is_irq_task( Task *t )
 
 bool show_tasks_state()
 {
+return true;
   for (int i = 0; i < 10; i++) {
     Task *t = &tasks[i];
     if (0 == (t->regs.lr & 1)) {
@@ -829,18 +830,14 @@ static void __attribute__(( noinline )) c_default_ticker()
       Task *still_sleeping = first;
       Task *last_resume = first;
 
-WriteS( "Waking" ); 
       // r[1] contains the number of ticks left to sleep for
       // Find all the tasks to be woken (this one, and all the following with
       // r[1] == 0).
       do {
-Space; WriteNum( still_sleeping );
         last_resume = still_sleeping;
         still_sleeping = still_sleeping->next;
       } while (still_sleeping != workspace.task_slot.sleeping
             && still_sleeping->regs.r[1] == 0);
-if (still_sleeping == workspace.task_slot.sleeping) WriteN( "*", 1 );
-NewLine;
 
       assert( still_sleeping == workspace.task_slot.sleeping
           || still_sleeping->regs.r[1] != 0 );
@@ -2369,10 +2366,20 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
 // File operations
 
 // Legacy code will call these SWIs, this code will translate them to PipeOp
-// and calls to the legacy FileCore/FileSwitch fileing systems (using CallAVector)
+// and calls to the legacy FileCore/FileSwitch filing systems (using CallAVector)
 // Only one task thread will access the legacy filing systems at a time.
 
 bool run_vector( svc_registers *regs, int vec );
+
+static inline void Yield()
+{
+  asm volatile ( "mov r0, #3 // Sleep"
+             "\n  mov r1, #0 // For no time - yield"
+             "\n  svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      : "r0", "r1", "lr", "memory" );
+}
 
 bool delegate_operation( svc_registers *regs, int operation )
 {
@@ -2383,7 +2390,10 @@ bool delegate_operation( svc_registers *regs, int operation )
 retry: {}
 
   Task *running = workspace.task_slot.running;
-  uint32_t handle = (uint32_t) running;
+  uint32_t handle = handle_from_task( running );
+
+  if (is_svc_stack_task( running ))
+    handle = handle_from_task( workspace.task_slot.protected_task );
 
   uint32_t old = change_word_if_equal( &shared.task_slot.filesystem_lock, 0, handle );
   bool reclaimed = old == handle;
@@ -2444,6 +2454,8 @@ retry: {}
     workspace.task_slot.running = running->next;
   }
   else {
+    WriteS( "Lock at " ); WriteNum( &shared.task_slot.filesystem_lock ); WriteS( " is held by " ); WriteNum( old ); WriteS( ", I'm " ); WriteNum( running ); WriteS( ", yielding" ); NewLine;
+    asm( "bkpt 1" );
     goto retry;
   }
 
@@ -2676,6 +2688,9 @@ void TempTaskDo2( void (*func)( uint32_t p1, uint32_t p2 ), uint32_t p1, uint32_
   dll_replace_Task( running, &interruptable, &workspace.task_slot.running );
   interruptable.slot = running->slot;
 
+  if (!is_svc_stack_task( running ))
+    workspace.task_slot.protected_task = running;
+
 Task *old_lowest = workspace.task_slot.lowest_temp;
 workspace.task_slot.lowest_temp = &interruptable;
 if (old_lowest != 0 && &interruptable > old_lowest) {
@@ -2693,6 +2708,10 @@ workspace.task_slot.lowest_temp = old_lowest;
   // Put the caller task whereever the function put interruptable
   if (running != 0) {
     dll_replace_Task( &interruptable, running, &workspace.task_slot.running );
+
+    // Restore this only if we're getting back to the user task
+    if (!is_svc_stack_task( running ))
+      workspace.task_slot.protected_task = running;
   }
 /*
   else if (workspace.task_slot.running == &interruptable) {

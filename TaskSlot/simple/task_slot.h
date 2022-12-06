@@ -57,6 +57,8 @@ struct TaskSlot_workspace {
   uint32_t interrupted_at[6];
   Task *lowest_temp;
 
+  Task *protected_task; // The user task that the temp task is protecting
+
 };
 
 struct TaskSlot_shared_workspace {

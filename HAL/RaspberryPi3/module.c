@@ -128,10 +128,43 @@ typedef struct __attribute__(( packed )) {
   uint32_t test_data;                           // 0x8c
 } UART;
 
+typedef struct {
+  uint32_t value; // Request or Response, depending if from or to ARM,
+                  // (Pointer & 0xfffffff0) | Channel 0-15
+  uint32_t res1;
+  uint32_t res2;
+  uint32_t res3;
+  uint32_t peek;  // Doesn't remove the value from the FIFO
+  uint32_t sender;// ??
+  uint32_t status;// bit 31: Tx full, 30: Rx empty
+  uint32_t config;
+} GPU_mailbox;
+
+typedef struct __attribute__(( packed )) {
+  uint32_t res0[0x200/4];
+  union {
+    struct {
+      uint32_t basic_pending;
+      uint32_t pending1;
+      uint32_t pending2;
+      uint32_t fiq_control;
+      uint32_t enable_irqs1;
+      uint32_t enable_irqs2;
+      uint32_t enable_basic;
+      uint32_t disable_irqs1;
+      uint32_t disable_irqs2;
+      uint32_t disable_basic;
+    };
+    uint32_t res1[0x680/4];
+  };
+  GPU_mailbox mailbox[2]; // ARM may read mailbox 0, write mailbox 1.
+
+} GPU;
+
 struct workspace {
   uint32_t lock;
-  uint32_t *mbox;
 
+  GPU *gpu; // Interrupts, mailboxes, etc.
   struct gpio *gpio;
   UART        *uart;
   QA7         *qa7;
@@ -903,9 +936,9 @@ static inline void stop_and_blink( struct workspace *workspace )
   }
 }
 
-static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
+uint32_t initialise_frame_buffer( struct workspace *workspace )
 {
-  uint32_t volatile *mailbox = &workspace->mbox[0x220];
+  GPU_mailbox volatile *mailbox = &workspace->gpu->mailbox;
 
   const int width = 1920;
   const int height = 1080;
@@ -915,12 +948,12 @@ static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
 
   dma_memory tag_memory = rma_claim_for_dma( space_to_claim, 16 );
 
-  while (0xf & tag_memory.pa) { tag_memory.pa++; tag_memory.va++; }
+  while (0 != (0xf & tag_memory.pa)) { tag_memory.pa++; tag_memory.va++; }
 
   uint32_t volatile *dma_tags = (void*) tag_memory.va;
 
-  // Note: my initial sequence of tags, 0x00040001, 0x00048003, 0x00048004, 0x00048005, 0x00048006,
-  // didn't get a valid size value from QEMU.
+  // Note: my initial sequence of tags, 0x00040001, 0x00048003, 0x00048004, 
+  // 0x00048005, 0x00048006 didn't get a valid size value from QEMU.
 
   int index = 0;
   dma_tags[index++] = space_to_claim;
@@ -964,7 +997,7 @@ static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
   uint32_t request = 8 | tag_memory.pa;
 
   while (dma_tags[buffer_tag] == alignment) {
-    mailbox[8] = request;
+    mailbox[1].value = request;
     asm volatile ( "dsb" );
 
     //workspace->gpio[0x28/4] = (1 << 22); // Clr
@@ -974,10 +1007,10 @@ static inline uint32_t initialise_frame_buffer( struct workspace *workspace )
 
     do {
       uint32_t countdown = 0x10000;
-      while ((mailbox[6] & (1 << 30)) != 0 && --countdown > 0) { asm volatile ( "dsb" ); } // Empty?
+      while ((mailbox[0].status & (1 << 30)) != 0 && --countdown > 0) { asm volatile ( "dsb" ); } // Empty?
       if (countdown == 0) break;
 
-      response = mailbox[0];
+      response = mailbox[0].value;
       if (response != request) stop_and_blink( workspace );
     } while (response != request);
 
@@ -1110,18 +1143,7 @@ static int __attribute__(( noinline )) C_IrqV_handler( struct core_workspace *wo
   memory_read_barrier();
   uint32_t source = qa7->Core_IRQ_Source[core( workspace )];
   bool found = false;
-  struct {
-    uint32_t basic_pending;
-    uint32_t pending1;
-    uint32_t pending2;
-    uint32_t fiq_control;
-    uint32_t enable_irqs1;
-    uint32_t enable_irqs2;
-    uint32_t enable_basic;
-    uint32_t disable_irqs1;
-    uint32_t disable_irqs2;
-    uint32_t disable_basic;
-  } *gpu = (void *) &workspace->shared->mbox[0x200 / 4];
+  GPU *gpu = workspace->shared->gpu;
 
   memory_read_barrier();
 
@@ -1400,46 +1422,42 @@ static void uart_interrupt_task( uint32_t handle, struct core_workspace *ws, int
 
   QA7 volatile *qa7 = ws->shared->qa7;
   UART volatile *uart = ws->shared->uart;
+  GPU volatile *gpu = ws->shared->gpu;
 
   WriteS( "Listening to UART" ); NewLine;
   uart->control = 0x31; // enable, tx & rx
-
-  for (;;) {
-    Sleep( 100 );
-    WriteS( "UART: " ); WriteNum( uart->raw_interrupt_status );
-    Space; WriteNum( uart->receive_status_error_clear );
-    Space; WriteNum( uart->flags );
-    Space; WriteNum( uart->line_control );
-    Space; WriteNum( uart->control );
-    if (0 != (uart->raw_interrupt_status & (1 << 4))) {
-      uint32_t c = uart->data;
-      char buffer[2] = { c, 0 };
-      WriteS( "Keyboard input: " ); 
-      WriteN( buffer, 1 );
-      NewLine;
-    }
-  }
 
   disable_interrupts();
 
   memory_write_barrier(); // About to write to QA7
 
-  // Let the generic ARM uart interrupt this core
-  //qa7->Core_???_Interrupt_control[this_core] = 15; // 2; // Generic ARM uart irq
+  // FIXME: This belongs in a section that knows about interrupt mapping
+
+  qa7->GPU_interrupts_routing = this_core * 5; // FIQ and IRQ to this core
 
   memory_write_barrier(); // About to write to something else
 
-  ws->shared->uart->control |= (1 << 9); // Receive enable
+  if (device < 32) {
+    gpu->enable_irqs1 = (1 << device);
+  }
+  else {
+    gpu->enable_irqs2 = (1 << (device-32));
+  }
+
+  memory_write_barrier(); // About to write to something else
+
+  uart->control |= (1 << 9); // Receive interrupt enable
 
   memory_write_barrier(); // Maybe needed?
 
   do {
     wait_for_interrupt( device );
 
-    // Discard the character, no matter what it is
-    asm volatile ( "" : : "r" (ws->shared->uart->data) );
-
-    asm volatile ( "mov r0, #255\n  svc 0xf9" : : : "r0" );
+    uint32_t c = uart->data;
+    char buffer[2] = { c, 0 };
+    // This is naughty, the call may block the task. But this is simply
+    // a toy device handler.
+    WriteN( buffer, 1 ); NewLine;
   } while (true); // Could check a flag in ws, in case of shutdown
 }
 
@@ -1542,7 +1560,7 @@ void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_
   workspace = *private;
 
   // Map this addresses into all cores
-  workspace->mbox = map_device_page( 0x3f00b000 );
+  workspace->gpu = map_device_page( 0x3f00b000 );
 
   workspace->gpio = map_device_page( 0x3f200000 );
 
@@ -1651,7 +1669,7 @@ add_num( pipe, &workspace->core_specific[this_core] );
     workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
 
 #ifdef QEMU
-    const int slower = 10;
+    const int slower = 1000;
     Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
     workspace->ticks_per_interval = workspace->ticks_per_interval * slower;
 #endif
@@ -1678,7 +1696,7 @@ add_num( pipe, &workspace->core_specific[this_core] );
   }
 
   if (first_entry) {
-    uint32_t handle = start_uart_interrupt_task( &workspace->core_specific[this_core], 99 );
+    uint32_t handle = start_uart_interrupt_task( &workspace->core_specific[this_core], 57 );
     Write0( "UART task: " ); WriteNum( handle ); NewLine;
 
     yield(); // Let the task start listening to the uart

@@ -133,7 +133,7 @@ static inline bool run_initialisation_code( const char *env, module *m, uint32_t
   // FIXME return error_block * instead of bool
   if (error != 0) {
     NewLine;
-    Write0( "\005Failed\005" );
+    WriteS( "\005Failed\005" );
     NewLine;
   }
 
@@ -205,9 +205,9 @@ if (svc == 0x41b40 || svc == 0x61b40) {
     char name[];
   } *rf = (void*) regs->r[0];
   do {
-    Write0( "New file: " );
+    WriteS( "New file: " );
     Write0( rf->name );
-    Write0( " " ); WriteNum( rf->offset );
+    WriteS( " " ); WriteNum( rf->offset );
     rf = (void*) (((char*)rf)+rf->offset);
     NewLine;
   } while (rf->offset != 0);
@@ -311,14 +311,14 @@ bool run_vector( svc_registers *regs, int vec )
   // Ignore WrchV, TickerV
   if (vec != 3 && vec != 0x1c && workspace.kernel.vectors[3] != &do_nothing)
   {
-    Write0( "Running vector " ); WriteNum( vec ); NewLine;
+    WriteS( "Running vector " ); WriteNum( vec ); NewLine;
     vector *v = workspace.kernel.vectors[vec];
     while (v != 0) {
-      WriteNum( v->code ); Write0( " " ); WriteNum( v->private_word ); Write0( " " ); WriteNum( v->next ); NewLine;
+      WriteNum( v->code ); WriteS( " " ); WriteNum( v->private_word ); WriteS( " " ); WriteNum( v->next ); NewLine;
       v = v->next;
     }
     NewLine;
-    for (int i = 0; i < 10; i++) { WriteNum( regs->r[i] ); Write0( " " ); }
+    for (int i = 0; i < 10; i++) { WriteNum( regs->r[i] ); WriteS( " " ); }
     WriteNum( regs->lr );
     NewLine;
   }
@@ -328,7 +328,7 @@ bool run_vector( svc_registers *regs, int vec )
 #ifdef DEBUG__SHOW_VECTORS_VERBOSE
   if (vec != 3 && vec != 0x1c && workspace.kernel.vectors[3] != &do_nothing)
   {
-    Write0( "Vector " ); WriteNum( vec ); Space; WriteNum( flags ); NewLine;
+    WriteS( "Vector " ); WriteNum( vec ); Space; WriteNum( flags ); NewLine;
   }
 #endif
   return (regs->spsr & VF) == 0;
@@ -428,158 +428,158 @@ static inline bool riscoscmp( char const *left, char const *right )
 
 static inline void describe_service_call( svc_registers *regs )
 {
-Write0( "*** ServiceCall_" );
+WriteS( "*** ServiceCall_" );
 switch (regs->r[1]) {
 
-case 0x00: Write0( "CallClaimed" ); break;
-case 0x04: Write0( "UKCommand" ); break;
-case 0x06: Write0( "Error" ); break;
-case 0x07: Write0( "UKByte" ); break;
-case 0x08: Write0( "UKWord" ); break;
-case 0x09: Write0( "Help" ); break;
-case 0x0B: Write0( "ReleaseFIQ" ); break;
-case 0x0C: Write0( "ClaimFIQ" ); break;
-case 0x11: Write0( "Memory" ); break;
-case 0x12: Write0( "StartUpFS" ); break;
-case 0x18: Write0( "PostHelp?" ); break;
-case 0x27: Write0( "PostReset" ); break;
-case 0x28: Write0( "UKConfig" ); break;
-case 0x29: Write0( "UKStatus" ); break;
-case 0x2A: Write0( "NewApplication" ); break;
-case 0x40: Write0( "FSRedeclare" ); break;
-case 0x41: Write0( "Print" ); break;
-case 0x42: Write0( "LookupFileType" ); break;
-case 0x43: Write0( "International" ); break;
-case 0x44: Write0( "KeyHandler" ); break;
-case 0x45: Write0( "PreReset" ); break;
-case 0x46: Write0( "ModeChange" ); break;
-case 0x47: Write0( "ClaimFIQinBackground" ); break;
-case 0x48: Write0( "ReAllocatePorts" ); break;
-case 0x49: Write0( "StartWimp" ); break;
-case 0x4A: Write0( "StartedWimp" ); break;
-case 0x4B: Write0( "StartFiler" ); break;
-case 0x4C: Write0( "StartedFiler" ); break;
-case 0x4D: Write0( "PreModeChange" ); break;
-case 0x4E: Write0( "MemoryMoved" ); break;
-case 0x4F: Write0( "FilerDying" ); break;
-case 0x50: Write0( "ModeExtension" ); break;
-case 0x51: Write0( "ModeTranslation" ); break;
-case 0x52: Write0( "MouseTrap" ); break;
-case 0x53: Write0( "WimpCloseDown" ); break;
-case 0x54: Write0( "Sound" ); break;
-case 0x55: Write0( "NetFS" ); break;
-case 0x56: Write0( "EconetDying" ); break;
-case 0x57: Write0( "WimpReportError" ); break;
-case 0x58: Write0( "MIDI" ); break;
-case 0x59: Write0( "ResourceFSStarted" ); break;
-case 0x5A: Write0( "ResourceFSDying" ); break;
-case 0x5B: Write0( "CalibrationChanged" ); break;
-case 0x5C: Write0( "WimpSaveDesktop" ); break;
-case 0x5D: Write0( "WimpPalette" ); break;
-case 0x5E: Write0( "MessageFileClosed" ); break;
-case 0x5F: Write0( "NetFSDying" ); break;
-case 0x60: Write0( "ResourceFSStarting" ); break;
-case 0x61: Write0( "NFS?" ); break;
-case 0x62: Write0( "DBoxModuleDying?" ); break;
-case 0x63: Write0( "DBoxModuleStarting?" ); break;
-case 0x64: Write0( "TerritoryManagerLoaded" ); break;
-case 0x65: Write0( "PDriverStarting" ); break;
-case 0x66: Write0( "PDumperStarting" ); break;
-case 0x67: Write0( "PDumperDying" ); break;
-case 0x68: Write0( "CloseFile: " ); Write0( (char*) regs->r[2] ); break;
-case 0x69: Write0( "IdentifyDisc" ); break;
-case 0x6A: Write0( "EnumerateFormats" ); break;
-case 0x6B: Write0( "IdentifyFormat" ); break;
-case 0x6C: Write0( "DisplayFormatHelp" ); break;
-case 0x6D: Write0( "ValidateAddress" ); break;
-case 0x6E: Write0( "FontsChanged" ); break;
-case 0x6F: Write0( "BufferStarting" ); break;
-case 0x70: Write0( "DeviceFSStarting" ); break;
-case 0x71: Write0( "DeviceFSDying" ); break;
-case 0x72: Write0( "SwitchingOutputToSprite" ); break;
-case 0x73: Write0( "PostInit" ); break;
-case 0x74: Write0( "BASICHelp?" ); break;
-case 0x75: Write0( "TerritoryStarted" ); break;
-case 0x76: Write0( "MonitorLeadTranslation" ); break;
-case 0x77: Write0( "SerialDevice?" ); break;
-case 0x78: Write0( "PDriverGetMessages" ); break;
-case 0x79: Write0( "DeviceDead" ); break;
-case 0x7A: Write0( "ScreenBlanked" ); break;
-case 0x7B: Write0( "ScreenRestored" ); break;
-case 0x7C: Write0( "DesktopWelcome" ); break;
-case 0x7D: Write0( "DiscDismounted" ); break;
-case 0x7E: Write0( "ShutDown" ); break;
-case 0x7F: Write0( "PDriverChanged" ); break;
-case 0x80: Write0( "ShutdownComplete" ); break;
-case 0x81: Write0( "DeviceFSCloseRequest" ); break;
-case 0x82: Write0( "InvalidateCache" ); break;
-case 0x83: Write0( "ProtocolDying" ); break;
-case 0x84: Write0( "FindNetworkDriver" ); break;
-case 0x85: Write0( "WimpSpritesMoved" ); break;
-case 0x86: Write0( "WimpRegisterFilters" ); break;
-case 0x87: Write0( "FilterManagerInstalled" ); break;
-case 0x88: Write0( "FilterManagerDying" ); break;
-case 0x89: Write0( "ModeChanging" ); break;
-case 0x8A: Write0( "Portable" ); break;
-case 0x8B: Write0( "NetworkDriverStatus" ); break;
-case 0x8C: Write0( "SyntaxError" ); break;
-case 0x8D: Write0( "EnumerateScreenModes" ); break;
-case 0x8E: Write0( "PagesUnsafe" ); break;
-case 0x8F: Write0( "PagesSafe" ); break;
-case 0x90: Write0( "DynamicAreaCreate" ); break;
-case 0x91: Write0( "DynamicAreaRemove" ); break;
-case 0x92: Write0( "DynamicAreaRenumber" ); break;
-case 0x93: Write0( "ColourPickerLoaded" ); break;
-case 0x94: Write0( "ModeFileChanged" ); break;
-case 0x95: Write0( "FreewayStarting" ); break;
-case 0x96: Write0( "FreewayTerminating" ); break;
-case 0x97: Write0( "ShareDStarting?" ); break;
-case 0x98: Write0( "ShareDTerminating?" ); break;
-case 0x99: Write0( "ModulePostInitialisation?" ); break;
-case 0x9A: Write0( "ModulePreFinalisation?" ); break;
-case 0x9B: Write0( "EnumerateNetworkDrivers?" ); break;
-case 0x9C: Write0( "PCMCIA?" ); break;
-case 0x9D: Write0( "DCIDriverStatus" ); break;
-case 0x9E: Write0( "DCIFrameTypeFree" ); break;
-case 0x9F: Write0( "DCIProtocolStatus" ); break;
-case 0xA7: Write0( "URI?" ); break;
-case 0xB0: Write0( "InternetStatus" ); break;
-case 0xB7: Write0( "UKCompression" ); break;
-case 0xB9: Write0( "ModulePreInit" ); break;
-case 0xC3: Write0( "PCI" ); break;
-case 0xD2: Write0( "USB" ); break;
-case 0xD9: Write0( "Hardware" ); break;
-case 0xDA: Write0( "ModulePostInit" ); break;
-case 0xDB: Write0( "ModulePostFinal" ); break;
-case 0xDD: Write0( "RTCSynchronised" ); break;
-case 0xDE: Write0( "DisplayChanged" ); break;
-case 0xDF: Write0( "DisplayStatus" ); break;
-case 0xE0: Write0( "NVRAM?" ); break;
-case 0xE3: Write0( "PagesUnsafe64" ); break;
-case 0xE4: Write0( "PagesSafe64" ); break;
+case 0x00: WriteS( "CallClaimed" ); break;
+case 0x04: WriteS( "UKCommand" ); break;
+case 0x06: WriteS( "Error" ); break;
+case 0x07: WriteS( "UKByte" ); break;
+case 0x08: WriteS( "UKWord" ); break;
+case 0x09: WriteS( "Help" ); break;
+case 0x0B: WriteS( "ReleaseFIQ" ); break;
+case 0x0C: WriteS( "ClaimFIQ" ); break;
+case 0x11: WriteS( "Memory" ); break;
+case 0x12: WriteS( "StartUpFS" ); break;
+case 0x18: WriteS( "PostHelp?" ); break;
+case 0x27: WriteS( "PostReset" ); break;
+case 0x28: WriteS( "UKConfig" ); break;
+case 0x29: WriteS( "UKStatus" ); break;
+case 0x2A: WriteS( "NewApplication" ); break;
+case 0x40: WriteS( "FSRedeclare" ); break;
+case 0x41: WriteS( "Print" ); break;
+case 0x42: WriteS( "LookupFileType" ); break;
+case 0x43: WriteS( "International" ); break;
+case 0x44: WriteS( "KeyHandler" ); break;
+case 0x45: WriteS( "PreReset" ); break;
+case 0x46: WriteS( "ModeChange" ); break;
+case 0x47: WriteS( "ClaimFIQinBackground" ); break;
+case 0x48: WriteS( "ReAllocatePorts" ); break;
+case 0x49: WriteS( "StartWimp" ); break;
+case 0x4A: WriteS( "StartedWimp" ); break;
+case 0x4B: WriteS( "StartFiler" ); break;
+case 0x4C: WriteS( "StartedFiler" ); break;
+case 0x4D: WriteS( "PreModeChange" ); break;
+case 0x4E: WriteS( "MemoryMoved" ); break;
+case 0x4F: WriteS( "FilerDying" ); break;
+case 0x50: WriteS( "ModeExtension" ); break;
+case 0x51: WriteS( "ModeTranslation" ); break;
+case 0x52: WriteS( "MouseTrap" ); break;
+case 0x53: WriteS( "WimpCloseDown" ); break;
+case 0x54: WriteS( "Sound" ); break;
+case 0x55: WriteS( "NetFS" ); break;
+case 0x56: WriteS( "EconetDying" ); break;
+case 0x57: WriteS( "WimpReportError" ); break;
+case 0x58: WriteS( "MIDI" ); break;
+case 0x59: WriteS( "ResourceFSStarted" ); break;
+case 0x5A: WriteS( "ResourceFSDying" ); break;
+case 0x5B: WriteS( "CalibrationChanged" ); break;
+case 0x5C: WriteS( "WimpSaveDesktop" ); break;
+case 0x5D: WriteS( "WimpPalette" ); break;
+case 0x5E: WriteS( "MessageFileClosed" ); break;
+case 0x5F: WriteS( "NetFSDying" ); break;
+case 0x60: WriteS( "ResourceFSStarting" ); break;
+case 0x61: WriteS( "NFS?" ); break;
+case 0x62: WriteS( "DBoxModuleDying?" ); break;
+case 0x63: WriteS( "DBoxModuleStarting?" ); break;
+case 0x64: WriteS( "TerritoryManagerLoaded" ); break;
+case 0x65: WriteS( "PDriverStarting" ); break;
+case 0x66: WriteS( "PDumperStarting" ); break;
+case 0x67: WriteS( "PDumperDying" ); break;
+case 0x68: WriteS( "CloseFile: " ); Write0( (char*) regs->r[2] ); break;
+case 0x69: WriteS( "IdentifyDisc" ); break;
+case 0x6A: WriteS( "EnumerateFormats" ); break;
+case 0x6B: WriteS( "IdentifyFormat" ); break;
+case 0x6C: WriteS( "DisplayFormatHelp" ); break;
+case 0x6D: WriteS( "ValidateAddress" ); break;
+case 0x6E: WriteS( "FontsChanged" ); break;
+case 0x6F: WriteS( "BufferStarting" ); break;
+case 0x70: WriteS( "DeviceFSStarting" ); break;
+case 0x71: WriteS( "DeviceFSDying" ); break;
+case 0x72: WriteS( "SwitchingOutputToSprite" ); break;
+case 0x73: WriteS( "PostInit" ); break;
+case 0x74: WriteS( "BASICHelp?" ); break;
+case 0x75: WriteS( "TerritoryStarted" ); break;
+case 0x76: WriteS( "MonitorLeadTranslation" ); break;
+case 0x77: WriteS( "SerialDevice?" ); break;
+case 0x78: WriteS( "PDriverGetMessages" ); break;
+case 0x79: WriteS( "DeviceDead" ); break;
+case 0x7A: WriteS( "ScreenBlanked" ); break;
+case 0x7B: WriteS( "ScreenRestored" ); break;
+case 0x7C: WriteS( "DesktopWelcome" ); break;
+case 0x7D: WriteS( "DiscDismounted" ); break;
+case 0x7E: WriteS( "ShutDown" ); break;
+case 0x7F: WriteS( "PDriverChanged" ); break;
+case 0x80: WriteS( "ShutdownComplete" ); break;
+case 0x81: WriteS( "DeviceFSCloseRequest" ); break;
+case 0x82: WriteS( "InvalidateCache" ); break;
+case 0x83: WriteS( "ProtocolDying" ); break;
+case 0x84: WriteS( "FindNetworkDriver" ); break;
+case 0x85: WriteS( "WimpSpritesMoved" ); break;
+case 0x86: WriteS( "WimpRegisterFilters" ); break;
+case 0x87: WriteS( "FilterManagerInstalled" ); break;
+case 0x88: WriteS( "FilterManagerDying" ); break;
+case 0x89: WriteS( "ModeChanging" ); break;
+case 0x8A: WriteS( "Portable" ); break;
+case 0x8B: WriteS( "NetworkDriverStatus" ); break;
+case 0x8C: WriteS( "SyntaxError" ); break;
+case 0x8D: WriteS( "EnumerateScreenModes" ); break;
+case 0x8E: WriteS( "PagesUnsafe" ); break;
+case 0x8F: WriteS( "PagesSafe" ); break;
+case 0x90: WriteS( "DynamicAreaCreate" ); break;
+case 0x91: WriteS( "DynamicAreaRemove" ); break;
+case 0x92: WriteS( "DynamicAreaRenumber" ); break;
+case 0x93: WriteS( "ColourPickerLoaded" ); break;
+case 0x94: WriteS( "ModeFileChanged" ); break;
+case 0x95: WriteS( "FreewayStarting" ); break;
+case 0x96: WriteS( "FreewayTerminating" ); break;
+case 0x97: WriteS( "ShareDStarting?" ); break;
+case 0x98: WriteS( "ShareDTerminating?" ); break;
+case 0x99: WriteS( "ModulePostInitialisation?" ); break;
+case 0x9A: WriteS( "ModulePreFinalisation?" ); break;
+case 0x9B: WriteS( "EnumerateNetworkDrivers?" ); break;
+case 0x9C: WriteS( "PCMCIA?" ); break;
+case 0x9D: WriteS( "DCIDriverStatus" ); break;
+case 0x9E: WriteS( "DCIFrameTypeFree" ); break;
+case 0x9F: WriteS( "DCIProtocolStatus" ); break;
+case 0xA7: WriteS( "URI?" ); break;
+case 0xB0: WriteS( "InternetStatus" ); break;
+case 0xB7: WriteS( "UKCompression" ); break;
+case 0xB9: WriteS( "ModulePreInit" ); break;
+case 0xC3: WriteS( "PCI" ); break;
+case 0xD2: WriteS( "USB" ); break;
+case 0xD9: WriteS( "Hardware" ); break;
+case 0xDA: WriteS( "ModulePostInit" ); break;
+case 0xDB: WriteS( "ModulePostFinal" ); break;
+case 0xDD: WriteS( "RTCSynchronised" ); break;
+case 0xDE: WriteS( "DisplayChanged" ); break;
+case 0xDF: WriteS( "DisplayStatus" ); break;
+case 0xE0: WriteS( "NVRAM?" ); break;
+case 0xE3: WriteS( "PagesUnsafe64" ); break;
+case 0xE4: WriteS( "PagesSafe64" ); break;
 
 
-case 0x10800: Write0( "ADFSPodule" ); break;
-case 0x10801: Write0( "ADFSPoduleIDE" ); break;
-case 0x10802: Write0( "ADFSPoduleIDEDying" ); break;
-case 0x20100: Write0( "SCSIStarting" ); break;
-case 0x20101: Write0( "SCSIDying" ); break;
-case 0x20102: Write0( "SCSIAttached" ); break;
-case 0x20103: Write0( "SCSIDetached" ); break;
-case 0x400C0: Write0( "ErrorStarting?" ); break;
-case 0x400C1: Write0( "ErrorButtonPressed?" ); break;
-case 0x400C2: Write0( "ErrorEnding?" ); break;
-case 0x41580: Write0( "FindProtocols" ); break;
-case 0x41581: Write0( "FindProtocolsEnd" ); break;
-case 0x41582: Write0( "ProtocolNameToNumber" ); break;
-case 0x45540: Write0( "DrawObjectDeclareFonts" ); break;
-case 0x45541: Write0( "DrawObjectRender" ); break;
-case 0x4D480: Write0( "SafeAreaChanged?" ); break;
-case 0x81080: Write0( "TimeZoneChanged" ); break;
-case 0x810C0: Write0( "BootBootVarsSet?" ); break;
-case 0x810C1: Write0( "BootResourcesVarsSet?" ); break;
-case 0x810C2: Write0( "BootChoicesVarsSet?" ); break;
-case 0x81100: Write0( "IIC" ); break;
+case 0x10800: WriteS( "ADFSPodule" ); break;
+case 0x10801: WriteS( "ADFSPoduleIDE" ); break;
+case 0x10802: WriteS( "ADFSPoduleIDEDying" ); break;
+case 0x20100: WriteS( "SCSIStarting" ); break;
+case 0x20101: WriteS( "SCSIDying" ); break;
+case 0x20102: WriteS( "SCSIAttached" ); break;
+case 0x20103: WriteS( "SCSIDetached" ); break;
+case 0x400C0: WriteS( "ErrorStarting?" ); break;
+case 0x400C1: WriteS( "ErrorButtonPressed?" ); break;
+case 0x400C2: WriteS( "ErrorEnding?" ); break;
+case 0x41580: WriteS( "FindProtocols" ); break;
+case 0x41581: WriteS( "FindProtocolsEnd" ); break;
+case 0x41582: WriteS( "ProtocolNameToNumber" ); break;
+case 0x45540: WriteS( "DrawObjectDeclareFonts" ); break;
+case 0x45541: WriteS( "DrawObjectRender" ); break;
+case 0x4D480: WriteS( "SafeAreaChanged?" ); break;
+case 0x81080: WriteS( "TimeZoneChanged" ); break;
+case 0x810C0: WriteS( "BootBootVarsSet?" ); break;
+case 0x810C1: WriteS( "BootResourcesVarsSet?" ); break;
+case 0x810C2: WriteS( "BootChoicesVarsSet?" ); break;
+case 0x81100: WriteS( "IIC" ); break;
 
 default: WriteNum( regs->r[1] );
 }
@@ -607,7 +607,7 @@ bool do_OS_ServiceCall( svc_registers *regs )
 int count = 0;
 describe_service_call( regs );
 if (m == 0) {
-  Write0( "No modules initialised\n" ); NewLine;
+  WriteS( "No modules initialised\n" ); NewLine;
 }
 #endif
 
@@ -657,20 +657,20 @@ static bool Unknown_OS_Module_call( svc_registers *regs )
 static module *find_module( char const *name )
 {
 #ifdef DEBUG__SHOW_MODULE_LOOKUPS
-Write0( "Looking for " ); Write0( name );
+WriteS( "Looking for " ); Write0( name );
 #endif
   module *m = workspace.kernel.module_list_head;
   int number = 0;
   while (m != 0 && !module_name_match( title_string( m->header ), name )) {
 #ifdef DEBUG__SHOW_MODULE_LOOKUPS
-Write0( ", not " ); Write0( title_string( m->header ) );
+WriteS( ", not " ); Write0( title_string( m->header ) );
 #endif
     m = m->next;
     number++;
   }
 
 #ifdef DEBUG__SHOW_MODULE_LOOKUPS
-if (m) { Write0( ", FOUND " ); Write0( title_string( m->header ) ); NewLine; }
+if (m) { WriteS( ", FOUND " ); Write0( title_string( m->header ) ); NewLine; }
 #endif
   return m;
 }
@@ -813,7 +813,7 @@ static bool initialise_module( svc_registers *regs, uint32_t *memory, char const
   TaskSlot_new_application( title_string( new_mod ), parameters );
 
   if (0 != (new_mod->offset_to_initialisation & (1 << 31))) {
-    Write0( "Is this module squashed? I can't cope with that." ); asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
+    WriteS( "Is this module squashed? I can't cope with that." ); asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   }
 
   // "During initialisation, your module is not on the active module list, and
@@ -942,7 +942,7 @@ Write0( (char*) regs->r[2] ); NewLine;
 
   void *start_address = start_code( m->header );
 
-Write0( "Start address: " ); WriteNum( start_address ); NewLine;
+WriteS( "Start address: " ); WriteNum( start_address ); NewLine;
   if (m->header->offset_to_start == 0) {
     return true;
   }
@@ -1046,7 +1046,7 @@ static bool IntoRMAHeapOp( svc_registers *regs )
     regs->r[3] = r3;
 
 #ifdef DEBUG__RMA_ALLOCATIONS
-    Write0( "Allocated RMA memory at " ); WriteNum( regs->r[2] ); Write0( " @" ); WriteNum( regs->lr ); NewLine;
+    WriteS( "Allocated RMA memory at " ); WriteNum( regs->r[2] ); WriteS( " @" ); WriteNum( regs->lr ); NewLine;
 #endif
   }
   else {
@@ -1109,7 +1109,7 @@ return true;
   regs->r[1] = (uint32_t) &rma_heap;
 
 #ifdef DEBUG__RMA_ALLOCATIONS
-  Write0( "Free RMA memory at " ); WriteNum( regs->r[2] ); Write0( " @" ); WriteNum( regs->lr ); NewLine;
+  WriteS( "Free RMA memory at " ); WriteNum( regs->r[2] ); WriteS( " @" ); WriteNum( regs->lr ); NewLine;
 #endif
 
   bool result = do_OS_Heap( regs );
@@ -1151,7 +1151,7 @@ static bool do_Module_InsertFromMemory( svc_registers *regs )
 
 #ifdef DEBUG__SHOW_MODULE_INIT
   NewLine;
-  Write0( "INIT: " );
+  WriteS( "INIT: " );
   Write0( title_string( header ) ); NewLine;
 #ifdef DEBUG__SHOW_MODULE_COMMANDS_ON_INIT
   show_module_commands( header );
@@ -1184,7 +1184,7 @@ static bool do_Module_ExtractModuleInfo( svc_registers *regs )
   if (m->instances != 0) {
     if (instance > 0) {
       m = m->instances;
-Write0( "Instance " ); WriteNum( instance ); Space; WriteNum( m ); NewLine;
+WriteS( "Instance " ); WriteNum( instance ); Space; WriteNum( m ); NewLine;
       while (--instance > 0 && m != 0) {
         m = m->next;
 WriteNum( instance ); Space; WriteNum( m ); NewLine;
@@ -1273,13 +1273,13 @@ Write0( __func__ ); Space; WriteNum( parameters ); NewLine;
 
   if (success && 0 != instance->header->offset_to_initialisation) {
 #if 1
-    Write0( "Passing parameters " ); Write0( parameters ); Write0( " to new instance" ); NewLine;
+    WriteS( "Passing parameters " ); Write0( parameters ); WriteS( " to new instance" ); NewLine;
 #endif
     success = run_initialisation_code( parameters, instance, instance_number( instance ) );
   }
   else {
 #if 1
-    Write0( "Not passing parameters " ); Write0( parameters ); Write0( " to new instance" ); NewLine;
+    WriteS( "Not passing parameters " ); Write0( parameters ); WriteS( " to new instance" ); NewLine;
 #endif
   }
 
@@ -1319,7 +1319,7 @@ static bool do_Module_LookupModuleName( svc_registers *regs )
 {
   // Actually Lookup Module BY Name
 #ifdef DEBUG__SHOW_MODULE_LOOKUPS
-Write0( __func__ ); Write0( " " ); Write0( regs->r[1] );
+Write0( __func__ ); WriteS( " " ); Write0( regs->r[1] );
 #endif
 
   // Initially called by Wimp during init, just to find ROM location
@@ -1338,7 +1338,7 @@ Write0( __func__ ); Write0( " " ); Write0( regs->r[1] );
   int number = 0;
   while (m != 0 && !module_name_match( title_string( m->header ), name )) {
 #ifdef DEBUG__SHOW_MODULE_LOOKUPS
-Write0( ", not " ); Write0( title_string( m->header ) );
+WriteS( ", not " ); Write0( title_string( m->header ) );
 #endif
     m = m->next;
     number++;
@@ -1352,7 +1352,7 @@ Write0( ", not " ); Write0( title_string( m->header ) );
       m = m->instances;
       while (m != 0 && !riscoscmp( m->postfix, extension )) {
 #ifdef DEBUG__SHOW_MODULE_LOOKUPS
-Write0( ", not " ); Write0( title_string( m->header ) ); Write0( "%" ); Write0( m->postfix );
+WriteS( ", not " ); Write0( title_string( m->header ) ); WriteS( "%" ); Write0( m->postfix );
 #endif
         m = m->next;
         instance++;
@@ -1362,7 +1362,7 @@ Write0( ", not " ); Write0( title_string( m->header ) ); Write0( "%" ); Write0( 
 
   if (m == 0) {
     // TODO personalised error messages will have to be stored associated with a task
-Write0( __func__ ); Write0( " " ); Write0( regs->r[1] );
+Write0( __func__ ); WriteS( " " ); Write0( regs->r[1] );
     static error_block error = { 258, "Module not found" }; // FIXME "Module %s not found"
     regs->r[0] = (uint32_t) &error;
     return false;
@@ -1374,7 +1374,7 @@ Write0( __func__ ); Write0( " " ); Write0( regs->r[1] );
     regs->r[4] = (uint32_t) m->private_word;
     regs->r[5] = m->postfix[0] == '\0' ? 0 : (uint32_t) &m->postfix;
 #ifdef DEBUG__SHOW_MODULE_LOOKUPS
-Write0( ", found: " ); Write0( title_string( m->header ) ); NewLine;
+WriteS( ", found: " ); Write0( title_string( m->header ) ); NewLine;
 #endif
   }
 
@@ -1537,9 +1537,9 @@ static callback *get_a_callback()
 bool do_OS_Claim( svc_registers *regs )
 {
 #ifdef DEBUG__SHOW_VECTORS
-  Write0( "New vector claim " ); WriteNum( regs->r[0] );
-  Write0( " Code " ); WriteNum( regs->r[1] );
-  Write0( " Private " ); WriteNum( regs->r[2] ); NewLine;
+  WriteS( "New vector claim " ); WriteNum( regs->r[0] );
+  WriteS( " Code " ); WriteNum( regs->r[1] );
+  WriteS( " Private " ); WriteNum( regs->r[2] ); NewLine;
 #endif
   int number = regs->r[0];
   if (number > number_of( workspace.kernel.vectors )) {
@@ -1554,7 +1554,7 @@ bool do_OS_Claim( svc_registers *regs )
       // Duplicate to be removed, except we'll just move it up to the head instead,
       // without having to allocate new space.
 #ifdef DEBUG__SHOW_VECTORS
-  Write0( "Raising vector to top" ); NewLine;
+  WriteS( "Raising vector to top" ); NewLine;
 #endif
       *p = v->next; // Removed from list
       v->next = workspace.kernel.vectors[number];
@@ -1572,7 +1572,7 @@ bool do_OS_Claim( svc_registers *regs )
   }
 
 #ifdef DEBUG__SHOW_VECTORS
-  Write0( "New new vector" ); NewLine;
+  WriteS( "New new vector" ); NewLine;
 #endif
 
   new->code = regs->r[1];
@@ -1628,7 +1628,7 @@ bool do_OS_RelinkApplication( svc_registers *regs )
 static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
 {
 #ifdef DEBUG__SHOW_OS_BYTE
-  Write0( "OS_Byte " ); WriteNum( regs[0] ); NewLine;
+  WriteS( "OS_Byte " ); WriteNum( regs[0] ); NewLine;
 #endif
 
   switch (regs[0]) {
@@ -1647,7 +1647,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
   case 0x04: // Write cursor key status
     {
 #ifdef DEBUG__SHOW_OS_BYTE
-      Write0( "Write Cursor Key State " ); WriteNum( regs[1] );
+      WriteS( "Write Cursor Key State " ); WriteNum( regs[1] );
 #endif
       regs[1] = 0;
     }
@@ -1689,7 +1689,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     break;
   case 0x15: // Clear selected buffer
     {
-      Write0( "Flush buffer " ); WriteNum( regs[1] );
+      WriteS( "Flush buffer " ); WriteNum( regs[1] );
     }
     break;
   case 0x47: // Read/Write alphabet or keyboard
@@ -1700,7 +1700,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     case 255: // Read keyboard
       regs[2] = 1; break;
     default:
-      Write0( "Setting alphabet/keyboard not supported" );
+      WriteS( "Setting alphabet/keyboard not supported" );
     }
     }
     break;
@@ -1724,7 +1724,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
   case 0xa1:
     {
 #ifdef DEBUG__SHOW_OS_BYTE
-    Write0( "Read CMOS " ); WriteNum( regs[1] );
+    WriteS( "Read CMOS " ); WriteNum( regs[1] );
 #endif
     switch (regs[1]) {
 
@@ -1806,20 +1806,20 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     // WimpDoubleClickDelayTime
     case 0xdf: regs[2] = 50; break; // FIXME made up!
 #endif
-    default: Write0( " CMOS byte " ); WriteNum( regs[1] ); asm ( "bkpt 61" );
+    default: WriteS( " CMOS byte " ); WriteNum( regs[1] ); asm ( "bkpt 61" );
     }
 #ifdef DEBUG__SHOW_OS_BYTE
-    Write0( " = " ); WriteNum( regs[2] );
+    WriteS( " = " ); WriteNum( regs[2] );
 #endif
     }
     break;
   case 0xa2:
     {
 #ifdef DEBUG__SHOW_OS_BYTE
-    Write0( "Write CMOS " ); WriteNum( regs[1] ); Write0( " " ); WriteNum( regs[2] );
+    WriteS( "Write CMOS " ); WriteNum( regs[1] ); WriteS( " " ); WriteNum( regs[2] );
 #endif
     switch (regs[1]) {
-    case 0x10: Write0( "Misc flags" ); break;
+    case 0x10: WriteS( "Misc flags" ); break;
     default: asm ( "bkpt 71" );
     }
     }
@@ -1828,14 +1828,14 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     {
 #ifdef DEBUG__SHOW_OS_BYTE
     if (regs[1] == 0 && regs[2] == 255) {
-      Write0( " read " );
+      WriteS( " read " );
     }
     else if (regs[2] == 0) {
-      Write0( " write " ); WriteNum( regs[1] );
+      WriteS( " write " ); WriteNum( regs[1] );
     }
     else {
-      Write0( " " ); WriteNum( regs[1] );
-      Write0( " " ); WriteNum( regs[2] );
+      WriteS( " " ); WriteNum( regs[1] );
+      WriteS( " " ); WriteNum( regs[2] );
     }
 #endif
     // All treated the same, a place for storing a byte.
@@ -1850,15 +1850,15 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
 
     switch (regs[0]) {
 #ifdef DEBUG__SHOW_OS_BYTE
-    case 0xc6: Write0( " Exec handle" ); break;
-    case 0xc7: Write0( " Spool handle" ); break;
+    case 0xc6: WriteS( " Exec handle" ); break;
+    case 0xc7: WriteS( " Spool handle" ); break;
 
     // Called by Wimp02 fn: resetkeycodes *fx 221,2 - fx 228,2, etc.
     // TODO make this the default and provide a compatibility layer for old code
-    case 0xdb: Write0( " Tab key code" ); break;
-    case 0xdc: Write0( " Escape character" ); break;
-    case 0xdd ... 0xe4: Write0( " input values interpretation" ); break;
-    case 0xe5: Write0( " Escape key status" ); break;
+    case 0xdb: WriteS( " Tab key code" ); break;
+    case 0xdc: WriteS( " Escape character" ); break;
+    case 0xdd ... 0xe4: WriteS( " input values interpretation" ); break;
+    case 0xe5: WriteS( " Escape key status" ); break;
 #else
     case 0xc6: break;
     case 0xc7: break;
@@ -1872,15 +1872,15 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
     {
       if (regs[2] == 0xff) {
         if (regs[1] == 0) {
-          Write0( "OS Version number" ); NewLine;
+          WriteS( "OS Version number" ); NewLine;
           regs[1] = 171;
         }
         else if (regs[1] <= 0x7f) {
-          Write0( "Scan for range of keys " ); WriteNum( regs[1] ); NewLine;
+          WriteS( "Scan for range of keys " ); WriteNum( regs[1] ); NewLine;
           regs[1] = 0xff;       // No key (no keyboard!)
         }
         else {
-          Write0( "Scan for particular key " ); WriteNum( regs[1] ); NewLine;
+          WriteS( "Scan for particular key " ); WriteNum( regs[1] ); NewLine;
           regs[1] = 0xff;       // No key (no keyboard!)
         }
       }
@@ -1890,7 +1890,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
         regs[2] = 0xff;       // Timeout (no keyboard!)
       }
       else {
-        Write0( "Unknown OS_Byte option!" ); NewLine;
+        WriteS( "Unknown OS_Byte option!" ); NewLine;
         asm ( "bkpt 90" );
       }
     }
@@ -1916,7 +1916,7 @@ static void __attribute__(( naked )) default_os_byte()
 static void __attribute__(( noinline )) default_os_word_c( uint32_t *regs )
 {
 #ifdef DEBUG__SHOW_OS_WORD
-  Write0( "OS_Word " ); WriteNum( regs[0] ); NewLine;
+  WriteS( "OS_Word " ); WriteNum( regs[0] ); NewLine;
 #endif
 
   switch (regs[0]) {
@@ -2082,8 +2082,13 @@ WriteFunc;
   return run_vector( regs, 4 );
 }
 
+extern bool delegate_operation( svc_registers *regs, int operation );
+
 bool do_OS_CLI( svc_registers *regs )
 {
+  return delegate_operation( regs, 5 );
+}
+/*
 WriteFunc;
 WriteS( "OS_CLI: " ); WriteNum( regs->r[0] ); Space; Write0( (void*) regs->r[0] ); NewLine;
 WriteS( "Caller: " ); WriteNum( regs->lr ); NewLine;
@@ -2093,6 +2098,7 @@ WriteS( "Caller: " ); WriteNum( regs->lr ); NewLine;
 
   return run_vector( regs, 5 );
 }
+*/
 
 bool do_OS_Byte( svc_registers *regs )
 {
@@ -2140,7 +2146,7 @@ Write0( __func__ ); Space; WriteNum( regs->lr ); NewLine;
 bool do_OS_SpriteOp( svc_registers *regs )
 {
 WriteFunc;
-if (regs->r[0] == 0x118) { Write0( "Select sprite " ); Write0( regs->r[2] ); NewLine; WriteNum( regs->lr ); NewLine; }
+if (regs->r[0] == 0x118) { WriteS( "Select sprite " ); Write0( regs->r[2] ); NewLine; WriteNum( regs->lr ); NewLine; }
   return run_vector( regs, 31 );
 }
 
@@ -2639,14 +2645,15 @@ static inline const char *discard_leading_whitespace( const char *command )
   return c;
 }
 
-static bool terminator( char c )
+static inline bool terminator( char c )
 {
   return c == '\0' || c == '\r' || c == '\n';
 }
 
-static uint32_t count_params( const char *p )
+static uint32_t count_params( char const *params )
 {
   uint32_t result = 0;
+  char const *p = params;
 
   while (*p == ' ' && !terminator( *p )) p++;
 
@@ -2667,6 +2674,7 @@ static uint32_t count_params( const char *p )
     while (*p == ' ' && !terminator( *p )) p++;
   }
 
+NewLine; WriteS( "Counted " ); WriteNum( result ); WriteS( " parameters in \"" ); Write0( params ); WriteS( "\"\n\r" );
   return result;
 }
 
@@ -2675,14 +2683,16 @@ static inline error_block *Send_Service_UKCommand( char const *command )
   register char const *cmd asm ( "r0" ) = command;
   register uint32_t service asm ( "r1" ) = 4;
 
-  register error_block *error asm ( "r0" );
+  register error_block *error;
   register bool claimed asm ( "r1" );
 
   asm ( "svc %[swi]"
-    : "=r" (error)
+    "\n  movvc %[error], #0"
+    "\n  movvs %[error], r0"
+    : [error] "=r" (error)
     , "=r" (claimed)
     : [swi] "i" (OS_ServiceCall)
-    , "r" (command)
+    , "r" (cmd)
     , "r" (service)
     : "memory", "lr", "cc", "r2", "r3", "r4", "r5", "r6", "r7", "r8" );
 
@@ -2716,16 +2726,16 @@ static module_command *find_module_command( module_header *header, char const *c
 
   while (cmd[0] != '\0') {
 #ifdef DEBUG__SHOW_ALL_COMMANDS
-Write0( sep ); sep = ", "; Write0( cmd );
+Write0( sep ); sep = ", "; Write0( cmd ); Space;
 #endif
     int len = strlen( cmd );
 
-    module_command *c = (void*) &cmd[(len+4)&~3]; // +4 because len is strlen, not including terminator
+    module_command *c = (void*) (((uint32_t) cmd + len + 4)&~3); // +4 because len is strlen, not including terminator
 
     if (riscoscmp( cmd, command )) {
 
 #ifdef DEBUG__SHOW_ALL_COMMANDS
-      NewLine; Write0( "Yes! " ); WriteNum( c->code_offset ); Space; WriteNum( c->info_word ); Space; WriteNum( c->invalid_syntax_offset ); Space; WriteNum( c->help_offset ); NewLine;
+      NewLine; WriteS( "Yes! " ); WriteNum( c->code_offset ); Space; WriteNum( c->info_word ); Space; WriteNum( c->invalid_syntax_offset ); Space; WriteNum( c->help_offset ); NewLine;
       if (c->help_offset != 0) { Write0( pointer_at_offset_from( header, c->help_offset ) ); }
       if (c->invalid_syntax_offset != 0) { Write0( pointer_at_offset_from( header, c->invalid_syntax_offset ) ); }
 #endif
@@ -2733,7 +2743,7 @@ Write0( sep ); sep = ", "; Write0( cmd );
       return c;
     }
 
-    cmd = (char const *) (cmd + 1);
+    cmd = (char const *) (c + 1);
   }
 
   return 0;
@@ -2744,6 +2754,12 @@ static error_block *run_module_command( const char *command )
   module *m = workspace.kernel.module_list_head;
 
   while (m != 0) {
+#ifdef DEBUG__SHOW_ALL_COMMANDS
+    if (m->header->offset_to_help_and_command_keyword_table != 0) {
+      NewLine; WriteS( "From " ); Write0( title_string( m->header ) ); NewLine;
+    }
+#endif
+
     module_header *header = m->header;
 
     module_command *c = find_module_command( header, command );
@@ -2761,19 +2777,12 @@ static error_block *run_module_command( const char *command )
         }
 
 #ifdef DEBUG__SHOW_COMMANDS
-        Write0( "Running command " ); Write0( command ); Write0( " in " ); Write0( title_string( header ) ); Write0( " at " ); WriteNum( c->code_offset + (uint32_t) header ); NewLine;
+        WriteS( "Running command " ); Write0( command ); WriteS( " in " ); Write0( title_string( header ) ); WriteS( " at " ); WriteNum( c->code_offset + (uint32_t) header ); NewLine;
 #endif
 
         return run_command( m, c->code_offset, params, count );
       }
     }
-
-#ifdef DEBUG__SHOW_ALL_COMMANDS
-    if (header->offset_to_help_and_command_keyword_table != 0) {
-      NewLine; WriteS( "From " ); Write0( title_string( m->header ) ); NewLine;
-      sep = "\n\r";
-    }
-#endif
     m = m->next;
   }
 #ifdef DEBUG__SHOW_COMMANDS
@@ -2799,7 +2808,7 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
 
   error_block *error = 0;
 #ifdef DEBUG__SHOW_COMMANDS
-  Write0( "CLI: " ); Write0( command ); Write0( " at " ); WriteNum( (uint32_t) command ); NewLine;
+  WriteS( "CLI: " ); Write0( command ); WriteS( " at " ); WriteNum( (uint32_t) command ); NewLine;
 #endif
 
   // Max length is 1024 bytes in RO 5.28
@@ -2828,6 +2837,7 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
   }
 
   bool is_file = is_file_command( command );
+  if (is_file) { WriteS( " file command" ); NewLine; }
 
   if (command[0] == '%') {
     // Skip alias checking
@@ -2844,7 +2854,7 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
     }
     variable[i + sizeof( alias ) - 1] = '\0';
 #ifdef DEBUG__SHOW_COMMANDS
-    Write0( "Looking for " ); Write0( variable ); NewLine;
+    WriteS( "Looking for " ); Write0( variable ); NewLine;
 #endif
     char result[256];
     register const char *var_name asm( "r0" ) = variable;
@@ -2864,10 +2874,13 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
     }
   }
 
-  if (!is_file) error = run_module_command( command );
+  if (!is_file) {
+    error = run_module_command( command );
+    if (error == 0) return true;
+  }
 
   if (is_file || (error != 0 && error->code == 214)) {
-Write0( "Looking for file " ); Write0( command ); NewLine;
+WriteS( "Looking for file " ); Write0( command ); NewLine;
 
     // Not found in any module
     register void const *filename asm ( "r1" ) = command;     // File name
@@ -2901,8 +2914,8 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
       runtype[16] = hex[(file_info.filetype >> 4) & 0xf];
       runtype[17] = hex[(file_info.filetype >> 0) & 0xf];
 
-      Write0( "Found file, type " ); WriteNum( file_info.filetype ); NewLine;
-      Write0( "Looking for " ); Write0( runtype ); NewLine;
+      WriteS( "Found file, type " ); WriteNum( file_info.filetype ); NewLine;
+      WriteS( "Looking for " ); Write0( runtype ); NewLine;
 
       char template[256];
       register const char *var_name asm( "r0" ) = runtype;
@@ -2946,9 +2959,9 @@ Write0( "Looking for file " ); Write0( command ); NewLine;
           return false;
         }
 
-        Write0( "Command to run: " ); Write0( to_run ); NewLine;
+        WriteS( "Command to run: " ); Write0( to_run ); NewLine;
         error = run_module_command( to_run );
-        Write0( "Command returned" ); NewLine;
+        WriteS( "Command returned" ); NewLine;
       }
       else {
         WriteS( "No Alias$@RunType for this file found" ); NewLine;
@@ -3017,7 +3030,7 @@ void __attribute__(( naked )) default_os_upcall()
 //Write0( __func__ ); Space; WriteNum( regs ); NewLine;
   do_UpCall( regs );
 
-//Write0( "Done: " ); Space; WriteNum( regs ); NewLine;
+//WriteS( "Done: " ); Space; WriteNum( regs ); NewLine;
 
   asm ( "mov %[regs], sp" : [regs] "=r" (regs) );
 

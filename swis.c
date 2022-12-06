@@ -1617,25 +1617,187 @@ static bool do_OS_ConvertInteger4( svc_registers *regs )
   return convert_signed_decimal( regs, (1ul << 31) );
 }
 
+static bool convert_binary( svc_registers *regs, int bytes )
+{
+  uint32_t buffer_length = regs->r[2];
+  char *buffer = (void*) regs->r[1];
+  uint32_t number = regs->r[1];
 
-static bool do_OS_ConvertBinary1( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertBinary2( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertBinary3( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertBinary4( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+  if (buffer_length < 8 * bytes + 1) return buffer_too_small( regs );
 
-static bool do_OS_ConvertSpacedCardinal1( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedCardinal2( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedCardinal3( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedCardinal4( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+  regs->r[0] = regs->r[1];
+  regs->r[1] += 8 * bytes;
+  regs->r[2] -= 8 * bytes;
 
-static bool do_OS_ConvertSpacedInteger1( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedInteger2( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedInteger3( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertSpacedInteger4( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+  uint32_t bit_mask = (1ULL << (8 * bytes - 1));
+  while (bit_mask != 0) {
+    *buffer++ = (0 == (number & bit_mask)) ? '0' : '1';
+    bit_mask = bit_mask >> 1;
+  }
+  *buffer = '\0';
+  assert( (uint32_t) buffer == regs->r[1] );
+  return true;
+}
+
+static bool do_OS_ConvertBinary1( svc_registers *regs )
+{
+  return convert_binary( regs, 1 );
+}
+
+static bool do_OS_ConvertBinary2( svc_registers *regs )
+{
+  return convert_binary( regs, 2 );
+}
+
+static bool do_OS_ConvertBinary3( svc_registers *regs )
+{
+  return convert_binary( regs, 3 );
+}
+
+static bool do_OS_ConvertBinary4( svc_registers *regs )
+{
+  return convert_binary( regs, 4 );
+}
+
+static bool add_spaces( svc_registers *regs )
+{
+  char *buffer_start = (void*) regs->r[0];
+  char *buffer_terminator = (void*) regs->r[1];
+  uint32_t remaining_space = regs->r[2];
+  int spaces_to_add = 0;
+
+  if (*buffer_start == '-') buffer_start++;
+
+  if (buffer_terminator - buffer_start > 9) {
+    spaces_to_add = 3;
+  }
+  else if (buffer_terminator - buffer_start > 3) {
+    spaces_to_add = 2;
+  }
+  else if (buffer_terminator - buffer_start > 3) {
+    spaces_to_add = 1;
+  }
+
+  if (remaining_space < 1) return buffer_too_small( regs );
+  regs->r[2] = regs->r[2] - spaces_to_add;
+  regs->r[1] = regs->r[1] + spaces_to_add;
+
+  // Work right to left
+  char *p = buffer_terminator-1;
+  buffer_terminator[spaces_to_add] = '\0';
+
+  while (spaces_to_add > 0) {
+    p[spaces_to_add] = p[0]; p--;
+    p[spaces_to_add] = p[0]; p--;
+    p[spaces_to_add] = p[0]; p--;
+    p[spaces_to_add] = ' '; p--;
+    spaces_to_add --;
+  }
+
+  return true;
+}
+
+static bool do_OS_ConvertSpacedCardinal1( svc_registers *regs )
+{
+  return do_OS_ConvertCardinal1( regs );
+}
+
+static bool do_OS_ConvertSpacedCardinal2( svc_registers *regs ) 
+{
+  if (!do_OS_ConvertCardinal2( regs )) return false;
+
+  return add_spaces( regs );
+}
+
+static bool do_OS_ConvertSpacedCardinal3( svc_registers *regs )
+{
+  if (!do_OS_ConvertCardinal3( regs )) return false;
+
+  return add_spaces( regs );
+}
+
+static bool do_OS_ConvertSpacedCardinal4( svc_registers *regs )
+{
+  if (!do_OS_ConvertCardinal4( regs )) return false;
+
+  return add_spaces( regs );
+}
+
+static bool do_OS_ConvertSpacedInteger1( svc_registers *regs )
+{
+  return do_OS_ConvertInteger1( regs );
+}
+
+static bool do_OS_ConvertSpacedInteger2( svc_registers *regs )
+{
+  if (!do_OS_ConvertInteger2( regs )) return false;
+
+  return add_spaces( regs );
+}
+
+static bool do_OS_ConvertSpacedInteger3( svc_registers *regs )
+{
+  if (!do_OS_ConvertInteger3( regs )) return false;
+
+  return add_spaces( regs );
+}
+
+static bool do_OS_ConvertSpacedInteger4( svc_registers *regs )
+{
+  if (!do_OS_ConvertInteger4( regs )) return false;
+
+  return add_spaces( regs );
+}
+
 
 static bool do_OS_ConvertFixedNetStation( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ConvertNetStation( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertFixedFileSize( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_ConvertFixedFileSize( svc_registers *regs )
+{
+  uint32_t buffer_length = regs->r[2];
+
+  static char const format[] = "1234Mbytes";
+
+  if (buffer_length < sizeof( format ))
+    return Kernel_Error_UnimplementedSWI( regs ); // FIXME Lazy!
+
+  uint32_t bytes = regs->r[0];
+  char *buffer = (void*) regs->r[1];
+
+  regs->r[0] = regs->r[1];              // start of buffer
+  regs->r[1] += (sizeof( format ) - 1); // address of terminating '\0'
+  regs->r[2] -= (sizeof( format ) - 1); // remaining bytes in buffer
+
+  if (bytes >= 10000) {
+    bytes = bytes >> 10; // KiB
+    if (bytes >= 10000) {
+      bytes = bytes >> 10; // MiB
+      buffer[4] = 'M';
+    }
+    buffer[4] = 'K';
+  }
+  else
+    buffer[4] = ' ';
+
+  buffer[5] = 'b';
+  buffer[6] = 'y';
+  buffer[7] = 't';
+  buffer[8] = 'e';
+  buffer[9] = 's';
+  buffer[10] = '\0';
+  assert( 11 == sizeof( format ) );
+  assert( *((char *)regs->r[1]) == '\0' );
+
+  for (int i = 3; i >= 0; i--) {
+    if (bytes == 0 && i < 3) {
+      buffer[i] = ' ';
+    }
+    else {
+      buffer[i] = '0' + (bytes % 10);
+      bytes = bytes / 10;
+    }
+  }
+}
 
 static inline int32_t GraphicsWindow_ec_Left()
 {
@@ -2214,10 +2376,10 @@ static swifn os_swis[256] = {
   [OS_SubstituteArgs32] = do_OS_SubstituteArgs32,
 //  [OS_HeapSort32] = do_OS_HeapSort32,
 
-
+/*
   [OS_ConvertStandardDateAndTime] =  do_OS_ConvertStandardDateAndTime,
   [OS_ConvertDateAndTime] =  do_OS_ConvertDateAndTime,
-
+*/
   [OS_ConvertHex1] =  do_OS_ConvertHex1,
   [OS_ConvertHex2] =  do_OS_ConvertHex2,
   [OS_ConvertHex4] =  do_OS_ConvertHex4,
@@ -2249,10 +2411,11 @@ static swifn os_swis[256] = {
   [OS_ConvertSpacedInteger3] =  do_OS_ConvertSpacedInteger3,
 
   [OS_ConvertSpacedInteger4] =  do_OS_ConvertSpacedInteger4,
+/*
   [OS_ConvertFixedNetStation] =  do_OS_ConvertFixedNetStation,
   [OS_ConvertNetStation] =  do_OS_ConvertNetStation,
+*/
   [OS_ConvertFixedFileSize] =  do_OS_ConvertFixedFileSize,
-
   [OS_MSTime] = do_OS_MSTime,
   [OS_ThreadOp] = do_OS_ThreadOp,
   [OS_PipeOp] = do_OS_PipeOp,
