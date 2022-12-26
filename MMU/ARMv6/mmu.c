@@ -716,37 +716,15 @@ static bool uninitialised_page_in_stack_section( uint32_t address, uint32_t type
 static bool stack_overflow( uint32_t address, uint32_t type )
 {
   // Access to safety page below a system stack
-  assert ( false );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   return false;
 }
 
 static bool stack_underflow( uint32_t address, uint32_t type )
 {
   // Access to safety page above a system stack
-  assert ( false );
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   return false;
-}
-
-static bool allocate_stack_as_needed( uint32_t address, uint32_t type )
-{
-  // TODO this would be a good place to keep an eye on how much of each stack is used
-  // FIXME What if Kernel_allocate_pages returns nothing? (Block the Task, find some memory)
-  arm32_ptr pointer = { .raw = address };
-
-  // Do not write any debug before the stack is allocated, it takes stack!
-
-  l1tt_entry section = Local_L1TT->entry[pointer.section];
-
-  assert( section.type == 1 );
-
-  Level_two_translation_table *l2tt = find_table_from_l1tt_entry( section );
-
-  l2tt->entry[pointer.page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
-
-  // Don't write anything in here!
-  // WriteS( "Allocated stack: " ); WriteNum( address ); NewLine;
-
-  return true;
 }
 
 static void initialise_l2tt_for_system_stack( Level_two_translation_table *l2tt )
@@ -803,16 +781,19 @@ static void setup_stack_pages( uint32_t *top, uint32_t *lim )
 
   l2tt->entry[page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
 
+/* No longer the way to go
   while (page > base_ptr.page) {
     l2tt->entry[--page].handler = allocate_stack_as_needed;
   }
-
+*/
   if (top_ptr.page != base_ptr.page) {
     // For the SharedCLibrary           FIXME needed? or just allocate_stack_as_needed?
     l2tt->entry[base_ptr.page].handler = stack_overflow; // Tried to push too much, or possibly just a random address
     l2tt->entry[base_ptr.page].raw = l2_prw.raw | Kernel_allocate_pages( 4096, 4096 );
   }
 }
+
+static void clear_svc_stack_area();
 
 void Initialise_privileged_mode_stacks()
 {
@@ -823,8 +804,31 @@ void Initialise_privileged_mode_stacks()
   extern uint32_t irq_stack_top;
   extern uint32_t fiq_stack_top;
 
-  // These require the l2tt tables to be directly mapped locally, there's no abort stack set up yet.
-  setup_stack_pages( &svc_stack_top, &stack_limit );
+  // These require the l2tt tables to be directly mapped locally, there's no 
+  // abort stack set up yet.
+  // The SVC stack is slot-specific
+  {
+    Level_two_translation_table *l2tt;
+
+    l2tt = find_free_table();
+
+    l1tt_entry MiB = { .table.type1 = 1, .table.NS = 1, .table.Domain = 0 };
+
+    MiB.raw |= physical_address( l2tt );
+
+    arm32_ptr top_ptr = { .rawp = &svc_stack_top };
+
+    Local_L1TT->entry[top_ptr.section] = MiB;
+
+    // Tried to pop too much, or possibly just a random address?
+    l2tt->entry[top_ptr.page].handler = stack_underflow;
+
+    clear_svc_stack_area();
+  }
+
+  // FIXME: These can all be made very small...
+  // These modes will simply store the task state and tell another task
+  // to deal with the problem.
   setup_stack_pages( &undef_stack_top, &stack_limit );
   setup_stack_pages( &abt_stack_top, &stack_limit );
   setup_stack_pages( &irq_stack_top, &stack_limit );
@@ -948,7 +952,8 @@ if (ws->core_number > 3) {  // Max cores for HD display
   // This version doesn't use TTBR1; there's enough memory in everything,
   // these days. (Any future 64-bit version should, though).
   asm ( "mcr p15, 0, %[ttbcr], c2, c0, 2" : : [ttbcr] "r" (0) );
-  // 0x48 -> Inner and Outer write-back, write-allocate cacheable, not shared (per core tables)
+  // 0x48 -> Inner and Outer write-back, write-allocate cacheable, not shared
+  // (per core tables)
   // This should match the settings in map_work_area
   asm ( "mcr p15, 0, %[ttbr0], c2, c0, 0" : : [ttbr0] "r" (0x48 | (uint32_t) l1tt) );
   asm ( "mcr p15, 0, %[dacr], c3, c0, 0" : : [dacr] "r" (1) ); // Only using Domain 0, at the moment, allow access.
@@ -1054,22 +1059,8 @@ show_word( workspace.core_number * 100+ 960, 40, ss[-2], Yellow );
   __builtin_unreachable();
 }
 
-void MMU_switch_to( TaskSlot *slot )
+static void clear_app_area()
 {
-  bool reclaimed = claim_lock( &shared.mmu.lock );
-  assert( !reclaimed ); // IDK, seems sus.
-
-  // Write0( "Switching to slot " ); WriteNum( slot ); Space; WriteNum( TaskSlot_asid( slot ) ); NewLine;
-  // FIXME Only clear what's used
-  // FIXME deal with slots that go over the first MiB
-  // Note: My idea is to try to keep memory as contiguous as possible, and have
-  // two or possibly three sub-MiB translation tables for the first MiB (bottom_MiB_tt)
-  // and the slot's top MiB (and possibly the one below it, in case a task regularly
-  // modifies its memory by small amounts above and below a MiB boundary).
-
-  // TODO record which slot was last active, configure all translation table walks to cause an exception,
-  // then only clear the table if the slot is not the last active one.
-
   Level_two_translation_table *l2tt;
 
   if (Local_L1TT->entry[0].type == 1) {
@@ -1087,13 +1078,83 @@ void MMU_switch_to( TaskSlot *slot )
 
     Local_L1TT->entry[i].handler = check_task_slot_l1;
   }
+}
+
+static void clear_pipes_area()
+{
+  Level_two_translation_table *l2tt;
+
+  extern char pipes_base;
+  extern char pipes_top;
+  uint32_t base = (uint32_t) &pipes_base;
+  uint32_t top = (uint32_t) &pipes_top;
+
+  for (int i = base >> 20; i < top >> 20; i++) {
+    if (Local_L1TT->entry[i].type == 1) {
+      asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); // Free the l2tt.
+    }
+
+    Local_L1TT->entry[i].handler = check_task_slot_l1;
+  }
+}
+
+static void clear_svc_stack_area()
+{
+  Level_two_translation_table *l2tt;
+
+  extern uint32_t svc_stack_top;
+  arm32_ptr top_ptr = { .rawp = &svc_stack_top };
+
+  assert( Local_L1TT->entry[top_ptr.section].type == 1 );
+
+  // This will always have been previously initialised
+  l2tt = find_table_from_l1tt_entry( Local_L1TT->entry[top_ptr.section] );
+
+  uint32_t entry = top_ptr.page;
+  while (entry > 0 && l2tt->entry[--entry].handler != check_task_slot_l2) {
+    l2tt->entry[entry].handler = check_task_slot_l2;
+  }
+  entry = 0; // SharedCLibrary workspace (yuk!)
+  while (entry < top_ptr.page && l2tt->entry[entry].handler != check_task_slot_l2) {
+    l2tt->entry[entry++].handler = check_task_slot_l2;
+  }
+}
+
+void MMU_switch_to( TaskSlot *slot )
+{
+  bool reclaimed = claim_lock( &shared.mmu.lock );
+  assert( !reclaimed ); // IDK, seems sus.
+
+  // Write0( "Switching to slot " ); WriteNum( slot ); Space; WriteNum( TaskSlot_asid( slot ) ); NewLine;
+  // FIXME Only clear what's used
+  // FIXME deal with slots that go over the first MiB
+  // Note: My idea is to try to keep memory as contiguous as possible, and have
+  // two or possibly three sub-MiB translation tables for the first MiB (bottom_MiB_tt)
+  // and the slot's top MiB (and possibly the one below it, in case a task regularly
+  // modifies its memory by small amounts above and below a MiB boundary).
+
+  // TODO record which slot was last active, configure all translation table
+  // walks to cause an exception, then only clear the table if the slot is
+  // not the last active one.
+  //   asm ( "mcr p15, 0, %[ttbcr], c2, c0, 2" : : [ttbcr] "r" (0x10) );
+  // (Set bit PD0) - get a fault on TLB miss
+
+  // Note: remember which slot most recently updated the slot-specific areas
+  // of the translation tables, so switching away and back can be done without
+  // doing anything as long as there's no TLB miss in the meantime. TODO
+
+  // These are the areas that TaskSlots are known to update with non-Global
+  // entries.
+  clear_app_area();
+  clear_pipes_area();
+  clear_svc_stack_area();
+  
 
   // Set CONTEXTIDR
   asm ( "mcr p15, 0, %[asid], c13, c0, 1" : : [asid] "r" (TaskSlot_asid( slot )) );
-  // FIXME: clear out L2TTs, or disable walks until one is needed, then clear them
+
   if (!reclaimed) release_lock( &shared.mmu.lock );
 
-  // This appears to be necessary. Perhaps it should be in MMU_switch_to.
   clean_cache_to_PoC();
 }
 
@@ -1121,6 +1182,7 @@ static void map_at( void *va, uint32_t pa, uint32_t size, bool shared )
     bool kernel_memory = ((uint32_t) va >= 0xfff00000);
 
     // FIXME FIXME FIXME this is horrible. The console task in the HAL needs to be able to read this
+    // It will go away when the standard pipe mapping code is written.
     uint32_t v = (uint32_t) va;
     extern uint32_t debug_pipe;
     uint32_t p = (uint32_t) &debug_pipe;
@@ -1193,6 +1255,14 @@ void MMU_map_at( void *va, uint32_t pa, uint32_t size )
 
 void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
 {
+  if (size < naturally_aligned && size > 4096) {
+    // FIXME Horrible hack; map_at needs changing
+    for (int i = 0; i < size; i+= 4096) {
+      map_at( (uint32_t) va + i, pa + i, 4096, true );
+    }
+  }
+  else
+
   map_at( va, pa, size, true );
 }
 
@@ -1220,6 +1290,7 @@ void MMU_map_device_at( void *va, uint32_t pa, uint32_t size )
       asm ( "bkpt 90" ); // Beaten to it by another core, which wrote something else
 
     shared.mmu.kernel_l2tt->entry[pointer.page] = entry;
+    WriteNum( pa ); WriteS( " mapped at " ); WriteNum( va ); NewLine;
   }
   else {
     for (;;) { asm ( "bkpt 10" ); }

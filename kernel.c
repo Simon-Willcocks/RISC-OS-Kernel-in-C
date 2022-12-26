@@ -85,10 +85,9 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
   Initialise_privileged_mode_stacks();
   Initialise_privileged_mode_stack_pointers();
 
-  extern uint32_t svc_stack_top;
-
-  // Up until now, we've been running with the minimal boot stack set up in boot.c
-  asm volatile ( "mov sp, %[sp]" : : [sp] "r" (&svc_stack_top) );
+  // We're going to stick with the tiny boot SVC stack until the first
+  // TaskSlot is initialised. (Assuming you're not doing something else
+  // from this point on in Boot.)
 
   Boot();
 

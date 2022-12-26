@@ -650,7 +650,7 @@ void __attribute__(( noinline )) C_WrchV_handler( char c, struct core_workspace 
     }
   }
   else {
-    add_to_display( 128 + c, workspace );
+    add_to_display( c, workspace );
   }
 
   clear_VF();
@@ -1057,7 +1057,7 @@ void __attribute__(( noinline )) c_start_display( struct core_workspace *workspa
     register uint32_t vector asm( "r0" ) = 42;
     register void *routine asm( "r1" ) = handler;
     register struct workspace *handler_workspace asm( "r2" ) = workspace->shared;
-    asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
+    asm ( "svc %[swi]" : : [swi] "i" (OS_Claim | Xbit), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
   }
 
   WriteS( "HAL obtained GraphicsV" ); NewLine;
@@ -1463,7 +1463,7 @@ static void uart_interrupt_task( uint32_t handle, struct core_workspace *ws, int
 
 static uint32_t start_uart_interrupt_task( struct core_workspace *ws, int device )
 {
-  register uint32_t request asm ( "r0" ) = 0; // Create Thread
+  register uint32_t request asm ( "r0" ) = 254; // 0; // Create Thread
   register void *code asm ( "r1" ) = uart_interrupt_task;
   register void *stack_top asm ( "r2" ) = (uint32_t) (&ws->shared->uart_task_stack+1);
   register struct core_workspace *workspace asm( "r3" ) = ws;
@@ -1522,7 +1522,7 @@ static uint32_t start_console_task( struct core_workspace *ws, uint32_t pipe )
 {
   uint64_t *stack = (void*) ((&ws->console_stack)+1);
 
-  register uint32_t request asm ( "r0" ) = 0; // Create Thread
+  register uint32_t request asm ( "r0" ) = 254; // FIXME FIXME FIXME RunFree
   register void *code asm ( "r1" ) = console_task;
   register void *stack_top asm ( "r2" ) = stack;
   register struct core_workspace *workspace asm( "r3" ) = ws;
@@ -1602,7 +1602,7 @@ show_word( this_core * (1920/4), 48, &qa7->Core_write_clear[this_core], first_en
     register uint32_t vector asm( "r0" ) = 2;
     register void *routine asm( "r1" ) = handler;
     register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
-    asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
+    asm ( "svc %[swi]" : : [swi] "i" (OS_Claim | Xbit), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
   }
 
   {
@@ -1610,7 +1610,7 @@ show_word( this_core * (1920/4), 48, &qa7->Core_write_clear[this_core], first_en
     register uint32_t vector asm( "r0" ) = 3;
     register void *routine asm( "r1" ) = handler;
     register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
-    asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
+    asm ( "svc %[swi]" : : [swi] "i" (OS_Claim | Xbit), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
 
     add_string( "HAL obtained WrchV\n\r", &workspace->core_specific[this_core] );
   }
@@ -1620,7 +1620,7 @@ show_word( this_core * (1920/4), 48, &qa7->Core_write_clear[this_core], first_en
     register uint32_t vector asm( "r0" ) = 0x1a;
     register void *routine asm( "r1" ) = handler;
     register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
-    asm ( "svc %[swi]" : : [swi] "i" (0x2001f), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
+    asm ( "svc %[swi]" : : [swi] "i" (OS_Claim | Xbit), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
 
     add_string( "HAL obtained MouseV\n\r", &workspace->core_specific[this_core] );
   }
@@ -1754,9 +1754,11 @@ void start_wimp( uint32_t *regs, struct core_workspace *workspace )
 {
   if (workspace->shared->wimp_started == 0) {
     workspace->shared->wimp_started = 1;
+    /*
     regs[0] = (uint32_t) "<Boot$Dir>.!Blocks.!Run";
     regs[1] = 0; // Claim service
     // FIXME deal with Wimp exiting StartedWimp/Reset
+    */
   }
 }
 

@@ -1,4 +1,4 @@
-Modules
+|Modules
 Set Boot$Dir <Obey$Dir>
 echo <CPU$Core>
 if "<CPU$Core>"="" Then Echo CPU$Core not found

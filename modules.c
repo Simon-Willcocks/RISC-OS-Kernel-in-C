@@ -1230,14 +1230,6 @@ static bool do_Module_ExtendBlock( svc_registers *regs )
 
 static bool do_Module_CreateNewInstantiation( svc_registers *regs )
 {
-  // I have a feeling these will have to be MP aware modules...
-  // NO! This is totally the wrong way around.
-  // Most legacy modules expect to be the only copy of themselves on the system.
-  // That's the only way they will work.
-  // The FileSystem protection system should be extended to regular modules. 
-  // We need a generic delegate_operation
-  // On the other hand, while SINGLE_CORE is defined, this will do, I think.
-
   char const *module_name = (void*) regs->r[1];
 
   module *m = find_module( module_name );
@@ -2082,11 +2074,9 @@ WriteFunc;
   return run_vector( regs, 4 );
 }
 
-extern bool delegate_operation( svc_registers *regs, int operation );
-
 bool do_OS_CLI( svc_registers *regs )
 {
-  return delegate_operation( regs, 5 );
+  return run_vector( regs, 5 );
 }
 /*
 WriteFunc;
@@ -2802,6 +2792,74 @@ static bool is_file_command( char const *command )
   return false;
 }
 
+// In: varname
+// In: buf
+// InOut: len
+// Out: type
+static error_block *read_var_into( char const *varname, char *buf, uint32_t *len, uint32_t *type )
+{
+  register const char *var_name asm( "r0" ) = varname;
+  register char *value asm( "r1" ) = buf;
+  register uint32_t size asm( "r2" ) = *len;
+  register uint32_t context asm( "r3" ) = 0;
+  register uint32_t convert asm( "r4" ) = 0;
+
+  register uint32_t var_type asm( "r4" );
+
+  error_block *error;
+
+  asm volatile ( "svc %[swi]"
+             "\n  movvs %[err], r0"
+             "\n  movvc %[err], #0"
+      : "+r" (size)
+      , "+r" (context)
+      , "=r" (var_type)
+      , [err] "=r" (error)
+      : [swi] "i" (OS_ReadVarVal | Xbit)
+      , "r" (var_name)
+      , "r" (value)
+      , "r" (size)
+      , "r" (context)
+      , "r" (convert)
+      : "lr", "cc", "memory" );
+
+  *len = size;
+  *type = var_type;
+
+  asm volatile ( "" : : : "r0", "r1", "r2", "r3", "r4" );
+
+  return error;
+}
+
+static error_block *substitute_args_into( char const *command, char *buf, uint32_t *len, char const *template, uint32_t tlen )
+{
+  error_block *error;
+
+  register char const *c asm ( "r0" ) = command;
+  register char *r asm ( "r1" ) = buf;
+  register uint32_t size asm ( "r2" ) = *len;
+  register char const *t asm ( "r3" ) = template;
+  register uint32_t ts asm ( "r4" ) = tlen;
+  asm volatile ( "svc %[swi]"
+             "\n  movvs %[err], r0"
+             "\n  movvc %[err], #0"
+             : [err] "=r" (error)
+             , "+r" (size)
+             : [swi] "i" (OS_SubstituteArgs32 | Xbit)
+             , "r" (c)
+             , "r" (r)
+             , "r" (size)
+             , "r" (t)
+             , "r" (ts)
+             : "lr", "cc", "memory" );
+
+  *len = size;
+
+  asm volatile ( "" : : : "r0", "r1", "r2", "r3", "r4" );
+
+  return error;
+}
+
 static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
 {
   char const *command = (void*) regs[0];
@@ -2816,10 +2874,11 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
   command = discard_leading_characters( command );
   if (*command == '|') return true; // Comment, nothing to do
   if (*command < ' ') return true; // Nothing on line, nothing to do
-  bool run = false;
-  if (*command == '/') {
+  bool run = (*command == '/');
+  bool run_free = (*command == '&');
+
+  if (run || run_free) {
     command++;
-    run = true;
   }
   else if ((command[0] == 'R' || command[0] == 'r') &&
            (command[1] == 'U' || command[1] == 'u') &&
@@ -2828,6 +2887,11 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
             command[3] == '\t' || command[3] == '\n')) {
     command += 3;
     run = true;
+  }
+
+  if (run_free) {
+    TaskSlot *child = TaskSlot_new( command );
+    TaskSlot_detatch_from_creator( child );
   }
 
   if (run) {
@@ -2857,20 +2921,13 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
     WriteS( "Looking for " ); Write0( variable ); NewLine;
 #endif
     char result[256];
-    register const char *var_name asm( "r0" ) = variable;
-    register char *value asm( "r1" ) = result;
-    register uint32_t size asm( "r2" ) = sizeof( result );
-    register uint32_t context asm( "r3" ) = 0;
-    register uint32_t convert asm( "r4" ) = 0;
-
-    asm volatile ( "svc 0x20023\n  movvs %[err], r0\n  movvc %[err], #0"
-        : "=r" (size), [err] "=r" (error)
-        : "r" (var_name), "r" (value), "r" (size), "r" (context), "r" (convert)
-        : "lr", "cc" );
+    uint32_t length = sizeof( result );
+    uint32_t type;
+    error = read_var_into( variable, result, &length, &type );
     if (error == 0) {
       WriteS( "Alias$ variable found" ); NewLine;
-      Write0( variable ); WriteS( "Exists: " ); Write0( result );
-      for (;;) asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
+      Write0( variable ); WriteS( " exists: " ); Write0( result );
+      // for (;;) { Yield(); }
     }
   }
 
@@ -2918,47 +2975,23 @@ WriteS( "Looking for file " ); Write0( command ); NewLine;
       WriteS( "Looking for " ); Write0( runtype ); NewLine;
 
       char template[256];
-      register const char *var_name asm( "r0" ) = runtype;
-      register char *value asm( "r1" ) = template;
-      register uint32_t size asm( "r2" ) = sizeof( template );
-      register uint32_t context asm( "r3" ) = 0;
-      register uint32_t convert asm( "r4" ) = 0;
-      error_block *error;
-      asm volatile ( "svc 0x20023"
-                 "\n  movvs %[err], r0"
-                 "\n  movvc %[err], #0"
-          : "=r" (size), [err] "=r" (error)
-          : "r" (var_name), "r" (value), "r" (size), "r" (context), "r" (convert)
-          : "lr", "cc", "memory" );
-
-      uint32_t varlen = size;
+      uint32_t varlen = sizeof( template );
+      uint32_t type;
+      error_block *error = read_var_into( runtype, template, &varlen, &type );
 
       if (error == 0) {
         template[varlen] = '\0';
         Write0( runtype ); WriteS( " variable found \"" ); Write0( template ); WriteS( "\"" ); NewLine;
         char to_run[1024];
-        register char const *c asm ( "r0" ) = command;
-        register char *r asm ( "r1" ) = to_run;
-        register uint32_t rs asm ( "r2" ) = sizeof( to_run );
-        register char const *t asm ( "r3" ) = template;
-        register uint32_t ts asm ( "r4" ) = varlen;
-        asm volatile ( "svc %[swi]"
-                   "\n  movvs %[err], r0"
-                   "\n  movvc %[err], #0"
-                   : [err] "=r" (error)
-                   : [swi] "i" (OS_SubstituteArgs32 | Xbit)
-                   , "r" (c)
-                   , "r" (r)
-                   , "r" (rs)
-                   , "r" (t)
-                   , "r" (ts)
-                   , "m" (to_run)
-                   : "lr", "cc", "memory" );
+        uint32_t length = sizeof( to_run );
+        error = substitute_args_into( command, to_run, &length, template, varlen );
+
         if (error != 0) {
           regs[0] = (uint32_t) error;
           return false;
         }
 
+        to_run[length] = '\0';
         WriteS( "Command to run: " ); Write0( to_run ); NewLine;
         error = run_module_command( to_run );
         WriteS( "Command returned" ); NewLine;
@@ -3534,10 +3567,15 @@ static void __attribute__(( naked, noreturn )) idle_thread()
     asm volatile ( "mov r0, #3 // Sleep"
                "\n  mov r1, #0 // For no time - yield"
                "\n  svc %[swi]"
+//               "\n  bcs 0f // No other tasks running (could report being bored)"
+//               "\n  wfi"
+//               "\n0:"
         :
         : [swi] "i" (OS_ThreadOp)
+        , "r" (0x65656565) // Something to look out for in qemu output
         : "r0", "r1", "lr", "memory" );
     // TODO: Pootle around, tidying up memory, etc.
+    // Better: wake a task that does that in an interruptable way
     // Don't do any I/O!
     // Don't forget to give it some stack!
     //asm volatile ( "wfi" );
@@ -3597,8 +3635,6 @@ void PreUsrBoot()
   }
 
 workspace.kernel.frame_buffer_initialised = 1;
-
-show_word( workspace.core_number * (1920/4), 70, &workspace.task_slot.running, Green ); 
 }
 
 static uint32_t start_idle_task()
@@ -3622,29 +3658,31 @@ static uint32_t start_idle_task()
   return handle;
 }
 
-void Boot()
+static void __attribute__(( noreturn, noinline )) BootWithFullSVCStack()
 {
-  TaskSlot *slot = TaskSlot_new( 0, 0 ); // Root slot, does not require RMA or regs
-
-  assert( slot != 0 );
-  assert( workspace.task_slot.running != 0 );
-  assert( TaskSlot_now() == slot );
-
-  MMU_switch_to( slot );
-
   start_idle_task(); // The one that's always there
 
   PreUsrBoot();
 
+WriteS( "Location of shared.task_slot.special_waiting_lock: " ); WriteNum( &shared.task_slot.special_waiting_lock ); NewLine;
+WriteS( "Physical shared.task_slot.special_waiting_lock: " ); WriteNum( &shared.task_slot.special_waiting_lock ); NewLine;
   // No App memory initially, but a small stack in the RMA
-
+union {
+  struct {
+    uint32_t wanted:1;
+    uint32_t handle:31;
+  };
+  uint32_t raw;
+} number = { .wanted = 1 };
+WriteS( "Wanted? " ); WriteNum( number.raw ); NewLine;
   // The HAL will have ensured that no extraneous interrupts are occuring,
   // so we can reset the SVC stack, enable interrupts and drop to USR mode.
   static uint32_t const root_stack_size = 1024;
   uint32_t *stack = rma_allocate( root_stack_size * sizeof( uint32_t ) );
   extern uint32_t svc_stack_top;
 
-  // Named registers so that no banked register is used
+  // Named registers so that no banked register is used (we're changing
+  // processor mode)
   register uint32_t *stack_top asm ( "r0" ) = &svc_stack_top;
   register uint32_t *usr_stack_top asm ( "r1" ) = &stack[root_stack_size];
 
@@ -3660,3 +3698,26 @@ void Boot()
   __builtin_unreachable();
 }
 
+
+void Boot()
+{
+  TaskSlot *slot = TaskSlot_first();
+
+  assert( slot != 0 );
+  assert( Task_now() != 0 );
+  assert( TaskSlot_now() == slot );
+
+  MMU_switch_to( slot );
+
+  extern uint32_t svc_stack_top;
+
+  // Up until now, we've been running with the minimal boot stack set up in 
+  // boot.c
+  // We'll use it again for switching between slots which now have their own
+  // SVC stack.
+  asm volatile ( "mov sp, %[sp]"
+             "\n  b BootWithFullSVCStack"
+             :
+             : [sp] "r" (&svc_stack_top)
+             , "m" (BootWithFullSVCStack) );
+}

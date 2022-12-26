@@ -18,12 +18,26 @@
 typedef struct Task Task;
 typedef struct svc_registers svc_registers;
 
-TaskSlot *TaskSlot_new( char const *command_line, svc_registers *regs );
-// Replaces the old application, owning the same application memory.
+// Root slot, does not require RMA or regs. Call once only per core.
+TaskSlot *TaskSlot_first();
+
+// New TaskSlot and a Task to run the command, replacing the calling
+// Task which will be resumed when the slot exits or
+// TaskSlot_detatch_from_creator is called.
+// The new slot will have NO application memory allocted to it.
+TaskSlot *TaskSlot_new( char const *command_line );
+
+// Resume the task that created the TaskSlot, returning it a handle to
+// the independently running program.
+void TaskSlot_detatch_from_creator( TaskSlot *slot );
+
+// Replaces the old application, using the same application memory.
 void TaskSlot_new_application( char const *command, char const *args );
+
 Task *Task_new( TaskSlot *slot );
 
 TaskSlot *TaskSlot_now();
+Task *Task_now();
 
 uint32_t TaskSlot_Himem( TaskSlot *slot );
 char const *TaskSlot_Command( TaskSlot *slot );
@@ -41,6 +55,13 @@ physical_memory_block Kernel_physical_address( uint32_t va );
 void __attribute__(( noinline )) do_FSControl( uint32_t *regs );
 void __attribute__(( noinline )) do_UpCall( uint32_t *regs );
 
+// While waiting for a full re-write, block the task until there's
+// no-one else using the non-reentrant kernel, then re-try the SWI
+// from the point it was called (which must always be usr32 mode, atm).
+bool Task_kernel_in_use( svc_registers *regs );
+void Task_kernel_release();
+
+
 struct TaskSlot_workspace {
   Task *running;        // The task that is running on this core
   Task *runnable;       // The tasks that may only run on this core
@@ -53,12 +74,7 @@ struct TaskSlot_workspace {
   // FIXME debug only
   uint32_t irqs_usr;
   uint32_t irqs_svc;
-  Task *last_interrupted[6];
-  uint32_t interrupted_at[6];
-  Task *lowest_temp;
-
-  Task *protected_task; // The user task that the temp task is protecting
-
+  uint32_t irqs_sys;
 };
 
 struct TaskSlot_shared_workspace {
@@ -69,10 +85,10 @@ struct TaskSlot_shared_workspace {
 
   // Until filesystems learn to play along, only one task at a time can
   // make filesystem calls.
-  uint32_t filesystem_lock;
-  Task *filesystem_owner;
-  Task *filesystem_blocked_head;
-  Task **filesystem_blocked_tail;
+  Task *special_waiting;
+  uint32_t special_lock; // Task lock
+  uint32_t depth; // How many times special_lock has been claimed by this task
+  uint32_t special_waiting_lock; // Core lock
 
   Task *runnable;       // Tasks that may run on any core
   Task **core_runnable; // Array of Tasks that may run on that core

@@ -212,7 +212,8 @@ static bool do_OS_CallBack( svc_registers *regs ) { Write0( __func__ ); NewLine;
 static bool do_OS_EnterOS( svc_registers *regs )
 {
   //Write0( __func__ ); NewLine;
-  regs->spsr = (regs->spsr & ~15) | 0x1f; // System state: using sp_usr and lr_usr
+  // regs->spsr = (regs->spsr & ~15) | 0x1f; // System state: using sp_usr and lr_usr
+  regs->spsr = (regs->spsr & ~15) | 0x13; // SVC, with interrupts unchanged
   return true;
 }
 
@@ -2042,6 +2043,8 @@ static bool do_OS_VduCommand( svc_registers *regs )
   case 4: workspace.vectors.zp.vdu_drivers.ws.CursorFlags |= ~(1 << 30); return true;
   case 5: workspace.vectors.zp.vdu_drivers.ws.CursorFlags |= (1 << 30); return true;
   case 7: return Bell();
+  case 14: return true; // Paged mode on
+  case 15: return true; // Paged mode off
   case 16: return CLG( regs );
   case 17: return SetTextColour( regs );
   case 18: return SetGraphicsColour( regs );
@@ -2376,10 +2379,15 @@ static swifn os_swis[256] = {
   [OS_SubstituteArgs32] = do_OS_SubstituteArgs32,
 //  [OS_HeapSort32] = do_OS_HeapSort32,
 
-/*
+  // Can't use the legacy code for these two routines.
+  // Taking exception 3 [Prefetch Abort]
+  // ...from EL3 to EL3 VBAR_EL 0
+  // ...with ESR 0x21/0x8600003f
+  // ...with IFSR 0x5 IFAR 0xe3c000ce
+
   [OS_ConvertStandardDateAndTime] =  do_OS_ConvertStandardDateAndTime,
   [OS_ConvertDateAndTime] =  do_OS_ConvertDateAndTime,
-*/
+
   [OS_ConvertHex1] =  do_OS_ConvertHex1,
   [OS_ConvertHex2] =  do_OS_ConvertHex2,
   [OS_ConvertHex4] =  do_OS_ConvertHex4,
@@ -2510,7 +2518,8 @@ static void trace_wimp_calls_out( svc_registers *regs, uint32_t number )
     NewLine;
 }
 
-static bool special_case( svc_registers *regs, uint32_t number )
+// This function should shrink and disappear in time
+static bool special_swi( svc_registers *regs, uint32_t number )
 {
   if (OS_ValidateAddress == (number & ~Xbit)) { // FIXME
     regs->spsr &= ~CF;
@@ -2531,9 +2540,47 @@ static bool special_case( svc_registers *regs, uint32_t number )
   return false;
 }
 
+static bool swi_blocked( svc_registers *regs, uint32_t number )
+{
+  switch (number & ~Xbit) { // FIXME
+  case OS_CLI:
+  case OS_File:
+  case OS_Args:
+  case OS_BGet:
+  case OS_BPut:
+  case OS_GBPB:
+  case OS_Find:
+  case OS_FSControl:
+    {
+      // One caller at a time, system wide for now.
+      return Task_kernel_in_use( regs );
+    }
+  }
+
+  return false;
+}
+
+static void swi_completed( uint32_t number )
+{
+  switch (number & ~Xbit) { // FIXME
+  case OS_CLI:
+  case OS_File:
+  case OS_Args:
+  case OS_BGet:
+  case OS_BPut:
+  case OS_GBPB:
+  case OS_Find:
+  case OS_FSControl:
+    {
+      // One caller at a time, system wide for now.
+      return Task_kernel_release();
+    }
+  }
+}
+
 void run_transient_callback( transient_callback *callback )
 {
-  // WriteS( "Running callback " ); WriteNum( callback->code ); NewLine;
+  WriteS( "Running callback " ); WriteNum( callback->code ); NewLine;
   run_handler( callback->code, callback->private_word );
 }
 
@@ -2569,9 +2616,11 @@ void __attribute__(( noinline )) execute_swi( svc_registers *regs )
 
   regs->spsr &= ~VF;
 
-  if (special_case( regs, number )) return;
-  bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
+  if (special_swi( regs, number )) return;
 
+  if (swi_blocked( regs, number )) return;
+
+  bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
 
   bool result = Kernel_go_svc( regs, number );
 
@@ -2654,4 +2703,6 @@ if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
   if (0x10 == (regs->spsr & 0x9f)) { // Not if interrupts disabled
     run_transient_callbacks();
   }
+
+  swi_completed( number );
 }

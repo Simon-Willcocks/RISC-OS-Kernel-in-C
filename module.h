@@ -33,7 +33,7 @@
  * service_call (function)
  * title (const char [])
  * help (const char [])
- * keywords (const char [])
+ * keywords (has to be done in assembler, afaics)
  * swi_handler (function)
  * swi_names (const char [])
  * swi_decoder (function)
@@ -93,6 +93,25 @@ typedef unsigned        size_t;
 typedef unsigned        bool;
 #define true  (0 == 0)
 #define false (0 != 0)
+
+/* How to declare commands. FIXME: needs a few macros.
+
+asm ( "keywords:"
+ "\n  .asciz \"CommandA\""
+ "\n  .align"
+ "\n  .word command_a_code - header"
+ "\n  .word 0xaabbccdd" // dd = min number parameters
+                        // bb = max number parameters
+                        // cc = GSTrans map for first 8 parameters
+                        // aa = Flags
+                        //      0x80 Filing system command
+                        //      0x40 Match by status/configure
+                        //      0x20 Help is code, not a string
+ "\n  .word commanda_invalid_status_message-header" // or zero
+ "\n  .word commanda_help_text-header" // or zero
+<repeat the above for each command>
+ "\n  .word 0"
+*/
 
 #define assert( c ) while (!(c)) { asm( "bkpt 65535" ); }
 
@@ -218,5 +237,4 @@ static inline void debug_number( uint32_t num )
 #define NewLine WriteS( "\n" );
 #define Space WriteS( " " );
 #define WriteNum( n ) debug_number( n )
-
 

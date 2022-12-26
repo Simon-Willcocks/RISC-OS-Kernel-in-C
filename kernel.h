@@ -66,7 +66,10 @@ struct callback {
 // Stacks sizes need to be checked (or use the zp memory)
 struct Kernel_workspace {
   uint32_t frame_buffer_initialised; // FIXME: Remove: this is for debugging only, and only says the HAL module has been initialised
-  uint32_t svc_stack[640]; // For use until SharedCLibrary-friendly stack set up.
+
+  // For use until SharedCLibrary-friendly stack set up.
+  // And for use while swapping current task
+  uint32_t svc_stack[640];
 
   uint32_t debug_pipe;
   uint32_t debug_written; // Written, but not reported to the pipe
