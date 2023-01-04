@@ -1317,8 +1317,6 @@ static bool do_OS_PlatformFeatures( svc_registers *regs )
   return false;
 }
 
-static bool do_OS_AMBControl( svc_registers *regs ) { Write0( __func__ ); NewLine; asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); return Kernel_Error_UnimplementedSWI( regs ); }
-
 static bool do_OS_SpecialControl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_EnterUSR32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_EnterUSR26( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
@@ -2463,26 +2461,9 @@ static bool __attribute__(( noinline )) Kernel_go_svc( svc_registers *regs, uint
   return do_module_swi( regs, svc );
 }
 
-// This routine will be moved to a more sensible place (TaskSlot?) asap
-/* Default behaviour: 
- * Swap out the calling task until this task completes?
- * If the task calls Wimp_Initialise, resume the caller.
- */
-static void StartTask( svc_registers *regs )
-{
-  WriteS( "Start task: " ); Write0( regs->r[0] ); 
-  if (regs->r[1] != 0) {
-    WriteS( " " );
-    Write0( regs->r[1] );
-  }
-
-  NewLine;
-
-  // I think this will call Wimp_Initialise, which can be intercepted and the result returned from this routine
-  OSCLI( (char const *) regs->r[0] );
-
-  { register char *s asm ( "r0" ) = "Returned"; asm ( "svc 2" : : "r" (s) ); }
-}
+void StartTask( svc_registers *regs );
+void Wimp_Polling();
+void Wimp_Initialised( uint32_t handle );
 
 static void trace_wimp_calls_in( svc_registers *regs, uint32_t number )
 {
@@ -2509,13 +2490,56 @@ static void trace_wimp_calls_in( svc_registers *regs, uint32_t number )
   NewLine;
 }
 
+static bool hack_wimp_in( svc_registers *regs, uint32_t number )
+{
+  trace_wimp_calls_in( regs, number & 0x3f );
+  switch (number & 0x3f) {
+  case 0x1e:
+    WriteS( "Start task: " ); Write0( regs->r[0] ); 
+    return false;
+    StartTask( (char const *) regs->r[0] );
+    return true;
+    break;
+  case 0x00: // Wimp_Initialise
+    {
+      // Call legacy SWI code
+      // Store Wimp handle, current task in slot
+      // Special poll word
+      // Resume creator with handle?
+    }
+    break;
+  case 0x07: // Wimp_Poll
+  case 0x21: // Wimp_PollIdle
+    {
+      Wimp_Polling();
+    }
+    break;
+  }
+
+  return false;
+}
+
 static void trace_wimp_calls_out( svc_registers *regs, uint32_t number )
 {
-    WriteS( "Wimp OUT " ); WriteNum( 0x400c0 + number );
-    if (0x32 == number) {
-      Space; WriteNum( regs->r[0] );
+  WriteS( "Wimp OUT " ); WriteNum( 0x400c0 + number );
+  if (0x32 == number) {
+    Space; WriteNum( regs->r[0] );
+  }
+  NewLine;
+}
+
+static bool hack_wimp_out( svc_registers *regs, uint32_t number )
+{
+  trace_wimp_calls_out( regs, number & 0x3f );
+  switch (number & 0x3f) {
+  case 0x00: // Wimp_Initialise
+    {
+      Wimp_Initialised( regs->r[1] );
     }
-    NewLine;
+    break;
+  }
+
+  return false;
 }
 
 // This function should shrink and disappear in time
@@ -2529,8 +2553,7 @@ static bool special_swi( svc_registers *regs, uint32_t number )
   switch (number & ~Xbit) { // FIXME
   case 0x406c0 ... 0x406ff: return true; // Hourglass
   case 0x400c0 ... 0x400ff:
-    //trace_wimp_calls_in( regs, number & 0x3f );
-    if ((number & 0x3f) == 0x1e) { StartTask( regs ); regs->r[0] = 0x66666666; return true; } // FIXME: should be handle returned from Wimp_Initialise, and return only when Wimp_Poll is called...
+    return hack_wimp_in( regs, number );
     break;
   case 0x80146: regs->r[0] = 0; return true; // PDriver_CurrentJob (called from Desktop?!)
   // case 0x41506: WriteS( "Translating error " ); Write0( regs->r[0] + 4 ); NewLine; break;
@@ -2643,7 +2666,10 @@ void __attribute__(( noinline )) execute_swi( svc_registers *regs )
       case 0x606c0 ... 0x606ff: // Hourglass
         break;
       default:
-        if (e->code != 0x1e4 && e->code != 0x124 && !read_var_val_for_length) {
+        if (e->code != 0x1e4
+         && e->code != 0x124
+         && e->code != 0x16b // Bad Number (every < in a GSTrans string)
+         && !read_var_val_for_length) {
 svc_registers copy = *regs;
           NewLine;
           WriteS( "Error: " );
@@ -2696,7 +2722,7 @@ if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
 
   switch (number & ~Xbit) {
   case 0x400c0 ... 0x400ff:
-    //trace_wimp_calls_out( regs, number & 0x3f );
+    hack_wimp_out( regs, number & 0x3f );
     break;
   }
 

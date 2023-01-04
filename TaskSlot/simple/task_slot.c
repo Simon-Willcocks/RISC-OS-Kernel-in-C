@@ -52,6 +52,10 @@ struct TaskSlot {
   char const *tail;
   uint64_t start_time;
   Task *waiting;       // 0 or more tasks waiting for locks
+
+  uint32_t *wimp_poll_block;
+  Task *wimp_task;
+  uint32_t wimp_task_handle;
 };
 
 struct __attribute__(( packed, aligned( 4 ) )) Task {
@@ -683,7 +687,9 @@ TaskSlot *TaskSlot_first()
   WriteS( "TaskSlot_first " ); WriteNum( (uint32_t) slot ); NewLine;
 #endif
   Task *new_task = Task_new( slot );
-  new_task->app_task = new_task;
+
+  // There's no need to initialise the registers, current pc, etc., it
+  // will be done when this task is swapped out.
 
   workspace.task_slot.running = new_task;
 
@@ -691,6 +697,11 @@ TaskSlot *TaskSlot_first()
   assert( workspace.task_slot.running == new_task );
 
   return slot;
+}
+
+static void Bother()
+{
+  asm ( "bkpt 6" );
 }
 
 TaskSlot *TaskSlot_new( char const *command_line )
@@ -712,15 +723,16 @@ TaskSlot *TaskSlot_new( char const *command_line )
 
   Task *task = workspace.task_slot.running;
 
-  // Not the first task in the first slot for this core
   slot->creator = task;
 
   save_context( task, regs );
 
   Task *new_task = Task_new( slot );
-  new_task->app_task = new_task;
 
   dll_replace_Task( task, new_task, &workspace.task_slot.running );
+
+new_task->regs.spsr = 0x13;
+new_task->regs.lr = Bother;
 
   // May not be the case, if the debug receiver task has been triggered
   // assert( workspace.task_slot.running == new_task );
@@ -801,6 +813,7 @@ Task *Task_new( TaskSlot *slot )
 
   if (result == 0) for (;;) { asm ( "bkpt 33" ); } // FIXME: expand
 
+  result->app_task = result;
   result->slot = slot;
   result->resumes = 0;
   dll_new_Task( result );
@@ -918,6 +931,12 @@ Task *Task_now()
 void *TaskSlot_Time( TaskSlot *slot )
 {
   return &slot->start_time;
+}
+
+uint32_t TaskSlot_WimpPollBlock( TaskSlot *slot )
+{
+  assert( slot->wimp_poll_block != 0 );
+  return slot->wimp_poll_block;
 }
 
 char const *TaskSlot_Command( TaskSlot *slot )
@@ -1416,7 +1435,6 @@ static error_block *TaskOpStart( svc_registers *regs )
   Task *running = workspace.task_slot.running;
 
   Task *new_task = Task_new( running->slot );
-  new_task->app_task = new_task;
 
   assert( new_task->slot == running->slot );
 
@@ -2574,9 +2592,12 @@ bool Task_kernel_in_use( svc_registers *regs )
   Task *running = workspace.task_slot.running;
   Task *next = running->next;
 
+  // This may be a temporary task representing another, so any locks, etc.
+  // should use the application task's handle.
   uint32_t handle = handle_from_task( running->app_task );
 
   assert( next != 0 ); // There's always a next, idle tasks don't sleep.
+  assert( next != running ); // There's always a next, idle tasks don't sleep.
 
   TaskLock code = { .raw = handle };
   assert( !code.wanted );
@@ -2737,6 +2758,9 @@ bool do_OS_ReadLine( svc_registers *regs )
 
 bool do_OS_FSControl( svc_registers *regs )
 {
+if (regs->r[0] == 2) {
+WriteS( "OS_FSControl 2 " ); 
+}
   return run_vector( regs, 15 );
 }
 
@@ -2921,8 +2945,12 @@ void TempTaskDo2( void (*func)( uint32_t p1, uint32_t p2 ), uint32_t p1, uint32_
   assert( running != 0 );
 
   // This can't be on this slot's SVC stack, that would make it impossible
-  // to switch slots.
+  // to switch slots. So we need to do a proper allocate, not just declare
+  // a local variable.
   Task *temporary = Task_new( running->slot );
+
+  // This temporary task is representing another, so any locks, etc. should
+  // use the application task's handle.
   temporary->app_task = running->app_task;
 
   assert( temporary->slot == running->slot ); // Ensured by Task_new
@@ -3122,5 +3150,119 @@ void __attribute__(( naked, noreturn )) Kernel_default_svc()
       "\n  b c_run_irq_tasks" );
 
   __builtin_unreachable();
+}
+
+#if 0
+static void RunTask( char const *command )
+{
+  register const char *c asm( "r0" ) = command;
+  register error_block *result asm( "r0" );
+  asm volatile ( "svc 0x20005" : : "r" (c) : "cc" );
+}
+
+/* Swaps out the calling task until this task completes or calls 
+ * Wimp_Poll, the first time.
+ */
+void StartTask( char const *command )
+{
+  WriteS( "Start task: " ); Write0( command ); NewLine;
+
+  Task *creator = workspace.task_slot.running;
+
+  WriteS( "\"Wimp\"_StartTask " ); WriteNum( command ); NewLine;
+  WriteS( "Creator: " ); WriteNum( creator ); NewLine;
+  TaskSlot *child = TaskSlot_new( command );
+
+  assert( 0 == child->wimp_task_handle );
+  assert( 0 == child->wimp_poll_block );
+
+  Task *new_task = workspace.task_slot.running;
+
+  WriteS( "New task: " ); WriteNum( new_task ); NewLine;
+
+  assert( creator != new_task );
+
+  new_task->regs.lr = RunTask;
+  new_task->regs.spsr = 0x10;
+  new_task->banked_lr_usr = (uint32_t) task_exit;
+  new_task->banked_sp_usr = 0; // No default stack
+  new_task->regs.r[0] = TaskSlot_Command( child );
+}
+#endif
+
+void Wimp_Polling()
+{
+  Task *running = workspace.task_slot.running;
+  Task *creator = running->slot->creator;
+  TaskSlot *slot = running->slot;
+
+  assert( 0 != slot->wimp_task_handle );
+  assert( 0 != slot->wimp_poll_block );
+
+  if (creator != 0) {
+    slot->creator = 0;
+    creator->regs.r[0] = slot->wimp_task_handle;
+
+    Task *tail = running->next;
+    dll_attach_Task( creator, &tail );
+  }
+}
+
+void Wimp_Initialised( uint32_t handle )
+{
+  Task *running = workspace.task_slot.running;
+  TaskSlot *slot = running->slot;
+
+  assert( 0 == slot->wimp_task_handle );
+
+  slot->wimp_task_handle = handle;
+
+  assert( 0 == slot->wimp_poll_block );
+
+  slot->wimp_poll_block = rma_allocate( 256 );
+
+  assert( 0 != slot->wimp_poll_block );
+}
+
+bool do_OS_AMBControl( svc_registers *regs )
+{
+  enum { AMB_Allocate, AMB_Deallocate, AMB_Size, AMB_MapSlot, AMB_Info };
+
+  // Undocumented SWI!
+  // I don't even know what AMB stands for!
+  // It's application memory blocks.
+  // RiscOS/Sources/Kernel/Docs/AMBControl
+  switch (regs->r[0] & 7) {
+  case AMB_Allocate:
+    {
+      TaskSlot *slot = TaskSlot_new( "AMB" );
+      TaskSlot_adjust_app_memory( slot, regs->r[1] << 12 );
+      regs->r[2] = (uint32_t) slot;
+      return true;
+    }
+  case AMB_Deallocate:
+    {
+      asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
+    }
+  case AMB_Size:
+    {
+      int32_t change_in_pages = regs->r[1];
+      TaskSlot *slot = (TaskSlot*) regs->r[2];
+      TaskSlot_adjust_app_memory( slot, regs->r[1] << 12 );
+      WriteS( "AMBControl 2 - change size " ); WriteNum( regs->r[1] ); NewLine;
+      return true;
+    }
+  case AMB_MapSlot:
+    {
+      asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
+    }
+  default:
+    {
+    WriteS( "AMBControl " ); WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); NewLine;
+    }
+    break;
+  }
+
+  return true;
 }
 

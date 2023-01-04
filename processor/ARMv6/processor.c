@@ -23,7 +23,7 @@ extern uint32_t fiq_stack_top;
 
 void Initialise_privileged_mode_stack_pointers()
 {
-  asm ( "msr sp_und, %[stack]" : : [stack] "r" (&undef_stack_top) );
+  asm ( "msr sp_und, %[stack]" : : [stack] "r" ((&(workspace.kernel.undef_stack)) + 1) );
   asm ( "msr sp_abt, %[stack]" : : [stack] "r" (&abt_stack_top) );
   asm ( "msr sp_irq, %[stack]" : : [stack] "r" (&irq_stack_top) );
   asm ( "msr sp_fiq, %[stack]" : : [stack] "r" (&fiq_stack_top) );

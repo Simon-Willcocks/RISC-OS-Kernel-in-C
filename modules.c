@@ -971,7 +971,6 @@ WriteS( "Start address: " ); WriteNum( start_address ); NewLine;
     }
   }
 
-  // FIXME ; try out the pervy scheme for removing handlers
   TaskSlot_new_application( module_name, args );
 
   {
@@ -2670,6 +2669,7 @@ NewLine; WriteS( "Counted " ); WriteNum( result ); WriteS( " parameters in \"" )
 
 static inline error_block *Send_Service_UKCommand( char const *command )
 {
+  WriteS( "UKCommand\n\r" );
   register char const *cmd asm ( "r0" ) = command;
   register uint32_t service asm ( "r1" ) = 4;
 

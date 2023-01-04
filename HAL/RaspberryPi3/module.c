@@ -36,8 +36,6 @@ NO_swi_names;
 NO_swi_decoder;
 NO_messages_file;
 
-#define C_CLOBBERED "r0-r3,r12"
-
 const char title[] = "Raspberry Pi 3 HAL";
 
 typedef struct {
@@ -180,6 +178,7 @@ struct workspace {
   } uart_task_stack;
 
   uint32_t wimp_started;
+  uint32_t wimp_poll_word;
 
   struct core_workspace {
     struct workspace *shared;
@@ -206,17 +205,6 @@ struct workspace {
 static int core( struct core_workspace *cws )
 {
   return cws - cws->shared->core_specific;
-}
-
-static void *rma_claim( uint32_t bytes )
-{
-  // XOS_Module 6 Claim
-  register void *memory asm( "r2" );
-  register uint32_t code asm( "r0" ) = 6;
-  register uint32_t size asm( "r3" ) = bytes;
-  asm ( "svc 0x2001e" : "=r" (memory) : "r" (size), "r" (code) : "lr" );
-
-  return memory;
 }
 
 typedef struct {
@@ -1236,24 +1224,6 @@ static void wait_for_interrupt( uint32_t device )
       : "lr" );
 }
 
-static void Sleep( uint32_t time )
-{
-  register uint32_t request asm ( "r0" ) = TaskOp_Sleep;
-  register uint32_t duration asm ( "r1" ) = time;
-
-  asm volatile ( "svc %[swi]"
-      :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      , "r" (duration)
-      : "lr" );
-}
-
-static void yield()
-{
-  Sleep( 0 );
-}
-
 static void wait_until_woken()
 {
   register uint32_t request asm ( "r0" ) = TaskOp_WaitUntilWoken;
@@ -1290,7 +1260,8 @@ static void tickerv_task( uint32_t handle, struct core_workspace *ws )
     wait_until_woken();
 
     ticks++;
-    if (ticks % 10 == 0) show_word( this_core * 1920/4, 1060, ticks, Green, ws->shared ); 
+    if (ticks % 10 == 0) show_word( this_core * 1920/4, 60, ticks, Green, ws->shared ); 
+/*
 {
   register uint32_t request asm ( "r0" ) = 255;
 
@@ -1300,7 +1271,6 @@ static void tickerv_task( uint32_t handle, struct core_workspace *ws )
       , "r" (request)
       : "lr", "cc" );
 }
-/*
     for (int i = 0; i < 4; i++) {
       Space; WriteNum( qa7->Core_write_clear[i].Mailbox[3-i] );
     }
@@ -1645,7 +1615,7 @@ add_string( "starting console task ", &workspace->core_specific[this_core] );
 add_num( pipe, &workspace->core_specific[this_core] );
       uint32_t handle = start_console_task( &workspace->core_specific[this_core], pipe );
 
-      yield();
+      Yield();
     }
   }
 
@@ -1685,11 +1655,11 @@ add_num( pipe, &workspace->core_specific[this_core] );
     workspace->qa7->Core_IRQ_Source[this_core] = 0xd;
   }
 
-  if (1) {
+  if (0) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
 
-    yield(); // Let the task start the timer
+    Yield(); // Let the task start the timer
   }
   else {
     WriteS( "No timer interrupts" ); NewLine;
@@ -1699,7 +1669,7 @@ add_num( pipe, &workspace->core_specific[this_core] );
     uint32_t handle = start_uart_interrupt_task( &workspace->core_specific[this_core], 57 );
     Write0( "UART task: " ); WriteNum( handle ); NewLine;
 
-    yield(); // Let the task start listening to the uart
+    Yield(); // Let the task start listening to the uart
   }
   else {
     WriteS( "No uart interrupts" ); NewLine;
@@ -1750,22 +1720,9 @@ void register_files( uint32_t *regs )
     : "lr" );
 }
 
-void start_wimp( uint32_t *regs, struct core_workspace *workspace )
-{
-  if (workspace->shared->wimp_started == 0) {
-    workspace->shared->wimp_started = 1;
-    /*
-    regs[0] = (uint32_t) "<Boot$Dir>.!Blocks.!Run";
-    regs[1] = 0; // Claim service
-    // FIXME deal with Wimp exiting StartedWimp/Reset
-    */
-  }
-}
-
 void __attribute__(( naked )) service_call()
 {
   asm ( "teq r1, #0x77"
-    "\n  teqne r1, #0x49"
     "\n  teqne r1, #0x50"
     "\n  teqne r1, #0x60"
     "\n  movne pc, lr" );
@@ -1777,15 +1734,6 @@ void __attribute__(( naked )) service_call()
     "\n  moveq r1, #0"
     "\n  moveq r2, #0"
     "\n  moveq pc, lr" );
-
-  asm ( "teq r1, #0x49" // Service_StartWimp
-    "\n  bne 0f"
-    "\n  push { "C_CLOBBERED", lr }"
-    "\n  mov r0, sp"
-    "\n  mov r1, r12 // workspace"
-    "\n  bl start_wimp"
-    "\n  pop { "C_CLOBBERED", pc }"
-    "\n  0:" );
 
   asm ( "teq r1, #0x50"
     "\n  bne 0f"

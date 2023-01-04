@@ -82,6 +82,7 @@ bool do_OS_ExitAndDie( svc_registers *regs );
 bool do_OS_ThreadOp( svc_registers *regs );
 bool do_OS_PipeOp( svc_registers *regs ); // because it blocks tasks
 bool do_OS_ReadDefaultHandler( svc_registers *regs );
+bool do_OS_AMBControl( svc_registers *regs );
 
 // memory/
 

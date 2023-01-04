@@ -94,6 +94,10 @@ struct Kernel_workspace {
   transient_callback *transient_callbacks_pool;
   ticker_event *ticker_queue;
   ticker_event *ticker_event_pool;
+
+  struct {
+    uint32_t und[64];
+  } undef_stack;
 };
 
 struct VDU_workspace {

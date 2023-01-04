@@ -94,6 +94,8 @@ typedef unsigned        bool;
 #define true  (0 == 0)
 #define false (0 != 0)
 
+#define C_CLOBBERED "r0-r3,r12"
+
 /* How to declare commands. FIXME: needs a few macros.
 
 asm ( "keywords:"
@@ -195,6 +197,35 @@ static inline void clear_VF()
 static inline void set_VF()
 {
   asm ( "msr cpsr_f, #(1 << 28)" );
+}
+
+static inline void Sleep( uint32_t centiseconds )
+{
+  register uint32_t request asm ( "r0" ) = TaskOp_Sleep;
+  register uint32_t time asm ( "r1" ) = centiseconds; // Shift down a lot for testing!
+
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (time)
+      : "lr", "memory" );
+}
+
+static inline void Yield()
+{
+  Sleep( 0 );
+}
+
+static inline void *rma_claim( uint32_t bytes )
+{
+  // XOS_Module 6 Claim
+  register void *memory asm( "r2" );
+  register uint32_t code asm( "r0" ) = 6;
+  register uint32_t size asm( "r3" ) = bytes;
+  asm ( "svc 0x2001e" : "=r" (memory) : "r" (size), "r" (code) : "lr" );
+
+  return memory;
 }
 
 static inline void debug_string_with_length( char const *s, int length )

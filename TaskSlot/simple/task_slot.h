@@ -44,6 +44,11 @@ char const *TaskSlot_Command( TaskSlot *slot );
 char const *TaskSlot_Tail( TaskSlot *slot );
 void *TaskSlot_Time( TaskSlot *slot );
 
+// Allocate 256 bytes of RMA space one time per slot, then return
+// the same address each call.
+// Returns uint32_t to be written to r1 on Wimp_Poll(Idle)
+uint32_t TaskSlot_WimpPollBlock( TaskSlot *slot );
+
 void TaskSlot_add( TaskSlot *slot, physical_memory_block memory );
 uint32_t TaskSlot_asid( TaskSlot *slot );
 physical_memory_block Kernel_physical_address( uint32_t va );

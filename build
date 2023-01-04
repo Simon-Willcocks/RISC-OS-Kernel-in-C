@@ -155,6 +155,7 @@ build_gcc_module $HAL &&
 build_gcc_module VFPSupport &&
 build_gcc_module Portable &&
 build_gcc_module FPEmulator &&
+build_gcc_module MTWimp &&
 
 if [ -f RiscOS/Sources/Kernel/bin/Kernel_gpa ]; then
   echo Making ROM-specific script >&2 &&

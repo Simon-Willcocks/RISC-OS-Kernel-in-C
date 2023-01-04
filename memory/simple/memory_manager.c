@@ -958,11 +958,36 @@ void Kernel_failed_data_abort()
   BSOD( 1, Green );
 }
 
+// Begin FPEmulator hack to get Wimp_StartTask to complete
+void __attribute__(( noinline )) UndefinedInstruction( uint32_t regs[6], uint32_t instruction )
+{
+  // This breaks things: 
+  // WriteS( "Undefined instruction at " ); WriteNum( regs[5] ); NewLine;
+
+  // This a a do-nothing implementation.
+}
+// End FPEmulator hack to get Wimp_StartTask to complete
+
 void __attribute__(( naked, noreturn )) Kernel_default_undef()
 {
-  // When providing proper implementation, ensure the called routine is __attribute__(( noinline ))
-  // noinline attribute is required so that stack space is allocated for any local variables.
-  BSOD( 2, Yellow );
+  uint32_t *regs;
+  uint32_t instruction;
+
+  // Return address is the instruction following the undefined one,
+  // no need to change it.
+  asm volatile (
+        "srsdb sp!, #0x1b // Store return address and SPSR (UND mode)" 
+    "\n  push { "C_CLOBBERED" }"
+    "\n  mov %[regs], sp"
+    "\n  ldr %[inst], [lr, #-4]"
+    : [regs] "=r" (regs)
+    , [inst] "=r" (instruction) );
+
+  UndefinedInstruction( regs, instruction );
+
+  asm ( "pop { "C_CLOBBERED" }"
+    "\n  rfeia sp! // Restore (modified) execution and SPSR"
+      );
 }
 
 void __attribute__(( naked, noreturn )) Kernel_default_reset() 

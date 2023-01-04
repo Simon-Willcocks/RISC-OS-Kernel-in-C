@@ -799,7 +799,7 @@ void Initialise_privileged_mode_stacks()
 {
   extern uint32_t stack_limit; // Not really a pointer!
   extern uint32_t svc_stack_top;
-  extern uint32_t undef_stack_top;
+  //extern uint32_t undef_stack_top;
   extern uint32_t abt_stack_top;
   extern uint32_t irq_stack_top;
   extern uint32_t fiq_stack_top;
@@ -829,7 +829,7 @@ void Initialise_privileged_mode_stacks()
   // FIXME: These can all be made very small...
   // These modes will simply store the task state and tell another task
   // to deal with the problem.
-  setup_stack_pages( &undef_stack_top, &stack_limit );
+  // setup_stack_pages( &undef_stack_top, &stack_limit );
   setup_stack_pages( &abt_stack_top, &stack_limit );
   setup_stack_pages( &irq_stack_top, &stack_limit );
   setup_stack_pages( &fiq_stack_top, &stack_limit );
@@ -1258,7 +1258,7 @@ void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
   if (size < naturally_aligned && size > 4096) {
     // FIXME Horrible hack; map_at needs changing
     for (int i = 0; i < size; i+= 4096) {
-      map_at( (uint32_t) va + i, pa + i, 4096, true );
+      map_at( (void*) (i + (uint32_t) va), pa + i, 4096, true );
     }
   }
   else
