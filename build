@@ -97,7 +97,7 @@ function resourcefile {
   number $L
   number $(( 0xfff00000 + (0x$T << 8) ))
   number 0 # Timestamp zero
-  number $L
+  number $S
   number 0x13 # Attributes
   paddedstring $N
   number $(( 4 + $L ))
