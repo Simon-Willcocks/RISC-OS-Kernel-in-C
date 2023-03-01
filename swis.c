@@ -208,7 +208,23 @@ static bool do_OS_IntOff( svc_registers *regs )
   return true;
 }
 
-static bool do_OS_CallBack( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+static bool do_OS_CallBack( svc_registers *regs )
+{
+  register uint32_t handler asm ( "r0" ) = 7; // CallBack
+  register void *address asm ( "r1" ) = regs->r[1];
+  register uint32_t buffer asm ( "r3" ) = regs->r[0]; // Buffers
+  asm ( "svc 0x20040" // XOS_ChangeEnvironment
+    : "+r" (address)  // clobbered, but can't go in the clobber list...
+    , "+r" (handler)  // clobbered, but can't go in the clobber list...
+    , "+r" (buffer)   // clobbered, but can't go in the clobber list...
+    : "r" (handler)
+    , "r" (address)
+    , "r" (buffer)
+    : "r2", "lr" );
+
+  return true;
+}
+
 static bool do_OS_EnterOS( svc_registers *regs )
 {
   //Write0( __func__ ); NewLine;
@@ -229,7 +245,6 @@ static bool do_OS_BreakPt( svc_registers *regs ) { Write0( __func__ ); NewLine; 
 static bool do_OS_BreakCtrl( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_UnusedSWI( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_UpdateMEMC( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_SetCallBack( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ReadUnsigned( svc_registers *regs )
 {
@@ -863,7 +878,7 @@ static bool do_OS_ReadMemMapInfo( svc_registers *regs )
 static bool do_OS_ReadMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SetMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool do_OS_AddCallBack( svc_registers *regs )
+static bool set_transient_callback( uint32_t code, uint32_t private )
 {
 #ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
   WriteS( "New transient callback: " ); WriteNum( regs->r[0] ); WriteS( ", " ); WriteNum( regs->r[1] ); NewLine;
@@ -879,8 +894,29 @@ static bool do_OS_AddCallBack( svc_registers *regs )
   // right or not.
   callback->next = workspace.kernel.transient_callbacks;
   workspace.kernel.transient_callbacks = callback;
-  callback->code = regs->r[0];
-  callback->private_word = regs->r[1];
+
+  callback->code = code;
+  callback->private_word = private;
+}
+
+static bool do_OS_AddCallBack( svc_registers *regs )
+{
+  set_transient_callback( regs->r[0], regs->r[1] );
+
+  return true;
+}
+
+static void __attribute__(( naked )) CallCallBack()
+{
+  asm ( "bkpt 9" );
+}
+
+static bool do_OS_SetCallBack( svc_registers *regs )
+{
+  // I don't know why this wouldn't happen anyway?
+  // Is the CallBack handler called every time the OS drops to usr32?
+  //set_transient_callback( regs->r[0], regs->r[1] );
+
   return true;
 }
 
@@ -2008,6 +2044,13 @@ static bool RestoreDefaultWindows( svc_registers *regs )
   return true;
 }
 
+static bool SetTextWindow( svc_registers *regs )
+{
+  Write0( __func__ ); NewLine;
+
+  return true;
+}
+
 static bool SetGraphicsOrigin( svc_registers *regs )
 {
   uint8_t *params = (void*) regs->r[1];
@@ -2052,6 +2095,8 @@ static bool do_OS_VduCommand( svc_registers *regs )
   case 24: return DefineGraphicsWindow( regs );
   case 25: return Plot( regs );
   case 26: return RestoreDefaultWindows( regs );
+  case 27: return true; // No effect
+  case 28: return SetTextWindow( regs );
   case 29: return SetGraphicsOrigin( regs );
   default:
     {
@@ -2506,6 +2551,12 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
       // Store Wimp handle, current task in slot
       // Special poll word
       // Resume creator with handle?
+
+      // Task description is control-terminated
+      int len = 0;
+      char *p = (void*) regs->r[2];
+      while (*p >= ' ') { len++; p++; }
+      WriteN( regs->r[2], len ); NewLine;
     }
     break;
   case 0x07: // Wimp_Poll
@@ -2516,7 +2567,7 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
     break;
   }
 
-  return false;
+  return false; // Not to be treated specially
 }
 
 static void trace_wimp_calls_out( svc_registers *regs, uint32_t number )

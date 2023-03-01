@@ -1639,7 +1639,7 @@ add_num( pipe, &workspace->core_specific[this_core] );
     workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
 
 #ifdef QEMU
-    const int slower = 1000;
+    const int slower = 100;
     Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
     workspace->ticks_per_interval = workspace->ticks_per_interval * slower;
 #endif
@@ -1655,7 +1655,7 @@ add_num( pipe, &workspace->core_specific[this_core] );
     workspace->qa7->Core_IRQ_Source[this_core] = 0xd;
   }
 
-  if (0) {
+  if (1) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
 

@@ -181,11 +181,11 @@ struct __attribute__(( packed )) OsbyteVars {
 
   uint8_t EventSemaphores[32]; // One byte for each of 32 events
 
-  uint8_t TimerAlpha[8]; // As used by time (bottom 5 bytes)
-  uint8_t TimerBeta[8]; // ................................
+  uint64_t TimerAlpha; // As used by time (bottom 5 bytes)
+  uint64_t TimerBeta; // ................................
 // both aligned to word boundaries
 
-  uint8_t RealTime[8]; // 5-byte fast real-time
+  uint64_t RealTime; // 5-byte fast real-time
 
   uint8_t PrinterActive[4]; // Handle/active flag for printer (word aligned)
 

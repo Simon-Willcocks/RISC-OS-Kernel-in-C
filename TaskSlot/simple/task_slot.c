@@ -80,27 +80,11 @@ extern uint32_t svc_stack_top;
 // For debugging only FIXME
 #include "trivial_display.h"
 
-static bool is_svc_stack_task( Task *t )
-{
-  uint32_t m = (uint32_t) t;
-  uint32_t top = ((uint32_t) &svc_stack_top);
-  uint32_t base = top & ~0xfffff;
-  return m > base && m < top;
-}
-
 static inline void show_task_state( Task *t, uint32_t colour )
 {
-  uint32_t x;
-
   if (0 != (t->regs.lr & 3)) return;
 
-  if (is_svc_stack_task( t )) {
-    const uint32_t top = (uint32_t) &svc_stack_top;
-    x = 1860 - (top - (uint32_t) t) / 16;
-  }
-  else {
-    x = (t - tasks) * 80;
-  }
+  uint32_t x = (t - tasks) * 80;
   
   show_word( x, 780, t, Red );
 
@@ -119,11 +103,11 @@ static inline bool is_irq_task( Task *t )
 
 bool show_tasks_state()
 {
-return true;
-  for (int i = 0; i < 10; i++) {
+  for (int i = 0; i < 20; i++) {
     Task *t = &tasks[i];
+      show_task_state( t, White ); //is_irq_task( t ) ? Blue : White );
     if (0 == (t->regs.lr & 1)) {
-      if (t == workspace.task_slot.running) continue;
+      //if (t == workspace.task_slot.running) continue;
       show_task_state( t, is_irq_task( t ) ? Blue : White );
     }
   }
@@ -423,20 +407,37 @@ static void __attribute__(( noinline, naked )) ignore_event()
   asm ( "bx lr" );
 }
 
-void __attribute__(( noinline, noreturn )) do_Exit( uint32_t *regs )
+static inline void Sleep( int delay );
+
+void __attribute__(( noinline )) do_Exit( uint32_t *regs )
 {
   // FIXME: What to do with any existing threads?
   // FIXME: Free the TaskSlot
   // FIXME: Free the Task
   // resume the code in the parent slot? Where? After OS_CLI?
   // Yes, I think so.
+
+  asm ( 
+    "\n  svc %[enter]" 
+    : 
+    : [enter] "i" (OS_EnterOS)
+    : "lr" );
+
+show_tasks_state();
+  TaskSlot *running = workspace.task_slot.running;
+  show_word( 1000, 80, running, Green );
+  WriteS( "Exiting " ); Write0( TaskSlot_Command( running ) ); NewLine;
+
+  asm ( "\n  svc %[leave]" : : [leave] "i" (OS_LeaveOS) : "lr" );
+
+  for (;;) { Sleep( 100000 ); }
 asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
 }
 
 static void __attribute__(( naked )) ExitHandler()
 {
   register uint32_t *regs;
-  asm ( "push { r0-r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+  asm volatile ( "push { r0-r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
   do_Exit( regs );
 }
 
@@ -444,7 +445,7 @@ static void __attribute__(( naked )) ErrorHandler()
 {
   WriteS( "Error Handler" ); NewLine; asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   register uint32_t *regs;
-  asm ( "push { r0-r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+  asm volatile ( "push { r0-r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
   do_Exit( regs );
 }
 
@@ -470,7 +471,7 @@ static const handler default_handlers[17] = {
   { 0xbadf00d8, 0, 0 },       // Breakpoint
   { 0xbadf00d9, 0, 0 },       // Escape
   { 0xbadf00da, 0, 0 },       // Event
-  { ExitHandler, 0, 0 },       // Exit
+  { ExitHandler, 0, 0 },       // Exit (entered in usr mode)
   { 0xbadf00dc, 0, 0 },       // Unused SWI
   { 0xbadf00dd, 0, 0 },       // Exception registers
   { 0, 0, 0 },                // Application space limit
@@ -704,6 +705,25 @@ static void Bother()
   asm ( "bkpt 6" );
 }
 
+void TaskSlot_start_child( TaskSlot *slot )
+{
+  // When the caller task is resumed, it will return to the point of
+  // the SWI that caused this call.
+
+  Task *task = workspace.task_slot.running;
+
+  slot->creator = task;
+
+  save_context( task, regs );
+
+  Task *new_task = Task_new( slot );
+
+  dll_replace_Task( task, new_task, &workspace.task_slot.running );
+
+new_task->regs.spsr = 0x13;
+new_task->regs.lr = Bother;
+}
+
 TaskSlot *TaskSlot_new( char const *command_line )
 {
   // This won't work unless TaskSlot_first has been called first.
@@ -718,27 +738,12 @@ TaskSlot *TaskSlot_new( char const *command_line )
   standard_svc_stack( slot );
   standard_handlers( slot );
 
-  // When resumed, it will return to the point of the SWI that caused
-  // this call.
-
-  Task *task = workspace.task_slot.running;
-
-  slot->creator = task;
-
-  save_context( task, regs );
-
-  Task *new_task = Task_new( slot );
-
-  dll_replace_Task( task, new_task, &workspace.task_slot.running );
-
-new_task->regs.spsr = 0x13;
-new_task->regs.lr = Bother;
-
   // May not be the case, if the debug receiver task has been triggered
   // assert( workspace.task_slot.running == new_task );
 
   new_command_line( slot, command_line, 0, 0 );
 
+  slot->creator = 0;
   slot->start_time = 0; // cs since Jan 1st 1900 TODO
   slot->lock = 0;
   slot->waiting = 0;
@@ -749,10 +754,6 @@ new_task->regs.lr = Bother;
   WriteS( "Name " ); Write0( slot->name ); NewLine;
   WriteS( "Tail " ); Write0( slot->tail ); NewLine;
 #endif
-
-  assert( workspace.task_slot.running != 0 );
-  // May not be the case, if the debug receiver task has been triggered
-  // assert( workspace.task_slot.running == new_task );
 
   return slot;
 }
@@ -944,6 +945,7 @@ char const *TaskSlot_Command( TaskSlot *slot )
   return slot->command;
 }
 
+// FIXME Some handlers are called in usr mode, some in svc, maybe other modes, too?
 static void CallHandler( uint32_t *regs, int number )
 {
 #ifdef DEBUG__SHOW_UPCALLS
@@ -970,7 +972,15 @@ Write0( __func__ ); Space; WriteNum( r12 ); NewLine;
 
 void __attribute__(( noinline )) do_UpCall( uint32_t *regs )
 {
+#ifdef DEBUG__SHOW_UPCALLS
+Write0( __func__ ); Space; WriteNum( regs ); NewLine;
+#endif
+
   CallHandler( regs, 16 );
+
+#ifdef DEBUG__SHOW_UPCALLS
+WriteS( "Done: " ); Space; WriteNum( regs ); NewLine;
+#endif
 }
 
 void __attribute__(( noinline )) do_FSControl( uint32_t *regs )
@@ -1606,7 +1616,7 @@ if (regs->r[0] == 254) {
   WriteS( "Creator: " ); WriteNum( creator ); NewLine;
   TaskSlot *child = TaskSlot_new( "RunFree" );
 
-  Task *new_task = workspace.task_slot.running;
+  Task *new_task = Task_new( child );
 
   WriteS( "New task: " ); WriteNum( new_task ); NewLine;
 
@@ -1624,7 +1634,9 @@ if (regs->r[0] == 254) {
   new_task->regs.r[5] = regs->r[7];
   new_task->regs.r[6] = 0x44442222;
 
-  TaskSlot_detatch_from_creator( child );
+  // Task will run when the current task yields. Is this the desired effect?
+  Task *tail = workspace.task_slot.running->next;
+  dll_attach_Task( new_task, &tail );
 
   return true;
 }
@@ -2554,6 +2566,18 @@ static inline void Yield()
       : "r0", "r1", "lr", "memory" );
 }
 
+static inline void Sleep( int delay )
+{
+  register int sleep asm( "r0" ) = 3;
+  register int time asm( "r1" ) = delay;
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (sleep)
+      , "r" (time)
+      : "lr", "memory" );
+}
+
 void yield_whole_slot()
 {
   // Called from an interrupt task, can safely be placed as running->next,
@@ -2766,6 +2790,10 @@ WriteS( "OS_FSControl 2 " );
 
 bool __attribute__(( noreturn )) do_OS_Exit( svc_registers *regs )
 {
+#ifdef DEBUG__SHOW_UPCALLS
+Write0( __func__ ); NewLine;
+#endif
+
   Task *running = workspace.task_slot.running;
   TaskSlot *slot = running->slot;
 
@@ -2777,10 +2805,18 @@ bool __attribute__(( noreturn )) do_OS_Exit( svc_registers *regs )
   asm ( "mrs r0, cpsr"
     "\n  bic r0, #0xcf" 
     "\n  msr cpsr, r0"
-    "\n  bx r1" 
-    : : "r" (r12), "r" (code) );
+    "\n  blx r1" 
+    "\n  svc %[enter]" 
+    : 
+    : [enter] "i" (OS_EnterOS)
+    , "r" (r12)
+    , "r" (code)
+    : "lr" );
 
-  __builtin_unreachable();
+#ifdef DEBUG__SHOW_UPCALLS
+Write0( __func__ ); WriteS( "What do I do now?" ); NewLine;
+#endif
+  for (;;) asm ( "bkpt 8" );
 }
 
 bool __attribute__(( noreturn )) do_OS_ExitAndDie( svc_registers *regs )
@@ -3242,7 +3278,8 @@ bool do_OS_AMBControl( svc_registers *regs )
     }
   case AMB_Deallocate:
     {
-      asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
+      WriteS( "AMB_Deallocate TODO\n\r" );
+      // asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
   case AMB_Size:
     {
@@ -3254,6 +3291,7 @@ bool do_OS_AMBControl( svc_registers *regs )
     }
   case AMB_MapSlot:
     {
+      WriteS( "AMB_MapSlot TODO\n\r" );
       asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
   default:

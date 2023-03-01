@@ -42,6 +42,19 @@ static bool Kernel_Error_SWINameNotKnown( svc_registers *regs )
   return false;
 }
 
+static void Sleep( uint32_t centiseconds )
+{
+  register uint32_t request asm ( "r0" ) = TaskOp_Sleep;
+  register uint32_t time asm ( "r1" ) = centiseconds; // Shift down a lot for testing!
+
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (time)
+      : "lr", "memory" );
+}
+
 static inline void Yield()
 {
   asm volatile ( "mov r0, #3 // Sleep"
@@ -134,7 +147,9 @@ static inline bool run_initialisation_code( const char *env, module *m, uint32_t
   if (error != 0) {
     NewLine;
     WriteS( "\005Failed\005" );
+    Write0( error->desc );
     NewLine;
+    Sleep( 1000 );
   }
 
   return error == 0;
@@ -145,7 +160,7 @@ static inline uint32_t finalisation_code( module_header *header )
   return header->offset_to_finalisation + (uint32_t) header;
 }
 
-static bool run_service_call_handler_code( svc_registers *regs, module *m )
+static bool __attribute__(( noinline )) run_service_call_handler_code( svc_registers *regs, module *m )
 {
   register uint32_t non_kernel_code asm( "r14" ) = m->header->offset_to_service_call_handler + (uint32_t) m->header;
   register uint32_t *private_word asm( "r12" ) = m->private_word;
@@ -428,7 +443,7 @@ static inline bool riscoscmp( char const *left, char const *right )
 
 static inline void describe_service_call( svc_registers *regs )
 {
-WriteS( "*** ServiceCall_" );
+NewLine; WriteS( "*** ServiceCall_" );
 switch (regs->r[1]) {
 
 case 0x00: WriteS( "CallClaimed" ); break;
@@ -602,10 +617,12 @@ bool do_OS_ServiceCall( svc_registers *regs )
 {
   bool result = true;
   module *m = workspace.kernel.module_list_head;
+  uint32_t call = regs->r[1];
 
 #ifdef DEBUG__SHOW_SERVICE_CALLS
 int count = 0;
 describe_service_call( regs );
+WriteNum( call );
 if (m == 0) {
   WriteS( "No modules initialised\n" ); NewLine;
 }
@@ -618,11 +635,13 @@ if (m == 0) {
 #if DEBUG__SHOW_SERVICE_CALLS
 //if (regs->r[1] == 0x46 || regs->r[1] == 0x73) {
 {
-NewLine; Write0( title_string( m->header ) ); Space; WriteNum( pointer_at_offset_from( m->header, m->header->offset_to_service_call_handler ) );
+Space; Write0( title_string( m->header ) ); Space; WriteNum( pointer_at_offset_from( m->header, m->header->offset_to_service_call_handler ) );
 count++;
 }
 #endif
       result = run_service_call_handler_code( regs, m );
+
+      assert( regs->r[1] == 0 || regs->r[1] == call );
 
       if (regs->r[1] == 0) {
 #if DEBUG__SHOW_SERVICE_CALLS
@@ -633,13 +652,13 @@ count++;
     }
     else {
 #if DEBUG__SHOW_SERVICE_CALLS
-      Write0( title_string( m->header ) ); Space; WriteS( "No handler; " ); NewLine;
+      Space; Write0( title_string( m->header ) ); Space; WriteS( "No handler" );
 #endif
     }
     m = m->next;
   }
 #ifdef DEBUG__SHOW_SERVICE_CALLS
-  WriteS( "Passed to " ); WriteNum( count ); WriteS( " modules" ); NewLine;
+  NewLine; WriteS( "Passed to " ); WriteNum( count ); WriteS( " modules" ); NewLine;
 #endif
 
   regs->r[12] = r12;
@@ -943,14 +962,14 @@ Write0( (char*) regs->r[2] ); NewLine;
   void *start_address = start_code( m->header );
 
 WriteS( "Start address: " ); WriteNum( start_address ); NewLine;
-  if (m->header->offset_to_start == 0) {
+  if (start_address == 0) {
     return true;
   }
 
   {
     register uint32_t reason asm ( "r0" ) = 256; // NewApplication UpCall
     register uint32_t allowed asm ( "r0" );      // Set to zero if not allowed
-    asm ( "svc 0x20033"
+    asm volatile ( "svc 0x20033"
       : "=r" (allowed)
       : "r" (reason)
       : "lr" );
@@ -962,7 +981,7 @@ WriteS( "Start address: " ); WriteNum( start_address ); NewLine;
   {
     register uint32_t service asm ( "r1" ) = 0x2a; // Service_NewApplication
     register uint32_t allowed asm ( "r1" );        // Set to zero if not allowed
-    asm ( "svc 0x20030"
+    asm volatile ( "svc 0x20030"
       : "=r" (allowed)
       : "r" (service)
       : "lr" );
@@ -976,7 +995,7 @@ WriteS( "Start address: " ); WriteNum( start_address ); NewLine;
   {
     register uint32_t handler asm ( "r0" ) = 15; // CAOPointer
     register void *address asm ( "r1" ) = start_address;
-    asm ( "svc 0x20040" // XOS_ChangeEnvironment
+    asm volatile ( "svc 0x20040" // XOS_ChangeEnvironment
       : "=r" (address)  // clobbered, but can't go in the clobber list...
       , "=r" (handler)  // clobbered, but can't go in the clobber list...
       : "r" (handler)
@@ -2670,6 +2689,8 @@ NewLine; WriteS( "Counted " ); WriteNum( result ); WriteS( " parameters in \"" )
 static inline error_block *Send_Service_UKCommand( char const *command )
 {
   WriteS( "UKCommand\n\r" );
+  Write0( command );
+
   register char const *cmd asm ( "r0" ) = command;
   register uint32_t service asm ( "r1" ) = 4;
 
@@ -2686,13 +2707,18 @@ static inline error_block *Send_Service_UKCommand( char const *command )
     , "r" (service)
     : "memory", "lr", "cc", "r2", "r3", "r4", "r5", "r6", "r7", "r8" );
 
-  if (!claimed) {
-    WriteS( "UKCommand not claimed, passing to file system" );
+  if (error != 0) {
+    Write0( error->desc ); NewLine;
+  }
+  else if (!claimed) {
+    WriteS( "UKCommand not claimed, passing to file system" ); NewLine;
 
     static error_block not_found = { 214, "Command not found" };
 
     return &not_found;
   }
+  else
+    WriteS( "UKCommand claimed" ); NewLine;
 
   return error;
 }
@@ -2890,6 +2916,7 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
   }
 
   if (run_free) {
+    asm ( "bkpt 8" ); // This doesn't look like it ever worked...
     TaskSlot *child = TaskSlot_new( command );
     TaskSlot_detatch_from_creator( child );
   }
@@ -3058,14 +3085,9 @@ void __attribute__(( naked )) default_os_upcall()
   // Return address is already on stack, ignore lr
   // Pushes too many registers, to be sure that all C_CLOBBERED registers
   // are included.
-  asm ( "push { r0-r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
+  asm volatile ( "push { r0-r12 }\n  mov %[regs], sp" : [regs] "=r" (regs) );
 
-//Write0( __func__ ); Space; WriteNum( regs ); NewLine;
   do_UpCall( regs );
-
-//WriteS( "Done: " ); Space; WriteNum( regs ); NewLine;
-
-  asm ( "mov %[regs], sp" : [regs] "=r" (regs) );
 
   asm ( "pop { r0-r12, pc }" );
 }
@@ -3557,6 +3579,9 @@ static void setup_OS_vectors()
 
 static void __attribute__(( naked, noreturn )) idle_thread()
 {
+  const int reset = 10000;
+  uint32_t count = reset;
+
   // This thread currently needs no stack!
   asm ( "mov sp, #0" ); // Avoid triggering any checks for privileged stack pointers in usr32 code 
   asm ( "cpsie aif" );  // Non-interruptable idle thread is not helpful
@@ -3579,7 +3604,10 @@ static void __attribute__(( naked, noreturn )) idle_thread()
     // Don't do any I/O!
     // Don't forget to give it some stack!
     //asm volatile ( "wfi" );
-    //asm volatile ( "mov r0, #255\n  svc 0xf9" : : : "r0" );
+    if (--count == 0) {
+      asm volatile ( "mov r0, #255\n  svc 0xf9" : : : "r0" ); // Display status of threads
+      count = reset;
+    }
   }
 
   __builtin_unreachable();

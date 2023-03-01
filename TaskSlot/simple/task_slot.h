@@ -105,6 +105,7 @@ struct TaskSlot_shared_workspace {
 // a temporary Task.
 // Do these need to be public, any more? 24/11/22 FIXME
 
+
 void TempTaskDo2( void (*func)( uint32_t p1, uint32_t p2 ), uint32_t p1, uint32_t p2 );
 static inline void TempTaskDo( void (*func)( uint32_t p ), uint32_t p )
 {

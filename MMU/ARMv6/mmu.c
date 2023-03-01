@@ -437,6 +437,7 @@ static void map_block( physical_memory_block block )
 static bool check_task_slot_l1( uint32_t address, uint32_t type )
 {
   WriteS( "Check task slot L1: " ); WriteNum( address ); NewLine;
+  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   return true;
 }
 
