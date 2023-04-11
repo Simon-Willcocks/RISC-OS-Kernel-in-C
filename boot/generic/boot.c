@@ -256,18 +256,6 @@ static uint32_t __attribute__(( noinline )) relocate_as_necessary( uint32_t star
   return startup->final_location - start;
 }
 
-// Currently only copes with two alignments/sizes, probably good enough...
-static uint32_t allocate_physical_memory( uint32_t size, uint32_t alignment, ram_block *block )
-{
-  uint32_t result = 1;
-  if (block->size >= size && 0 == (block->base & (alignment - 1))) {
-    result = block->base;
-    block->size -= size;
-    block->base += size;
-  }
-  return result;
-}
-
 // Duplicated and modified from memory/simple/memory_manager.c
 // Later implementations are likely to be more complicated, but this is good enough for booting.
 static bool aligned( uint32_t b, uint32_t alignment )
@@ -331,7 +319,7 @@ uint32_t pre_mmu_allocate_physical_memory( uint32_t size, uint32_t alignment, vo
   // Always allocate a least one full page.
   if (0 != (size & 0xfff)) size = (size + 0xfff) & ~0xfff;
 
-  return allocate_pages( size, alignment, startup->ram_blocks );
+  return allocate_pages( size, alignment, (ram_block *) startup->ram_blocks );
 }
 
 void BOOT_finished_allocating( uint32_t core, volatile startup *startup )
@@ -339,7 +327,7 @@ void BOOT_finished_allocating( uint32_t core, volatile startup *startup )
   startup->core_entered_mmu = core;
 }
 
-void __attribute__(( noreturn, noinline )) pre_mmu_with_stacks( core_workspace *ws, uint32_t max_cores, volatile startup *startup )
+void __attribute__(( noreturn, noinline )) pre_mmu_with_stacks( core_workspace *ws, uint32_t max_cores, volatile startup *boot_data )
 {
   // We're running in RAM, at a naturally aligned location, with no MMU (but possibly cached instructions)
   // The MMU is not running yet, which can cause problems with synchronisation primitives not working.
@@ -353,24 +341,27 @@ void __attribute__(( noreturn, noinline )) pre_mmu_with_stacks( core_workspace *
   set_smp_mode();
 
   if (ws->core_number == 0) {
-    shared_workspace *shared_memory = (void*) startup->shared_memory;
+    shared_workspace *shared_memory = (void*) boot_data->shared_memory;
 
     // Block other cores from continuing until core 0 has enabled the MMU
     shared_memory->kernel.boot_lock = 1; // lock is claimed by core 0 FIXME: knowledge of implementation of claim_lock
 
     for (int i = 1; i < max_cores; i++) {
-      startup->core_to_enter_mmu = i;
-      while (i != startup->core_entered_mmu) {}
+      boot_data->core_to_enter_mmu = i;
+      while (i != boot_data->core_entered_mmu) {}
     }
-    startup->core_to_enter_mmu = 0;
+    boot_data->core_to_enter_mmu = 0;
   }
   else {
-    while (startup->core_to_enter_mmu != ws->core_number) {}
+    while (boot_data->core_to_enter_mmu != ws->core_number) {}
   }
 
   // Allocate memory pre-MMU, call BOOT_finished_allocating, maps kernel
   // workspace and translation tables into virtual memory, and finally
   // jump to Kernel_start in virtual memory.
-  MMU_enter( ws, startup );
+  // I might have over-used volatile.
+  MMU_enter( ws, (startup *) boot_data );
+
+  __builtin_unreachable();
 }
 

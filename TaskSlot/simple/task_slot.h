@@ -43,6 +43,7 @@ uint32_t TaskSlot_Himem( TaskSlot *slot );
 char const *TaskSlot_Command( TaskSlot *slot );
 char const *TaskSlot_Tail( TaskSlot *slot );
 void *TaskSlot_Time( TaskSlot *slot );
+void TaskSlot_adjust_app_memory( TaskSlot *slot, uint32_t new_limit );
 
 // Allocate 256 bytes of RMA space one time per slot, then return
 // the same address each call.
@@ -99,16 +100,5 @@ struct TaskSlot_shared_workspace {
   Task **core_runnable; // Array of Tasks that may run on that core
 
   uint32_t number_of_interrupt_sources;
+  Task **irq_tasks;     // Array of tasks handling interrupts, number of cores x number of sources
 };
-
-// Call only from SVC mode, runs func, passing parameter(s) to it, with
-// a temporary Task.
-// Do these need to be public, any more? 24/11/22 FIXME
-
-
-void TempTaskDo2( void (*func)( uint32_t p1, uint32_t p2 ), uint32_t p1, uint32_t p2 );
-static inline void TempTaskDo( void (*func)( uint32_t p ), uint32_t p )
-{
-  TempTaskDo2( (void (*)( uint32_t p1, uint32_t p2 )) func, p, 0 );
-}
-

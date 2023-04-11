@@ -69,7 +69,9 @@ struct Kernel_workspace {
 
   // For use until SharedCLibrary-friendly stack set up.
   // And for use while swapping current task
-  uint32_t svc_stack[640];
+  struct { // In struct so that ((&...svc_stack)+1) is top of stack
+    uint32_t s[640];
+  } svc_stack;
 
   uint32_t debug_pipe;
   uint32_t debug_written; // Written, but not reported to the pipe
@@ -185,7 +187,7 @@ extern struct shared_workspace {
   struct Kernel_shared_workspace kernel;
   struct Memory_manager_shared_workspace memory;
   struct TaskSlot_shared_workspace task_slot;
-} volatile shared;
+} shared;
 
 void __attribute__(( noreturn )) Boot();
 

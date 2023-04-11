@@ -633,8 +633,8 @@ if (l2tt->entry[0].handler == last_free_l2tt_table) { asm ( "bkpt 4" ); }
 
 void setup_global_translation_tables( volatile startup *startup )
 {
-  shared_workspace volatile *shared_memory = (void*) startup->shared_memory;
-  struct MMU_shared_workspace *shared = &shared_memory->mmu;
+  shared_workspace *shared_memory = (void*) startup->shared_memory;
+  struct MMU_shared_workspace volatile *shared = &shared_memory->mmu;
 
   // These areas must be set up before enabling the MMU:
   //  Sections covering the OS code at its current physical address
@@ -1083,8 +1083,6 @@ static void clear_app_area()
 
 static void clear_pipes_area()
 {
-  Level_two_translation_table *l2tt;
-
   extern char pipes_base;
   extern char pipes_top;
   uint32_t base = (uint32_t) &pipes_base;
@@ -1256,15 +1254,15 @@ void MMU_map_at( void *va, uint32_t pa, uint32_t size )
 
 void MMU_map_shared_at( void *va, uint32_t pa, uint32_t size )
 {
-  if (size < naturally_aligned && size > 4096) {
+  if (size < natural_alignment) {
     // FIXME Horrible hack; map_at needs changing
     for (int i = 0; i < size; i+= 4096) {
       map_at( (void*) (i + (uint32_t) va), pa + i, 4096, true );
     }
   }
-  else
-
-  map_at( va, pa, size, true );
+  else {
+    map_at( va, pa, size, true );
+  }
 }
 
 void MMU_map_device_at( void *va, uint32_t pa, uint32_t size )

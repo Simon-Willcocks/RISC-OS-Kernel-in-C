@@ -125,11 +125,11 @@ bool Kernel_Error_UnimplementedSWI( svc_registers *regs );
 extern uint32_t rma_base; // Linker generated
 extern uint32_t rma_heap; // Linker generated
 
-static inline void rma_free( void *block )
+static inline void rma_free( void const *block )
 {
   register uint32_t code asm( "r0" ) = 3;
   register void *heap asm( "r1" ) = &rma_heap;
-  register void *memory asm( "r2" ) = block;
+  register void const *memory asm( "r2" ) = block;
 
   asm ( "svc %[swi]"
         :
@@ -191,4 +191,4 @@ bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc );
 
 // Provided by swis.c, for use by TaskSlot only.
 // regs contains the state of the registers at the moment of the call.
-void execute_swi( svc_registers *regs );
+void execute_swi( svc_registers *regs, uint32_t number );

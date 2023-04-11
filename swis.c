@@ -58,11 +58,13 @@ static uint32_t word_align( void *p )
   return (((uint32_t) p) + 3) & ~3;
 }
 
-static void run_interruptable_swi( uint32_t regs_ptr, uint32_t svc )
+// This routine is for SWIs implemented in the legacy kernel, 0-511, not in
+// modules, in ROM or elsewhere. (i.e. routines that return using SLVK.)
+// TODO: Have a module flag to indicate its SWIs don't enable interrupts.
+bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
 {
   extern uint32_t JTABLE;
   uint32_t *jtable = &JTABLE;
-  svc_registers *regs = (void*) regs_ptr;
 
   register uint32_t non_kernel_code asm( "r10" ) = jtable[svc];
   register uint32_t swi asm( "r11" ) = svc;
@@ -98,16 +100,8 @@ static void run_interruptable_swi( uint32_t regs_ptr, uint32_t svc )
       , [spsr] "i" (4 * (&regs->spsr - &regs->r[0]))
       , "r" (swi)
       : "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "lr", "memory" );
-}
 
-// This routine is for SWIs implemented in the legacy kernel, 0-511, not in
-// modules, in ROM or elsewhere. (i.e. routines that return using SLVK.)
-// TODO: Have a module flag to indicate its SWIs don't enable interrupts.
-bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc )
-{
-  TempTaskDo2( run_interruptable_swi, (uint32_t) regs, svc );
-
-  return (regs->spsr & VF) == 0;
+  return (result & VF) == 0;
 }
 
 static bool do_OS_WriteS( svc_registers *regs )
@@ -211,7 +205,7 @@ static bool do_OS_IntOff( svc_registers *regs )
 static bool do_OS_CallBack( svc_registers *regs )
 {
   register uint32_t handler asm ( "r0" ) = 7; // CallBack
-  register void *address asm ( "r1" ) = regs->r[1];
+  register uint32_t address asm ( "r1" ) = regs->r[1];
   register uint32_t buffer asm ( "r3" ) = regs->r[0]; // Buffers
   asm ( "svc 0x20040" // XOS_ChangeEnvironment
     : "+r" (address)  // clobbered, but can't go in the clobber list...
@@ -742,7 +736,7 @@ static bool do_OS_MSTime( svc_registers *regs )
   uint64_t time;
   asm ( "mrrc p15, 0, %[lo], %[hi], c14" : [lo] "=r" (lo), [hi] "=r" (hi) );
   time = (((uint64_t) hi) << 32) | lo;
-  regs->r[0] = lo >> 10; // FIXME: Inaccurate, but doesn't need __aeabi_uldivmod
+  regs->r[0] = time >> 10; // FIXME: Inaccurate, but doesn't need __aeabi_uldivmod
   // Optimiser wants a function for uint64_t / uint32_t : __aeabi_uldivmod
   return true;
 }
@@ -805,7 +799,6 @@ static bool do_OS_PrettyPrint( svc_registers *regs )
 }
 
 static bool do_OS_WriteEnv( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ReadArgs( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadRAMFsLimits( svc_registers *regs )
 {
   regs->r[0] = 5;
@@ -878,7 +871,7 @@ static bool do_OS_ReadMemMapInfo( svc_registers *regs )
 static bool do_OS_ReadMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SetMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool set_transient_callback( uint32_t code, uint32_t private )
+static void set_transient_callback( uint32_t code, uint32_t private )
 {
 #ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
   WriteS( "New transient callback: " ); WriteNum( regs->r[0] ); WriteS( ", " ); WriteNum( regs->r[1] ); NewLine;
@@ -906,16 +899,14 @@ static bool do_OS_AddCallBack( svc_registers *regs )
   return true;
 }
 
-static void __attribute__(( naked )) CallCallBack()
-{
-  asm ( "bkpt 9" );
-}
-
 static bool do_OS_SetCallBack( svc_registers *regs )
 {
   // I don't know why this wouldn't happen anyway?
   // Is the CallBack handler called every time the OS drops to usr32?
+  // Yes, if interrupts are enabled, and with the sole exception of
+  // return from this SWI. PRM 1-315
   //set_transient_callback( regs->r[0], regs->r[1] );
+  asm ( "bkpt 9" );
 
   return true;
 }
@@ -1138,6 +1129,7 @@ static bool do_OS_RemoveCallBack( svc_registers *regs )
 
 static bool do_OS_FindMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
+#if 0
 typedef union {
   struct {
     uint32_t action:3; // Set, OR, AND, EOR, Invert, Unchanged, AND NOT, OR NOT.
@@ -1286,6 +1278,8 @@ Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->r[1] )
 #endif
   return result;
 }
+#endif
+
 
 static bool do_OS_Pointer( svc_registers *regs ) { Write0( __func__ ); NewLine; return true; }
 
@@ -1785,8 +1779,6 @@ static bool do_OS_ConvertSpacedInteger4( svc_registers *regs )
 }
 
 
-static bool do_OS_ConvertFixedNetStation( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_ConvertNetStation( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ConvertFixedFileSize( svc_registers *regs )
 {
   uint32_t buffer_length = regs->r[2];
@@ -1832,6 +1824,8 @@ static bool do_OS_ConvertFixedFileSize( svc_registers *regs )
       bytes = bytes / 10;
     }
   }
+
+  return true;
 }
 
 static inline int32_t GraphicsWindow_ec_Left()
@@ -1896,9 +1890,9 @@ static bool CLG( svc_registers *regs )
   uint32_t bg_colour = ws->BgEcfOraEor.line[0].eor ^ ws->BgEcfOraEor.line[0].orr;
   // Write0( "CLG" ); WriteNum( ws->BgEcfOraEor.line[0].orr ); Space; WriteNum( ws->BgEcfOraEor.line[0].eor ); NewLine;
   
-  uint32_t left = ws->ScreenStart + (ws->YWindLimit - y) * ws->LineLength + (x << 2);
+  uint32_t left = (uint32_t) ws->ScreenStart + (ws->YWindLimit - y) * ws->LineLength + (x << 2);
 
-  int32_t rows = GraphicsWindow_ic_Top() - GraphicsWindow_ic_Bottom();
+  //int32_t rows = GraphicsWindow_ic_Top() - GraphicsWindow_ic_Bottom();
 
   for (; y > GraphicsWindow_ic_Bottom(); y--) {
     uint32_t *p = (uint32_t*) left;
@@ -1914,7 +1908,7 @@ static bool CLG( svc_registers *regs )
 static bool SetTextColour( svc_registers *regs )
 {
   Write0( __func__ );
-  VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
+  // VduDriversWorkspace *ws = &workspace.vectors.zp.vdu_drivers.ws;
   asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
 
   return true;
@@ -2542,8 +2536,6 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
   case 0x1e:
     WriteS( "Start task: " ); Write0( regs->r[0] ); 
     return false;
-    StartTask( (char const *) regs->r[0] );
-    return true;
     break;
   case 0x00: // Wimp_Initialise
     {
@@ -2556,7 +2548,7 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
       int len = 0;
       char *p = (void*) regs->r[2];
       while (*p >= ' ') { len++; p++; }
-      WriteN( regs->r[2], len ); NewLine;
+      WriteN( (char const *) regs->r[2], len ); NewLine;
     }
     break;
   case 0x07: // Wimp_Poll
@@ -2652,12 +2644,6 @@ static void swi_completed( uint32_t number )
   }
 }
 
-void run_transient_callback( transient_callback *callback )
-{
-  WriteS( "Running callback " ); WriteNum( callback->code ); NewLine;
-  run_handler( callback->code, callback->private_word );
-}
-
 static inline void run_transient_callbacks()
 {
   if (workspace.kernel.transient_callbacks == 0) return;
@@ -2676,18 +2662,12 @@ static inline void run_transient_callbacks()
 #ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
   WriteS( "Call transient callback: " ); WriteNum( latest.code ); WriteS( ", " ); WriteNum( latest.private_word ); NewLine;
 #endif
-    TempTaskDo( run_transient_callback, &latest );
+    run_handler( latest.code, latest.private_word );
   }
 }
 
-void __attribute__(( noinline )) execute_swi( svc_registers *regs )
+void __attribute__(( noinline )) execute_swi( svc_registers *regs, uint32_t number )
 {
-  uint32_t number = get_swi_number( regs->lr );
-
-  // FIXME What should happen if you call CallASWI using CallASWI?
-  if ((number & ~Xbit) == OS_CallASWI) number = regs->r[9];
-  else if ((number & ~Xbit) == OS_CallASWIR12) number = regs->r[12];
-
   regs->spsr &= ~VF;
 
   if (special_swi( regs, number )) return;

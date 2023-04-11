@@ -29,7 +29,7 @@ NO_start;
 NO_finalise;
 //NO_service_call;
 //NO_title;
-NO_help;
+//NO_help;
 NO_keywords;
 NO_swi_handler;
 NO_swi_names;
@@ -37,6 +37,7 @@ NO_swi_decoder;
 NO_messages_file;
 
 const char title[] = "Raspberry Pi 3 HAL";
+const char help[] = "HAL\t0.01";
 
 typedef struct {
   uint32_t       control;
@@ -926,7 +927,7 @@ static inline void stop_and_blink( struct workspace *workspace )
 
 uint32_t initialise_frame_buffer( struct workspace *workspace )
 {
-  GPU_mailbox volatile *mailbox = &workspace->gpu->mailbox;
+  GPU_mailbox volatile *mailbox = &workspace->gpu->mailbox[0];
 
   const int width = 1920;
   const int height = 1080;
@@ -1253,7 +1254,7 @@ static void resume_task( uint32_t handle )
 // the vector call will not allow another call.
 static void tickerv_task( uint32_t handle, struct core_workspace *ws )
 {
-  QA7 volatile *qa7 = ws->shared->qa7;
+  //QA7 volatile *qa7 = ws->shared->qa7;
   int this_core = core( ws );
   int ticks = 0;
   for (;;) {
@@ -1435,7 +1436,7 @@ static uint32_t start_uart_interrupt_task( struct core_workspace *ws, int device
 {
   register uint32_t request asm ( "r0" ) = 254; // 0; // Create Thread
   register void *code asm ( "r1" ) = uart_interrupt_task;
-  register void *stack_top asm ( "r2" ) = (uint32_t) (&ws->shared->uart_task_stack+1);
+  register void *stack_top asm ( "r2" ) = (&ws->shared->uart_task_stack+1);
   register struct core_workspace *workspace asm( "r3" ) = ws;
   register uint32_t dev asm( "r4" ) = device;
 
@@ -1553,9 +1554,9 @@ void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_
   workspace->frame_buffer = map_screen_into_memory( workspace->fb_physical_address );
 
 show_word( this_core * (1920/4), 16, this_core*0x11111111, first_entry ? Red : Green, workspace ); 
-show_word( this_core * (1920/4), 32, workspace->gpio, first_entry ? Red : Green, workspace ); 
+show_word( this_core * (1920/4), 32, (uint32_t) workspace->gpio, first_entry ? Red : Green, workspace ); 
   QA7 volatile *qa7 = workspace->qa7;
-show_word( this_core * (1920/4), 48, &qa7->Core_write_clear[this_core], first_entry ? Red : Green, workspace ); 
+show_word( this_core * (1920/4), 48, (uint32_t) &qa7->Core_write_clear[this_core], first_entry ? Red : Green, workspace ); 
 
   workspace->core_specific[this_core].shared = workspace;
   workspace->core_specific[this_core].queued = 0; // VDU code queue size, including character that started it filling
@@ -1614,6 +1615,7 @@ show_word( this_core * (1920/4), 48, &qa7->Core_write_clear[this_core], first_en
 add_string( "starting console task ", &workspace->core_specific[this_core] );
 add_num( pipe, &workspace->core_specific[this_core] );
       uint32_t handle = start_console_task( &workspace->core_specific[this_core], pipe );
+      handle = handle; // unused variable
 
       Yield();
     }
@@ -1639,7 +1641,7 @@ add_num( pipe, &workspace->core_specific[this_core] );
     workspace->ticks_per_interval = clock_frequency / 1000; // milliseconds
 
 #ifdef QEMU
-    const int slower = 100;
+    const int slower = 1000;
     Write0( "Slowing timer ticks by: " ); WriteNum( slower ); NewLine;
     workspace->ticks_per_interval = workspace->ticks_per_interval * slower;
 #endif

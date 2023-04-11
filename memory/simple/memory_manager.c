@@ -75,18 +75,18 @@ void Initialise_system_DAs()
 // While we're hacking like crazy, let's allocate far too much memory for RO kernel workspace...
 // See comments to GSTrans in swis.c
 
-  uint32_t memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
-  assert( memory != -1 );
+  //uint32_t memory = Kernel_allocate_pages( natural_alignment, natural_alignment );
+  //assert( memory != -1 );
 
   if (shared.memory.dynamic_areas == 0) {
     // First core here (need not be core zero)
     uint32_t RMA = Kernel_allocate_pages( initial_rma_size, natural_alignment );
     assert( RMA != -1 );
 
+    shared.memory.rma_memory = RMA;
+
     MMU_map_shared_at( &rma_heap, RMA, initial_rma_size );
     asm ( "dsb sy" );
-
-    shared.memory.rma_memory = RMA;
 
     InitialiseHeap( &rma_heap, initial_rma_size );
 

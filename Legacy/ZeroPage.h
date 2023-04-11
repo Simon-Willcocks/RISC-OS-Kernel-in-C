@@ -300,7 +300,7 @@ typedef struct {
   // holds 2,3,4 or 5 for 8,4,2,1 bits per pixel respectivly
   EcfOraEorPtr GColAdr ; // FgEcfOraEor, BgEcfOraEor, Invert, or NoEffect afaik 12/21
 
-  uint32_t ScreenStart ; // Start address of screen (for VDU drivers) MISNOMER: also selected sprite start
+  uint8_t *ScreenStart ; // Start address of screen (for VDU drivers) MISNOMER: also selected sprite start
 
   uint32_t NPix ; // Number of pixels per word minus 1, holds
   // holds 3,7,15 or 31 for 8,4,2,1 bits per pixel modes

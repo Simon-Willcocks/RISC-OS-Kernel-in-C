@@ -42,6 +42,8 @@ struct TaskSlot {
   // FIXME Locks the slot to a single core (at a time)?
   // Is that so terrible?
   uint32_t *svc_sp_when_unmapped;
+  Task *svc_stack_owner;
+  Task *waiting_for_slot_stack;
 
   uint32_t lock;
   physical_memory_block blocks[50];
@@ -64,18 +66,54 @@ struct __attribute__(( packed, aligned( 4 ) )) Task {
   uint32_t banked_lr_usr; // Only stored when leaving usr or sys mode
   int32_t resumes;
   TaskSlot *slot;
-  Task *app_task; // This task or the task a temporary task is protecting
   Task *next; // Doubly-linked list. Neither next or prev shall be zero,
   Task *prev; // Tasks not in a list will be a list of 1.
 };
+
+extern svc_registers svc_stack_top;
+
+static inline void *core_svc_stack_top()
+{
+  return (&workspace.kernel.svc_stack + 1);
+}
+
+static inline void copy_task_state_without_links( Task *from, Task *to )
+{
+  to->regs = from->regs;
+  to->banked_sp_usr = from->banked_sp_usr;
+  to->banked_lr_usr = from->banked_lr_usr;
+  to->resumes = from->resumes;
+  to->slot = from->slot;
+}
+
+/* static inline */ bool __attribute__(( noinline )) using_slot_svc_stack()
+{
+  register uint32_t sp asm ( "sp" );
+  return (sp >> 20) == (((uint32_t) &svc_stack_top) >> 20);
+}
+
+/* static inline */ bool __attribute__(( noinline )) using_core_svc_stack()
+{
+  register uint32_t sp asm ( "sp" );
+  return (sp >= (uint32_t) &workspace.kernel.svc_stack)
+      && (sp <= (uint32_t) core_svc_stack_top());
+}
+
+/* static inline */ bool __attribute__(( noinline )) usr32_caller( svc_registers *regs )
+{
+  return (regs->spsr & 0xf) == 0;
+}
+
+/* static inline */ bool __attribute__(( noinline )) owner_of_slot_svc_stack( Task *task )
+{
+  return task->slot->svc_stack_owner == task;
+}
 
 // Declare functions like dll_attach_Task
 dll_type( Task );
 
 extern TaskSlot task_slots[];
 extern Task tasks[];
-
-extern uint32_t svc_stack_top;
 
 // For debugging only FIXME
 #include "trivial_display.h"
@@ -85,11 +123,12 @@ static inline void show_task_state( Task *t, uint32_t colour )
   if (0 != (t->regs.lr & 3)) return;
 
   uint32_t x = (t - tasks) * 80;
-  
-  show_word( x, 780, t, Red );
 
+  show_word( x, 780, (uint32_t) t, Red );
+
+  uint32_t *r = &t->regs.r[0];
   for (int i = 0; i < sizeof( Task ) / 4; i++) {
-    show_word( x, 800 + 8 * i, t->regs.r[i], colour );
+    show_word( x, 800 + 8 * i, r[i], colour );
   }
 }
 
@@ -137,19 +176,6 @@ static inline void show_running_queue( int x )
   show_word( x, y, 0, Red );
   NewLine;
 }
-
-// #ifdef DEBUG__SHOW_TASK_SWITCHES
-static void show_task( Task *task )
-{
-  WriteS( "task " ); WriteNum( task ); NewLine;
-  for (int  i = 0; i < 13; i++) {
-    WriteNum( task->regs.r[i] ); if (i != 7) Space; else NewLine;
-  }
-  WriteNum( task->banked_sp_usr ); Space; WriteNum( task->banked_lr_usr ); Space; WriteNum( task->regs.lr ); 
-  NewLine ; WriteS( "Slot " ); WriteNum( task->slot ); Space; WriteNum( task->regs.spsr ); 
-  WriteS( " next: " ); WriteNum( task->next ); NewLine;
-}
-// #endif
 
 static inline TaskSlot *slot_from_handle( uint32_t handle )
 {
@@ -248,7 +274,7 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
       TaskSlot_adjust_app_memory( slot, (regs[1] + 0xfff) & ~0xfff );
     }
 
-    h->code = (uint32_t) TaskSlot_Himem( workspace.task_slot.running->slot );
+    h->code = (void (*)()) TaskSlot_Himem( workspace.task_slot.running->slot );
   }
 
   handler old = *h;
@@ -347,19 +373,6 @@ static void free_task_slot( TaskSlot *slot )
   slot->svc_sp_when_unmapped = 0;
 }
 
-static void mark_task_slot_allocated( TaskSlot *slot )
-{
-  slot->svc_sp_when_unmapped = &svc_stack_top;
-
-  // Make sure it's visible to other cores
-  flush_location( &slot->svc_sp_when_unmapped );
-}
-
-static bool task_slot_is_allocated( TaskSlot *slot )
-{
-  return 0 != slot->svc_sp_when_unmapped;
-}
-
 static void binary_to_decimal( int number, char *buffer, int size )
 {
   register int n asm ( "r0" ) = number;
@@ -417,20 +430,29 @@ void __attribute__(( noinline )) do_Exit( uint32_t *regs )
   // resume the code in the parent slot? Where? After OS_CLI?
   // Yes, I think so.
 
-  asm ( 
-    "\n  svc %[enter]" 
-    : 
+  asm (
+    "\n  svc %[enter]"
+    :
     : [enter] "i" (OS_EnterOS)
     : "lr" );
 
 show_tasks_state();
-  TaskSlot *running = workspace.task_slot.running;
-  show_word( 1000, 80, running, Green );
-  WriteS( "Exiting " ); Write0( TaskSlot_Command( running ) ); NewLine;
+  Task *running = workspace.task_slot.running;
+  show_word( 1000, 80, (uint32_t) running, Green );
+  show_word( 1000, 90, regs[0], Green );
+  show_word( 1000, 100, regs[1], Green );
+  show_word( 1000, 110, regs[2], Green );
+  show_word( 1000, 120, regs[3], Green );
+  show_word( 1000, 130, regs[14], Green );
+  WriteS( "Exiting " ); Write0( TaskSlot_Command( running->slot ) ); NewLine;
+
+  workspace.task_slot.running = running->next;
+  dll_detatch_Task( running );
+  return;
 
   asm ( "\n  svc %[leave]" : : [leave] "i" (OS_LeaveOS) : "lr" );
 
-  for (;;) { Sleep( 100000 ); }
+  //for (;;) { Sleep( 100000 ); }
 asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
 }
 
@@ -449,33 +471,28 @@ static void __attribute__(( naked )) ErrorHandler()
   do_Exit( regs );
 }
 
-static bool save_context( Task *running, svc_registers *regs )
+void __attribute__(( naked )) unset_handler()
 {
-  // Save task context (integer only), including the usr stack pointer and link register
-  // The register values when the task is resumed (optimiser friendly)
-  running->regs = *regs;
-
-  asm volatile ( "mrs %[sp], sp_usr" : [sp] "=r" (running->banked_sp_usr) );
-  asm volatile ( "mrs %[lr], lr_usr" : [lr] "=r" (running->banked_lr_usr) );
+  asm ( "bkpt 1" );
 }
 
 static const handler default_handlers[17] = {
   { 0, 0, 0 },                // RAM Limit for program (0x8000 + amount of RAM)
-  { 0xbadf00d1, 0, 0 },       // Undefined instruction
-  { 0xbadf00d2, 0, 0 },       // Prefetch abort
-  { 0xbadf00d3, 0, 0 },       // Data abort
-  { 0xbadf00d4, 0, 0 },       // Address exception
-  { 0xbadf00d5, 0, 0 },       // Other exceptions
+  { unset_handler, 0, 0 },       // Undefined instruction
+  { unset_handler, 0, 0 },       // Prefetch abort
+  { unset_handler, 0, 0 },       // Data abort
+  { unset_handler, 0, 0 },       // Address exception
+  { unset_handler, 0, 0 },       // Other exceptions
   { ErrorHandler, 0, 0 },       // Error
-  { 0xbadf00d7, 0, 0 },       // CallBack
-  { 0xbadf00d8, 0, 0 },       // Breakpoint
-  { 0xbadf00d9, 0, 0 },       // Escape
-  { 0xbadf00da, 0, 0 },       // Event
+  { unset_handler, 0, 0 },       // CallBack
+  { unset_handler, 0, 0 },       // Breakpoint
+  { unset_handler, 0, 0 },       // Escape
+  { unset_handler, 0, 0 },       // Event
   { ExitHandler, 0, 0 },       // Exit (entered in usr mode)
-  { 0xbadf00dc, 0, 0 },       // Unused SWI
-  { 0xbadf00dd, 0, 0 },       // Exception registers
+  { unset_handler, 0, 0 },       // Unused SWI
+  { unset_handler, 0, 0 },       // Exception registers
   { 0, 0, 0 },                // Application space limit
-  { 0xbadf00df, 0, 0 },       // Currently Active Object
+  { unset_handler, 0, 0 },       // Currently Active Object
   { ignore_event, 0, 0 }        // UpCall handler
 };
 
@@ -540,16 +557,20 @@ static TaskSlot *get_task_slot()
 
   if (!workspace.task_slot.memory_mapped) allocate_taskslot_memory();
 
+  // Unallocated slots have svc_sp_when_unmapped == 0
+
+  TaskSlot new_slot = { .svc_sp_when_unmapped = core_svc_stack_top() };
+  uint32_t top = (uint32_t) new_slot.svc_sp_when_unmapped;
+
   // FIXME: make this a linked list of free objects
+  // FIXME: no need for lock if change_word_if_equal used?
   for (int i = 0; i < INITIAL_MEMORY_FOR_TASKS_AND_SLOTS/sizeof( TaskSlot ) && result == 0; i++) {
-    if (!task_slot_is_allocated( &task_slots[i] )) {
-      result = &task_slots[i];
+    TaskSlot *slot = &task_slots[i];
+    if (0 == change_word_if_equal( (uint32_t*) &slot->svc_sp_when_unmapped, 0, top )) {
+      result = slot;
 
-      // The order of the next two lines is important!
-      bzero( result, sizeof( result ) );
-      mark_task_slot_allocated( result );
+      *result = new_slot; // Clear all other fields
 
-      asm ( "dsb" );
 #ifdef DEBUG__WATCH_TASK_SLOTS
 WriteS( "Allocated TaskSlot " ); WriteNum( i ); WriteS( " (" ); WriteNum( result ); WriteS( ")" ); NewLine;
 #endif
@@ -568,7 +589,6 @@ static void standard_svc_stack( TaskSlot *slot )
   uint32_t initial_size = 81920;
   // uint32_t initial_size = 8192;
   uint32_t top = ((uint32_t) &svc_stack_top);
-  uint32_t base = top - initial_size;
 
   // TODO: more flexible structure for physical memory blocks.
 
@@ -694,8 +714,15 @@ TaskSlot *TaskSlot_first()
 
   workspace.task_slot.running = new_task;
 
+  // However, this first task will own the first slot's svc_stack
+  // until it doesn't.
+  slot->svc_stack_owner = new_task;
+  slot->svc_sp_when_unmapped = (void*) &svc_stack_top;
+
   assert( workspace.task_slot.running != 0 );
   assert( workspace.task_slot.running == new_task );
+
+  MMU_switch_to( slot );
 
   return slot;
 }
@@ -714,14 +741,12 @@ void TaskSlot_start_child( TaskSlot *slot )
 
   slot->creator = task;
 
-  save_context( task, regs );
-
   Task *new_task = Task_new( slot );
 
   dll_replace_Task( task, new_task, &workspace.task_slot.running );
 
 new_task->regs.spsr = 0x13;
-new_task->regs.lr = Bother;
+new_task->regs.lr = (uint32_t) Bother;
 }
 
 TaskSlot *TaskSlot_new( char const *command_line )
@@ -804,9 +829,9 @@ Task *Task_new( TaskSlot *slot )
 
   // FIXME: make this a linked list of free objects
   for (int i = 0; i < INITIAL_MEMORY_FOR_TASKS_AND_SLOTS/sizeof( Task ) && result == 0; i++) {
-    if (1 == tasks[i].regs.lr) {
+    if (1 == change_word_if_equal( &tasks[i].regs.lr, 1, 3)) {
       result = &tasks[i];
-      result->regs.lr = 3; // Allocated, but still invalid address
+      assert( result->regs.lr == 3 ); // Allocated, but still invalid address
     }
   }
 
@@ -814,7 +839,6 @@ Task *Task_new( TaskSlot *slot )
 
   if (result == 0) for (;;) { asm ( "bkpt 33" ); } // FIXME: expand
 
-  result->app_task = result;
   result->slot = slot;
   result->resumes = 0;
   dll_new_Task( result );
@@ -848,9 +872,8 @@ void TaskSlot_adjust_app_memory( TaskSlot *slot, uint32_t new_limit )
     i++;
   }
   // slots->blocks[i] is the first block after any low page blocks.
-  int first_app_block = i;
   int above = i; // Will be the entry above the last app block
-  uint32_t top = &app_memory_base; // Whether or not there's an app block
+  uint32_t top = (uint32_t) &app_memory_base; // Whether or not there's an app block
 
   while (slot->blocks[i].size != 0) {
     uint32_t block_top = slot->blocks[i].virtual_base + slot->blocks[i].size;
@@ -887,8 +910,8 @@ void TaskSlot_adjust_app_memory( TaskSlot *slot, uint32_t new_limit )
   // add to the free pool.
   // These kinds of memory actions are not suitable for interrupt handlers.
 
-  slot->handlers[0].code = new_limit;
-  slot->handlers[14].code = new_limit;
+  slot->handlers[0].code = (void (*)()) new_limit;
+  slot->handlers[14].code = (void (*)()) new_limit;
 
   if (!reclaimed) release_lock( &shared.mmu.lock );
 }
@@ -937,7 +960,7 @@ void *TaskSlot_Time( TaskSlot *slot )
 uint32_t TaskSlot_WimpPollBlock( TaskSlot *slot )
 {
   assert( slot->wimp_poll_block != 0 );
-  return slot->wimp_poll_block;
+  return (uint32_t) slot->wimp_poll_block;
 }
 
 char const *TaskSlot_Command( TaskSlot *slot )
@@ -1041,7 +1064,7 @@ void __attribute__(( naked )) default_ticker()
   asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
-static error_block *TaskOpWaitUntilWoken( svc_registers *regs )
+/* static */ error_block *TaskOpWaitUntilWoken( svc_registers *regs )
 {
   Task *running = workspace.task_slot.running;
   assert( running != 0 );
@@ -1066,15 +1089,15 @@ static error_block *TaskOpWaitUntilWoken( svc_registers *regs )
   return 0;
 }
 
-static error_block *TaskOpResume( svc_registers *regs )
+/* static */ error_block *TaskOpResume( svc_registers *regs )
 {
   Task *running = workspace.task_slot.running;
   assert( running != 0 );
 
   // FIXME validate input
-  // TODO Is this right? The task is returned to runnable status, but 
+  // TODO Is this right? The task is returned to runnable status, but
   // won't execute until the caller blocks.
-  // This behaviour is necessary for interrupt handling tasks prodding 
+  // This behaviour is necessary for interrupt handling tasks prodding
   // second/third level handlers.
   // FIXME Lock, in case TaskOp_tasks are on separate cores
   // ... or STREX the resumes word...
@@ -1092,7 +1115,7 @@ static error_block *TaskOpResume( svc_registers *regs )
   return 0;
 }
 
-/* Lock states: 
+/* Lock states:
  *   Idle: 0
  *   Owned: Bits 31-1 contain task id, bit 0 set if tasks want the lock
  * Once owned, the lock value will only be changed by:
@@ -1110,14 +1133,15 @@ static error_block *TaskOpResume( svc_registers *regs )
  */
 
 typedef union {
-  Task *raw;
+  Task *rawp;
+  uint32_t raw;
   struct {
     uint32_t wanted:1;
     uint32_t half_handle:31;
   };
 } TaskLock;
 
-static error_block *TaskOpLockClaim( svc_registers *regs )
+/* static */ error_block *TaskOpLockClaim( svc_registers *regs )
 {
   error_block *error = 0;
 
@@ -1133,7 +1157,7 @@ static error_block *TaskOpLockClaim( svc_registers *regs )
 
   assert( next != 0 ); // There's always a next, idle tasks don't sleep.
 
-  TaskLock code = { .raw = running };
+  TaskLock code = { .rawp = running };
   assert( !code.wanted );
 
   // Despite this lock, we will still be competing for the lock word with
@@ -1150,7 +1174,7 @@ static error_block *TaskOpLockClaim( svc_registers *regs )
 
     if (code.half_handle == latest_read.half_handle) {
       // No need for a clrex: "An exception return clears the local monitor. As
-      // a result, performing a CLREX instruction as part of a context switch 
+      // a result, performing a CLREX instruction as part of a context switch
       // is not required in most situations." ARM DDI 0487C.a E2-3051
 
       regs->r[0] = 1; // Already own it!
@@ -1162,7 +1186,7 @@ static error_block *TaskOpLockClaim( svc_registers *regs )
                      : [failed] "=&r" (failed)
                      , [lock] "+r" (lock)
                      : [value] "r" (code.raw) );
-      // Note: as part of testing, I put debug output between the LDREX 
+      // Note: as part of testing, I put debug output between the LDREX
       // and the STREX.
       // That was a mistake, since returning from an exception does a CLREX
     }
@@ -1185,7 +1209,7 @@ static error_block *TaskOpLockClaim( svc_registers *regs )
   return error;
 }
 
-static error_block *TaskOpLockRelease( svc_registers *regs )
+/* static */ error_block *TaskOpLockRelease( svc_registers *regs )
 {
   error_block *error = 0;
 
@@ -1197,7 +1221,7 @@ static error_block *TaskOpLockRelease( svc_registers *regs )
   Task *running = workspace.task_slot.running;
   TaskSlot *slot = running->slot;
 
-  TaskLock code = { .raw = running };
+  TaskLock code = { .rawp = running };
   assert ( !code.wanted );
 
   claim_lock( &slot->lock );
@@ -1232,7 +1256,7 @@ static error_block *TaskOpLockRelease( svc_registers *regs )
 
         while ((*p) == 0 && ((uint32_t*) (*p)->regs.r[1] != lock)) p = &(*p)->next;
 
-        new_code.raw = waiting;
+        new_code.rawp = waiting;
 
         if (*p != 0) {
           new_code.wanted = 1;
@@ -1251,7 +1275,7 @@ static error_block *TaskOpLockRelease( svc_registers *regs )
                    : [value] "=&r" (latest_read.raw)
                    : [lock] "r" (lock) );
 
-          if (latest_read.half_handle != code.half_handle 
+          if (latest_read.half_handle != code.half_handle
            || latest_read.wanted == 0) {
             asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); // Someone's broken the contract
           }
@@ -1343,7 +1367,7 @@ static Task *next_irq_task()
   return handler;
 }
 
-static error_block *TaskOpWaitForInterrupt( svc_registers *regs )
+/* static */ error_block * __attribute__(( noinline )) TaskOpWaitForInterrupt( svc_registers *regs )
 {
   uint32_t device = regs->r[1];
   // WriteS( "Wait for Interrupt " ); WriteNum( device ); NewLine;
@@ -1355,8 +1379,7 @@ static error_block *TaskOpWaitForInterrupt( svc_registers *regs )
 
   if (workspace.task_slot.irq_tasks == 0) {
     int count = shared.task_slot.number_of_interrupt_sources;
-    workspace.task_slot.irq_tasks = rma_allocate( sizeof( Task * ) * count );
-    // FIXME failure?
+    workspace.task_slot.irq_tasks = shared.task_slot.irq_tasks + (count + workspace.core_number);
     for (int i = 0; i < count; i++) {
       workspace.task_slot.irq_tasks[i] = 0;
     }
@@ -1408,14 +1431,14 @@ WriteNum( next ); WriteS( " at " ); WriteNum( next->regs.lr ); WriteS( ", PSR " 
   return 0;
 }
 
-static error_block *TaskOpInterruptIsOff( svc_registers *regs )
+/* static */ error_block *TaskOpInterruptIsOff( svc_registers *regs )
 {
   Task *running = workspace.task_slot.running;
   // Continue caller with interrupts enabled, but only when all IRQs
   // have  been dealt with.
   // The interrupt task must have ensured that there won't be any more
   // interrupts from its source until WaitForInterrupt is called again.
-  // It should ensure that interrupts are turned off using OS_IntOff 
+  // It should ensure that interrupts are turned off using OS_IntOff
   // during that time. An interrupt for a source that doesn't have a
   // task waiting is a fatal error (or will be ignored?).
 
@@ -1440,7 +1463,7 @@ WriteS( "IRQ task " ); WriteNum( irq_task ); NewLine;
   return 0;
 }
 
-static error_block *TaskOpStart( svc_registers *regs )
+/* static */ error_block *TaskOpStart( svc_registers *regs )
 {
   Task *running = workspace.task_slot.running;
 
@@ -1488,10 +1511,12 @@ show_task_state( new_task, Blue );
   return 0;
 }
 
-static error_block *TaskOpSleep( svc_registers *regs )
+/* static */ error_block *TaskOpSleep( svc_registers *regs )
 {
   Task *running = workspace.task_slot.running;
   assert( running != 0 );
+
+  running->regs = *regs; // Being swapped out, store context
 
   bool svc_caller = (regs->spsr & 0x1f) == 0x13;
 
@@ -1505,10 +1530,12 @@ static error_block *TaskOpSleep( svc_registers *regs )
     // Yield
 
     if (svc_caller) {
-      // This thread must be resumed as soon as the other thread 
+      // This thread must be resumed as soon as the other thread
       // relinquishes control.
       // This is in order to maintain a valid SVC stack
       // Insert the Task at the head of the tail
+
+      // FIXME No longer required, once blocking Tasks that don't own the stack
 
       Task *tail = resume->next;
       Task *old_tail = tail;
@@ -1568,7 +1595,7 @@ WriteS( "Sleeping " ); WriteNum( running ); WriteS( ", waking " ); WriteNum( wor
 
       assert ( sleeper == workspace.task_slot.sleeping || regs->r[1] > sleeper->regs.r[1] );
 
-      // Subtract the remaining time for this task from the next to be 
+      // Subtract the remaining time for this task from the next to be
       // woken (if any)
       if (insert_before != 0) {
         insert_before->regs.r[1] -= regs->r[1];
@@ -1648,7 +1675,7 @@ if (regs->r[0] == 254) {
   Task *next = running->next;
 
 #if 0
-WriteS( "Running: " ); WriteNum( running ); 
+WriteS( "Running: " ); WriteNum( running );
 while (next != 0) { Space; WriteNum( next ); next = next->next; }
 next = running->next;
 NewLine;
@@ -1657,7 +1684,10 @@ NewLine;
   if (regs->r[0] == TaskOp_NumberOfInterruptSources) {
     // Allowed from any mode, but only once.
     assert( shared.task_slot.number_of_interrupt_sources == 0 );
+    assert( using_slot_svc_stack() );
     shared.task_slot.number_of_interrupt_sources = regs->r[1];
+    int count = shared.task_slot.number_of_interrupt_sources * processor.number_of_cores;
+    shared.task_slot.irq_tasks = rma_allocate( sizeof( Task * ) * count );
     return true;
   }
 
@@ -1727,7 +1757,7 @@ NewLine;
                        sizeof( workspace.task_slot.core_number_string ) );
 
     }
-    regs->r[0] = &workspace.task_slot.core_number_string;
+    regs->r[0] = (uint32_t) &workspace.task_slot.core_number_string;
     regs->r[2] = strlen( workspace.task_slot.core_number_string );
     break;
 
@@ -1870,9 +1900,9 @@ physical_memory_block Pipe_physical_address( TaskSlot *slot, uint32_t va )
   if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
 
 #ifdef DEBUG__PIPEOP
-  Write0( __func__ ); 
-  WriteS( " " ); WriteNum( result.virtual_base ); 
-  WriteS( " " ); WriteNum( result.physical_base ); 
+  Write0( __func__ );
+  WriteS( " " ); WriteNum( result.virtual_base );
+  WriteS( " " ); WriteNum( result.physical_base );
   WriteS( " " ); WriteNum( result.size );  NewLine;
 #endif
 
@@ -1950,7 +1980,7 @@ static bool PipeCreate( svc_registers *regs )
   // Now debug output uses PipeOp, PipeOp can't do debug output
   // WriteS( "Physical memory: " ); WriteNum( pipe->physical ); NewLine;
 
-  // The following will be updated on the first blocking calls 
+  // The following will be updated on the first blocking calls
   // to WaitForSpace and WaitForData, respectively.
   pipe->sender_waiting_for = 0;
   pipe->receiver_waiting_for = 0;
@@ -2339,7 +2369,7 @@ bool do_OS_PipeOp( svc_registers *regs )
 
     Use
 
-    The purpose of this call is to transfer data between tasks, pausing the calling thread 
+    The purpose of this call is to transfer data between tasks, pausing the calling thread
     while it waits for data or space to write to.
 
     Notes
@@ -2381,7 +2411,7 @@ bool do_OS_PipeOp( svc_registers *regs )
         Create a pipe to be shared between two threads, one Transmitter and one Receiver.
 
     Notes
-        
+
 
 
 
@@ -2479,11 +2509,13 @@ void __attribute__(( naked, noreturn )) ResumeSVC()
   asm volatile ( "pop { lr, pc }" );
 }
 
+Task *__attribute__(( noinline )) c_run_irq_tasks( Task *running );
+
 void __attribute__(( naked, noreturn )) Kernel_default_irq()
 {
   asm volatile (
         "  sub lr, lr, #4"
-      "\n  srsdb sp!, #0x12 // Store return address and SPSR (IRQ mode)" 
+      "\n  srsdb sp!, #0x12 // Store return address and SPSR (IRQ mode)"
       );
 
   Task *interrupted_task;
@@ -2498,24 +2530,24 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
         "  ldr lr, [lr]"
       "\n  stm lr!, {r0-r12}  // lr -> banked_sp_usr"
       "\n  pop { r0, r1 }     // Resume address, SPSR"
-      "\n  mrs r2, sp_usr"
-      "\n  mrs r3, lr_usr"
-      "\n  stm lr, { r0, r1, r2, r3 }"
-      "\n  sub %[task], lr, #13*4"
+      "\n  stm lr!, { r0, r1 }"
+      "\n  tst r1, #0xf"
+      "\n  stmeq lr, { sp, lr }^"
+      "\n  sub %[task], lr, #15*4"
       : [task] "=r" (interrupted_task)
-      , "=r" (running) // lr clobbered
       : "r" (running)
       ); // Calling task state saved, except for SVC sp & lr
-  asm volatile ( "" : : "r" (running) ); 
+  asm volatile ( "" : : "r" (running) );
   // lr really, really used (Oh! Great Optimiser, please don't assume
   // it's still pointing to workspace.task_slot.running, I beg you!)
   }
 
   svc_registers *regs = &interrupted_task->regs;
+  uint32_t interrupted_mode = regs->spsr & 0x1f;
 
-  if ((regs->spsr & 0x1f) == 0x13) workspace.task_slot.irqs_svc++;
-  else if ((regs->spsr & 0x1f) == 0x10) workspace.task_slot.irqs_usr++;
-  //else if ((regs->spsr & 0x1f) == 0x1f) workspace.task_slot.irqs_sys++;
+  if (interrupted_mode == 0x10) workspace.task_slot.irqs_usr++;
+  else if (interrupted_mode == 0x13) workspace.task_slot.irqs_svc++;
+  //else if (interrupted_mode == 0x1f) workspace.task_slot.irqs_sys++;
   else asm ( "bkpt 0x33" );
 
   // We don't enable interrupts while dealing with undefined instructions or
@@ -2534,16 +2566,21 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
                "\n  sub r0, r0, #8"
                "\n  msr sp_svc, r0"
                "\n  stm r0, { r1, r2 }"
-               : "=r" (resume) 
-               : "r" (resume) 
+               : "=r" (resume)
+               : "r" (resume)
                : "r0", "r1", "memory" );
     asm volatile ( "" : : "r" (resume) ); // FIXME, isn't there a prefix for this problem, like "+r"?
     regs->lr = (uint32_t) ResumeSVC;
   }
 
-  asm ( "svc 0" );
-  // The SVC handler ignores the number if the SVC comes from anywhere
-  // but usr32, sys32, or svc32. Or abt32. Probably.
+  Task *task = c_run_irq_tasks( interrupted_task );
+
+  register svc_registers *lr asm ( "lr" ) = &task->regs;
+  asm (
+      "\n  ldm lr!, {r0-r12}"
+      "\n  rfeia lr // Restore execution and SPSR"
+      :
+      : "r" (lr) );
 
   __builtin_unreachable();
 }
@@ -2616,22 +2653,16 @@ bool Task_kernel_in_use( svc_registers *regs )
   Task *running = workspace.task_slot.running;
   Task *next = running->next;
 
-  // This may be a temporary task representing another, so any locks, etc.
-  // should use the application task's handle.
-  uint32_t handle = handle_from_task( running->app_task );
-
   assert( next != 0 ); // There's always a next, idle tasks don't sleep.
   assert( next != running ); // There's always a next, idle tasks don't sleep.
 
-  TaskLock code = { .raw = handle };
+  TaskLock code = { .rawp = running };
   assert( !code.wanted );
 
   // Despite this lock, we will still be competing for the lock word with
   // tasks that haven't claimed the lock yet or one waiting to release it.
 
-  TaskLock latest_read;
-
-  uint32_t *lock = &shared.task_slot.special_lock;
+  uint32_t volatile *lock = &shared.task_slot.special_lock;
 
   TaskLock value = { .raw = change_word_if_equal( lock, 0, code.raw ) };
 
@@ -2654,7 +2685,7 @@ bool Task_kernel_in_use( svc_registers *regs )
   bool reclaimed = claim_lock( &shared.task_slot.special_waiting_lock );
   assert( !reclaimed );
   // The owning task is now blocked from changing the lock value
-  // Other tasks may only write bit0, 
+  // Other tasks may only write bit0,
 
   // The owning task might have changed while we waited...
   // Get the (possibly) new value, and ensure the wanted bit is set
@@ -2674,9 +2705,6 @@ bool Task_kernel_in_use( svc_registers *regs )
 
     return false;
   }
-
-  TaskLock dewanted = { .half_handle = value.half_handle, .wanted = 0 };
-  Task *owner = task_from_handle( dewanted.raw );
 
   // Lock is still owned by someone else, but we've at least set the
   // wanted bit (bit0), and the owner is locked out of releasing the
@@ -2715,7 +2743,7 @@ void Task_kernel_release()
     TaskLock latest_read = { .raw = *lock };
 
     if (resume == 0) {
-      // Lock apparently isn't wanted (and any task that wants it but 
+      // Lock apparently isn't wanted (and any task that wants it but
       // hasn't set bit0 and put itself in the waiting list is stuck
       // trying to get the special_waiting_lock).
       *lock = 0;
@@ -2783,7 +2811,7 @@ bool do_OS_ReadLine( svc_registers *regs )
 bool do_OS_FSControl( svc_registers *regs )
 {
 if (regs->r[0] == 2) {
-WriteS( "OS_FSControl 2 " ); 
+WriteS( "OS_FSControl 2 " );
 }
   return run_vector( regs, 15 );
 }
@@ -2803,11 +2831,11 @@ Write0( __func__ ); NewLine;
   register void (*code)() asm ( "r1" ) = h->code;
 
   asm ( "mrs r0, cpsr"
-    "\n  bic r0, #0xcf" 
+    "\n  bic r0, #0xcf"
     "\n  msr cpsr, r0"
-    "\n  blx r1" 
-    "\n  svc %[enter]" 
-    : 
+    "\n  blx r1"
+    "\n  svc %[enter]"
+    :
     : [enter] "i" (OS_EnterOS)
     , "r" (r12)
     , "r" (code)
@@ -2889,7 +2917,7 @@ static char *pipe_space( int len )
   return workspace.kernel.debug_space.location + written;
 }
 
-void SVCWriteN( char const *s, int len ) 
+void SVCWriteN( char const *s, int len )
 {
   os_pipe *pipe = (os_pipe*) workspace.kernel.debug_pipe;
 
@@ -2904,7 +2932,7 @@ void SVCWriteN( char const *s, int len )
   }
 }
 
-void SVCWrite0( char const *s ) 
+void SVCWrite0( char const *s )
 {
   if (s == 0) s = "<NULL>";
   int len = 0;
@@ -2937,21 +2965,20 @@ void __attribute__(( noreturn )) assertion_failed( uint32_t *abt, svc_registers 
 
   register uint32_t caller asm ( "lr" );
 
-  show_word( workspace.core_number * (1920/4) + 80, 20, assertion, Green );
-  show_word( workspace.core_number * (1920/4) + 160, 20, caller, Green );
-  show_word( workspace.core_number * (1920/4) + 160, 40, &workspace.task_slot.running, Yellow );
-  show_word( workspace.core_number * (1920/4) + 80, 60, workspace.task_slot.running, Yellow );
-  show_word( workspace.core_number * (1920/4) + 160, 60, workspace.task_slot.running->slot, Yellow );
+  show_word( workspace.core_number * (1920/4) + 80, 20, (uint32_t) assertion, Green );
+  show_word( workspace.core_number * (1920/4) + 160, 20, (uint32_t) caller, Green );
+  show_word( workspace.core_number * (1920/4) + 160, 40, (uint32_t) &workspace.task_slot.running, Yellow );
+  show_word( workspace.core_number * (1920/4) + 80, 60, (uint32_t) workspace.task_slot.running, Yellow );
+  show_word( workspace.core_number * (1920/4) + 160, 60, (uint32_t) workspace.task_slot.running->slot, Yellow );
   show_word( workspace.core_number * (1920/4) + 80, 70, (uint32_t) abt, Yellow );
   show_word( workspace.core_number * (1920/4) + 160, 70, (uint32_t) regs, Yellow );
 
   // if (workspace.task_slot.running == 0) return; // OS_Heap recursing before tasks initialised?
 
-  // show_task( workspace.task_slot.running );
-
-  show_word( workspace.core_number * (1920/4) + 80, 88, regs, Green );
-  for (int i = 0; i < 15; i++) {
-    show_word( workspace.core_number * (1920/4) + 80, 100+10 * i, regs->r[i], Yellow );
+  show_word( workspace.core_number * (1920/4) + 80, 88, (uint32_t) regs, Green );
+  uint32_t *r = &regs->r[0];
+  for (int i = 0; i < sizeof( Task ) / 4; i++) {
+    show_word( workspace.core_number * (1920/4) + 80, 100+10 * i, r[i], Yellow );
   }
   for (int i = 0; i < 15; i++) {
     show_word( workspace.core_number * (1920/4) + 160, 100+10 * i, abt[i], Yellow );
@@ -2974,179 +3001,297 @@ void __attribute__(( noreturn )) assertion_failed( uint32_t *abt, svc_registers 
   __builtin_unreachable();
 }
 
-void TempTaskDo2( void (*func)( uint32_t p1, uint32_t p2 ), uint32_t p1, uint32_t p2 )
+/*
+This is something I wrote last October, it's obsolete, now but might be useful.
+
+I haven't thought through the implications of being able to interrupt the kernel in SVC mode.
+
+It was something I wanted to avoid happening, by only having extremely quick routines execute at that level. Legacy RO, however...
+
+Basics:
+
+When a usr32 mode program executes an SWI, the kernel pushes the usr32 accessible registers onto the SVC stack and calls various C routines to handle the SWI, including often re-loading those registers and calling legacy code.
+
+SWIs often call other SWIs.
+
+Generally, SWIs do no affect the banked registers (sp & lr).
+
+The exceptions are ThreadOp, PipeOp, and interrupts, which can all switch tasks.
+
+
+
+When a task is switched out in favour of interrupt tasks, and it's executing a SWI, all four banked registers need to be stored and restored. I think.
+
+
+Since there is only one SVC stack (at the moment), tasks that have been switched out during a SWI have to be switched back in in LIFO order, to preserve the integrity of the stack.
+
+The problem I'm experiencing is probably that the interrupted thread's sp and lr are not being saved correctly. There is no space in the Task structure for both usr and svc sp and lr.
+
+I'd almost forgotten that a single instruction can save the banked usr registers: stm sp, {...}^
+
+It may not write back to the base register. DDI 0487C.a F5-3753 (So, sub sp, sp, #14*4, stm sp, {...}^, not stm sp!, {...}^)
+
+
+These adjustments have the huge advantage that there will not be any more significant updates to arm32.
+
+ */
+
+static void mpsafe_insert_at_tail( Task **head, Task *task )
 {
-  Task *running = workspace.task_slot.running;
-
-  assert( running != 0 );
-
-  // This can't be on this slot's SVC stack, that would make it impossible
-  // to switch slots. So we need to do a proper allocate, not just declare
-  // a local variable.
-  Task *temporary = Task_new( running->slot );
-
-  // This temporary task is representing another, so any locks, etc. should
-  // use the application task's handle.
-  temporary->app_task = running->app_task;
-
-  assert( temporary->slot == running->slot ); // Ensured by Task_new
-
-  dll_replace_Task( running, temporary, &workspace.task_slot.running );
-
-  func( p1, p2 );
-
-  // Interrupts are sometimes enabled on return from legacy code.
-  // I think this is a Bad Thing, but disabling them here can cope.
-  asm ( "cpsid aif" );
-
-  // Put the caller task whereever the function put the temporary task
-  // in the running queue.
-  dll_replace_Task( temporary, running, &workspace.task_slot.running );
-
-  Task_free( temporary );
-}
-
-void task_swap_safe_stack( Task *from, uint32_t *sp, Task *to )
-{
-  TaskSlot *new_slot = to->slot;
-  TaskSlot *old_slot = from->slot;
-
-#ifdef DEBUG__SHOW_TASK_SWITCHES
-  WriteS( "Task swap from " ); WriteNum( from ); WriteS( " to " ); WriteNum( to ); NewLine;
-  for (int i = 0; i < 15; i++) {
-    WriteNum( from->regs.r[i] ); if (i != 7) Space; else NewLine;
-  }
-  NewLine;
-
-  for (int i = 0; i < 15; i++) {
-    WriteNum( to->regs.r[i] ); if (i != 7) Space; else NewLine;
-  }
-  NewLine;
-#endif
-
-  uint32_t *svc_sp = sp;
-
-  if (new_slot != old_slot) {
-#ifdef DEBUG__SHOW_TASK_SWITCHES
-  WriteS( "Dropping slot " ); WriteNum( from->slot ); WriteS( " for " ); WriteNum( to->slot ); NewLine;
-#endif
-
-    // Stack the old value for retrieval when the slot is swapped back in
-    // We're running with a different stack at this point
-    sp--;
-#ifdef DEBUG__SHOW_TASK_SWITCHES
-WriteS( "Saving SVC " ); WriteNum( old_slot ); WriteS( " SVC sp < stack top: " ); WriteNum( sp ); Space; WriteNum( old_slot->svc_sp_when_unmapped ); NewLine;
-#endif
-    *sp = (uint32_t) old_slot->svc_sp_when_unmapped;
-
-    workspace.task_slot.running = to;
-    MMU_switch_to( new_slot );
-
-    old_slot->svc_sp_when_unmapped = sp;
-
-    // We're swapping a slot back in, so restore its stack properly, if it's
-    // in use
-    svc_sp = new_slot->svc_sp_when_unmapped;
-    if (svc_sp != &svc_stack_top) {
-      new_slot->svc_sp_when_unmapped = (void*) *svc_sp;
-//WriteS( "Restoring " ); WriteNum( new_slot ); WriteS( " SVC sp < stack top: " ); WriteNum( svc_sp ); Space; WriteNum( new_slot->svc_sp_when_unmapped ); NewLine;
-      svc_sp++;
+  // TODO add SEV/WFE
+  for (;;) {
+    Task *old = *head;
+    uint32_t uold = (uint32_t) old;
+    if (old == 0) {
+      // Empty list, but another core might add something...
+      if (0 == change_word_if_equal( (uint32_t*) head, 0, (uint32_t) task )) {
+        return;
+      }
+    }
+    else if (uold == change_word_if_equal( (uint32_t*) head, uold, 1 )) {
+      // Replaced head pointer with 1, can work on list safely...
+      Task **tail = &old->prev;
+      dll_attach_Task( task, tail );
+      if (1 != change_word_if_equal( (uint32_t*) head, 1, uold )) {
+        asm ( "bkpt 4" );
+      }
+      else {
+        return;
+      }
     }
   }
-
-  register Task *now asm( "r4" ) = to;
-  asm ( "  add lr, r4, %[banked]"
-      "\n  ldm lr, {r1-r2} // Load usr sp, lr"
-      "\n  msr sp_usr, r1"
-      "\n  msr lr_usr, r2"
-      "\n  mov sp, %[sp]"
-      "\n  mov lr, r4"
-      "\n  ldm lr!, {r0-r12}"
-      "\n  rfeia lr // Restore execution and SPSR"
-      :
-      : [banked] "i" ((char*)&((Task*)0)->banked_sp_usr)
-      , "r" (now)
-      , [sp] "r" (svc_sp)
-      : "r1", "r2", "lr" );
-
-  __builtin_unreachable();
 }
 
-void __attribute__(( noinline, noreturn )) task_swap( Task *from, uint32_t *sp, Task *to )
+static Task *mpsafe_detatch_head( Task **head )
 {
-  uint32_t stack = (sizeof( workspace.kernel.svc_stack ) 
-                    + (uint32_t) &workspace.kernel.svc_stack);
-  // Assumes that the tasks are in their proper positions in the
-  // running queue (or possibly not, in the case of `from`)
-  // Uses the core's initial SVC stack to ensure MMU_switch_to is safe,
-  // now each slot has its own svc stack.
-
-  register Task *r0 asm( "r0" ) = from;
-  register uint32_t *r1 asm( "r1" ) = sp;
-  register Task *r2 asm( "r2" ) = to;
-
-  asm volatile (
-      "\n  mov sp, %[stack]" 
-      "\n  b task_swap_safe_stack"
-      :
-      : [stack] "r" (stack)
-      , "r" (r0)
-      , "r" (r1)
-      , "r" (r2) );
-
-  __builtin_unreachable();
+  Task *result = *head;
+  while (result != 0) {
+    uint32_t uresult = (uint32_t) result;
+    if (uresult == change_word_if_equal( (uint32_t*) head, uresult, 1 )) {
+      // Replaced head pointer with 1, can work on list safely...
+      Task *tail = result->next;
+      if (tail == result) {
+        // Only item in queue
+        *head = 0;
+      }
+      else {
+        dll_detatch_Task( result );
+        *head = tail;
+      }
+      break;
+    }
+    result = *head;
+  }
+  return result;
 }
+
+/*
+20230402 Final form?
+
+Each independent TaskSlot has:
+ * some shared and some private virtual memory areas
+ * one or more Tasks associated with it.
+ * a single SVC (SWI) stack, which may be used by just one Task
+ * SWIs that cannot be interrupted do not need to use the slot's stack,
+   using the core's smaller, non-extendible, stack instead.
+ * Tasks that call a SWI that may be interrupted will be blocked until
+   the slot's stack is released.
+*/
+
+static bool interrupt_safe_swi( int number )
+{
+  // TODO: include intercepted Wimp SWIs
+  return (number == OS_ThreadOp
+       || number == OS_PipeOp);
+}
+
+/* SWIs are only called by the running task
+ * The task will be in one of the following states prior to the SWI:
+ *
+ *   Running usr32 code
+ *     Not owner of SVC stack
+ *       Interrupt safe SWI
+ *                              Execute SWI
+ *       Interrupt unsafe SWI
+ *                              Block task until SVC stack claimed
+ *                              Execute SWI
+ *
+ *   Running svc32 code
+ *     Owner of SVC stack (SWI, module init, or callback calling)
+ *                              Execute SWI
+ *     Not owner of SVC stack
+ *                              Block task until SVC stack claimed
+ *                              Execute SWI
+ *
+ * Interrupt safe SWIs never enable interrupts.
+ */
 
 void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
 {
   Task *caller = workspace.task_slot.running;
+  svc_registers *resume_sp = regs + 1;
 
-  execute_swi( regs );
+  uint32_t number = get_swi_number( regs->lr );
 
-  Task *resume = workspace.task_slot.running;
+  if ((number & ~Xbit) == OS_CallASWI) number = regs->r[9];
+  else if ((number & ~Xbit) == OS_CallASWIR12) number = regs->r[12];
 
-  // The new state of the task that called this SWI has been established.
-  // It may have changed the running task. Resume the running task.
+  // FIXME What should happen if you call CallASWI using CallASWI?
+  if ((number & ~Xbit) == OS_CallASWI
+   || (number & ~Xbit) == OS_CallASWIR12) asm ( "bkpt 1" ); // FIXME
 
-  if (resume != caller) {
-#ifdef DEBUG__SHOW_TASK_SWITCHES
-//show_running_queue( 1200 );
-    WriteNum( caller ); WriteS( " resumed " ); WriteNum( resume ); NewLine;
-#endif
+  TaskSlot *slot = caller->slot;
+
+  assert( owner_of_slot_svc_stack( caller ) == using_slot_svc_stack() );
+
+  // The banked registers are only saved and restored when
+  // the task moves from or to usr32 mode.
+  if (usr32_caller( regs )) {
+    asm ( "\n  mrs %[usrsp], sp_usr"
+          "\n  mrs %[usrlr], lr_usr"
+          : [usrsp] "=r" (caller->banked_sp_usr)
+          , [usrlr] "=r" (caller->banked_lr_usr)
+        );
   }
 
-  if (resume == caller) {
-    if (0x10 == (resume->regs.spsr & 0x9f)) {
-      // THIS MIGHT CHANGE workspace.task_slot.running!
-      kick_debug_handler_thread();
-      resume = workspace.task_slot.running;
+  if (!interrupt_safe_swi( number & ~Xbit )
+   && !owner_of_slot_svc_stack( caller )) {
+    // Not the owner of the slot's SVC stack, but caller needs to be...
+  
+    // Legacy SWIs can do all sorts of terrible things, including
+    // enabling interrupts.
+    // If we are interrupted, the state of the caller will be stored,
+    // including the stack pointer and it will eventually return to
+    // here as if nothing had happened, but we cannot allow the stack
+    // to be corrupted...
+
+    if (0 == change_word_if_equal( (uint32_t*) &slot->svc_stack_owner, 0, (uint32_t) caller )) {
+      // Now the owner of the slot specific svc stack
+      svc_registers *task_regs = (&svc_stack_top)-1;
+      *task_regs = *regs;
+      asm volatile ( "mov sp, %[newsp]" : : [newsp] "r" (task_regs) );
+      regs = task_regs;
+      resume_sp = regs + 1;
+    }
+    else {
+      // Block until the stack is free
+      // Put task into list of waiting tasks in slot
+      workspace.task_slot.running = caller->next;
+      dll_detatch_Task( caller );
+      mpsafe_insert_at_tail( &slot->waiting_for_slot_stack, caller );
     }
   }
 
+  assert( interrupt_safe_swi( number & ~Xbit ) || owner_of_slot_svc_stack( caller ) );
+
+  Task *resume = workspace.task_slot.running;
+
   if (resume == caller) {
-    // Just continue
-    asm volatile (
-        "\n  mov sp, %[sp]"
-        "\n  pop {r0-r12}"
-        "\n  rfeia sp! // Restore execution and SPSR"
-        : 
-        : [sp] "r" (regs) );
-  }
-  else {
-    save_context( caller, regs );
+    // SWI can be executed by this Task, so go ahead
+    execute_swi( regs, number );
 
-    uint32_t* pre_swi_sp = (uint32_t*) (regs + 1);
-
-    task_swap( caller, pre_swi_sp, resume );
+    resume = workspace.task_slot.running;
   }
+
+  // Whether or not we're restoring from a Task or the stack,
+  // the stack has had stuff pushed onto it
+  // If regs points onto the slot's SVC stack, the data will
+  // not be overwritten because interrupts are disabled.
+
+  if (resume != caller) {
+    // Swapping out the current task, store its state
+    caller->regs = *regs;
+    // TODO floating point context, etc.
+
+    if (owner_of_slot_svc_stack( caller )) {
+      slot->svc_sp_when_unmapped = (uint32_t*) resume_sp;
+    }
+
+    assert( slot == caller->slot );
+
+    regs = &resume->regs;
+
+    if (slot != resume->slot) {
+      // Note that there will be writable space on the stack for this value
+      // because we just increased the stack pointer by sizeof( svc_registers )
+
+      // Set the stack to the top of the core's SVC stack, which is mapped
+      // globally for the core and won't be mapped out by MMU_switch_to.
+
+      register TaskSlot *new_slot asm( "r0" ) = resume->slot;
+
+      asm volatile (
+        "\n  mov sp, %[new]"
+        "\n  bl MMU_switch_to"
+        "\n  mov sp, #3" // Invalid value, will be overwritten
+        :
+        : [new] "r" (core_svc_stack_top())
+        , "r" (new_slot)
+        : "r1", "r2", "r3", "r12", "lr" ); // Function call!
+    
+      assert( ((uint32_t) resume >> 16) == 0xfff8 );
+    }
+
+    slot = resume->slot;
+
+    // Now the resumed task's slot is mapped in, with the word at the
+    // restored stack pointer being the old value for svc_sp_when_unmapped
+    // If the task owns the stack, restore the stack pointer, otherwise
+    // leave it pointing at the core's svc_stack
+
+    if (owner_of_slot_svc_stack( resume )) {
+      resume_sp = (void*) slot->svc_sp_when_unmapped;
+    }
+    else {
+      resume_sp = core_svc_stack_top();
+    }
+  }
+
+  assert( slot == resume->slot );
+
+  // At this point, one of these must be true:
+  // 1. The running task has not changed, in which case
+  //  a) the slot (and therefore the memory map) has not changed
+  //  b) the svc_registers stored below the stack are still available
+  //  c) the stack pointer is where it was before the SVC instruction was called
+  //
+  // 2. The running task has changed, but it is in the same slot as the caller.
+  // 2.1 The running task is the owner of the svc stack, in which case
+  //  a) The stack pointer is the value it had when this task was swapped out last time
+
+  if (resume_sp == &svc_stack_top) {
+    // Done with slot's svc_stack
+
+    slot->svc_stack_owner = mpsafe_detatch_head( &slot->waiting_for_slot_stack );
+    slot->svc_sp_when_unmapped = (uint32_t*) &svc_stack_top;
+
+    resume_sp = core_svc_stack_top();
+  }
+
+  if (0 == (regs->spsr & 0xf)) {
+    asm (
+      "\n  msr sp_usr, %[usrsp]"
+      "\n  msr lr_usr, %[usrlr]"
+      :
+      : [usrsp] "r" (resume->banked_sp_usr)
+      , [usrlr] "r" (resume->banked_lr_usr)
+    );
+  }
+
+  asm volatile ( "mov sp, %[top]" : : [top] "r" (resume_sp) );
+
+  register svc_registers *lr asm ( "lr" ) = regs;
+  asm (
+      "\n  ldm lr!, {r0-r12}"
+      "\n  rfeia lr // Restore execution and SPSR"
+      :
+      : "r" (lr) );
 
   __builtin_unreachable();
 }
 
-uint32_t *__attribute__(( noinline, noreturn )) c_run_irq_tasks( uint32_t *sp )
+Task *__attribute__(( noinline )) c_run_irq_tasks( Task *running )
 {
-  Task *running = workspace.task_slot.running;
-
   assert( running->regs.lr == (uint32_t) ResumeSVC
       || (running->regs.spsr & 0x1f) == 0x10 );
   // The state of the running task is safely stored
@@ -3162,28 +3307,50 @@ uint32_t *__attribute__(( noinline, noreturn )) c_run_irq_tasks( uint32_t *sp )
 
   dll_attach_Task( irq_task, &workspace.task_slot.running );
 
-  task_swap( running, sp, irq_task );
-
-  __builtin_unreachable();
+  return irq_task;
 }
 
+/*
+When a SVC instruction is executed, the running task is in one of these
+states:
+
+1. Owner of slot's svc stack
+2. Not owner of slot's svc stack, which is
+  a) owned by another task, or
+  b) not owned by another task
+
+1. May be detected by seeing if the stored state is the only data
+on the core's svc stack (in which case it is not the owner)
+
+2. a) or b) can be determined by checking svc_stack_owner, in a
+multi-processing safe way.
+
+Case 2a requires the running task to be blocked and queued for when
+the owner task releases the slot's svc stack.
+
+Case 2b requires the context to be stored on the newly owned slot's
+svc stack.
+
+The context stored in the Task structure is only updated when the
+task is swapped out, and ...
+*/
 void __attribute__(( naked, noreturn )) Kernel_default_svc()
 {
   asm volatile (
-      "\n  srsdb sp!, #0x13 // Store return address and SPSR (SVC mode)" 
-      "\n  ldr lr, [sp, #4]"
-      "\n  and lr, lr, #0x1f"
-      "\n  cmp lr, #0x12" // SVC from irq32 mode; asking for a task swap from saved task in r0
-      "\n  pushne { r0-r12 }"
-      "\n  movne r0, sp"
-      "\n  bne c_execute_swi"
+      // This should detect if the C portion of this function gets
+      // complex enough that the code generator needs stack.
+      "\n.ifne .-Kernel_default_svc"
+      "\n  .error \"Kernel_default_svc compiled code includes instructions before srsdb\""
+      "\n.endif"
 
-  // SVC from irq32, the current task state has been stored, resume the
-  // first interrupt task.
+      "\n  srsdb sp!, #0x13 // Store return address and SPSR (SVC mode)"
+      "\n  push { r0-r12 }  // and all the non-banked registers"
+  );
 
-      "\n  add sp, sp, #8"      // Reset stack
-      "\n  mov r0, sp"          // passed as argument
-      "\n  b c_run_irq_tasks" );
+  svc_registers *regs;
+  asm volatile ( "mov %[regs], sp" : [regs] "=r" (regs) );
+
+  c_execute_swi( regs );
 
   __builtin_unreachable();
 }
@@ -3196,7 +3363,7 @@ static void RunTask( char const *command )
   asm volatile ( "svc 0x20005" : : "r" (c) : "cc" );
 }
 
-/* Swaps out the calling task until this task completes or calls 
+/* Swaps out the calling task until this task completes or calls
  * Wimp_Poll, the first time.
  */
 void StartTask( char const *command )
@@ -3285,8 +3452,8 @@ bool do_OS_AMBControl( svc_registers *regs )
     {
       int32_t change_in_pages = regs->r[1];
       TaskSlot *slot = (TaskSlot*) regs->r[2];
-      TaskSlot_adjust_app_memory( slot, regs->r[1] << 12 );
-      WriteS( "AMBControl 2 - change size " ); WriteNum( regs->r[1] ); NewLine;
+      TaskSlot_adjust_app_memory( slot, change_in_pages << 12 );
+      WriteS( "AMBControl 2 - change size " ); WriteNum( change_in_pages ); NewLine;
       return true;
     }
   case AMB_MapSlot:

@@ -58,7 +58,7 @@ const uint32_t* vduvarloc[173-128] = {
   &workspace.vectors.zp.vdu_drivers.ws.GCsIY,
   &workspace.vectors.zp.vdu_drivers.ws.NewPtX,
   &workspace.vectors.zp.vdu_drivers.ws.NewPtY,
-  &workspace.vectors.zp.vdu_drivers.ws.ScreenStart,
+  (uint32_t*) &workspace.vectors.zp.vdu_drivers.ws.ScreenStart,
   &workspace.vectors.zp.vdu_drivers.ws.DisplayStart,
   &workspace.vectors.zp.vdu_drivers.ws.TotalScreenSize,
 

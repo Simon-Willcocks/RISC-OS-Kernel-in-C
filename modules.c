@@ -270,7 +270,7 @@ struct vector_go {
   svc_registers *regs;
 };
 
-static void run_interruptable_vector( struct vector_go *go )
+static void run_interruptable_vector( svc_registers *regs, vector *v )
 {
   // "If your routine passes the call on, you can deliberately alter some of
   // the registers values to change the effect of the call, however, you must
@@ -282,9 +282,8 @@ static void run_interruptable_vector( struct vector_go *go )
   //    Replaces it with an address in its own code
   //    Returns with mov pc, lr (allowing other handlers to execute)
   // AND the final, default, action of every vector handler is pop {pc}.
-  struct svc_registers *regs = go->regs;
 
-  register vector *v asm( "r10" ) = go->v;
+  register vector *vec asm( "r10" ) = v;
 
   // Code always exits via intercepted.
   asm volatile (
@@ -310,7 +309,7 @@ static void run_interruptable_vector( struct vector_go *go )
       "\n  str r1, [r14, %[spsr]]"
       : "=r" (v) // Updated by code
       : [regs] "r" (regs)
-      , [v] "r" (v)
+      , [v] "r" (vec)
 
       , [next] "i" ((char*) &((vector*) 0)->next)
       , [private] "i" ((char*) &((vector*) 0)->private_word)
@@ -338,8 +337,7 @@ bool run_vector( svc_registers *regs, int vec )
     NewLine;
   }
 #endif
-  struct vector_go go = { .v = workspace.kernel.vectors[vec], .regs = regs };
-  TempTaskDo( run_interruptable_vector, &go );
+  run_interruptable_vector( regs, workspace.kernel.vectors[vec] );
 #ifdef DEBUG__SHOW_VECTORS_VERBOSE
   if (vec != 3 && vec != 0x1c && workspace.kernel.vectors[3] != &do_nothing)
   {
@@ -804,21 +802,41 @@ static void pre_init_service( uint32_t *size_ptr )
       : "lr", "cc", "memory" );
 }
 
-static void post_init_service( uint32_t *size_ptr )
+static inline uint32_t bcd( char c )
 {
-  module_header *m = (void*) (size_ptr+1);
-  uint32_t size = *size_ptr;
+  if (c < '0' || c > '9') c = '0';
+  return c - '0';
+}
+
+static inline void Send_Service_ModulePostInit( uint32_t *memory, char const *postfix )
+{
+  module_header *m = (void*) (memory+1);
   char const *module_title = title_string( m );
+  uint32_t bcd_version = 0;
+  char const *vers = help_string( m );
+  WriteS( "Post Init " ); Write0( vers ); NewLine; return;
+
+  if (postfix[0] == '\0') postfix = 0;
+
+  while (*vers != '\t' && *vers != '\0') vers++;
+  while (*vers == '\t') vers++;
+  while (*vers == ' ' && *vers != '\0') vers++;
+  if (vers[1] == '.') {
+    bcd_version = (bcd(vers[0]) << 8) | (bcd(vers[2]) << 4) | (bcd(vers[3]));
+  }
+  else asm ( "bkpt 1" );
 
   // Service_MemoryMoved
   register module_header* header asm( "r0" ) = m;
   register uint32_t code asm( "r1" ) = 0xda;
   register char const *title asm( "r2" ) = module_title;
+  register char const *module_postfix asm( "r3" ) = postfix;
+  register uint32_t bcd asm( "r4" ) = bcd_version;
 
   asm ( "svc %[swi]"
       :
       : [swi] "i" (OS_ServiceCall | Xbit)
-      , "r" (code), "r" (header), "r" (title)
+      , "r" (code), "r" (header), "r" (title), "r" (module_postfix), "r" (bcd)
       : "lr", "cc", "memory" );
 }
 
@@ -912,7 +930,7 @@ static bool initialise_module( svc_registers *regs, uint32_t *memory, char const
     // "This means that any SWIs etc provided by the module are available
     // (in contrast, during any service calls issued by the module’s own
     // initialisation code, the module is not yet linked into the chain)."
-    post_init_service( memory );
+    Send_Service_ModulePostInit( memory, instance->postfix );
   }
 
   return success;
@@ -924,7 +942,7 @@ static bool do_Module_Load( svc_registers *regs )
   uint32_t *memory = read_module_into_memory( command );
   if (memory == 0) {
     static error_block err = { 0x888, "File not a module, or not found" };
-    regs->r[0] = &err;
+    regs->r[0] = (uint32_t) &err;
     WriteS( "Tried to load module " ); Write0( command ); NewLine;
     return false;
   }
@@ -1165,9 +1183,9 @@ static uint32_t instance_number( module *m )
 
 static bool do_Module_InsertFromMemory( svc_registers *regs )
 {
+#ifdef DEBUG__SHOW_MODULE_INIT
   module_header *header = (void*) regs->r[1];
 
-#ifdef DEBUG__SHOW_MODULE_INIT
   NewLine;
   WriteS( "INIT: " );
   Write0( title_string( header ) ); NewLine;
@@ -3165,6 +3183,7 @@ static uint32_t screen_colour_from_os_colour( uint32_t os )
   return (255 << 24) | (os_colour.R << 16) | (os_colour.G << 8) | os_colour.B;
 }
 
+#ifdef DEBUG__SHOW_HLINES
 static void show_sprite()
 {
   if (workspace.vectors.zp.vdu_drivers.ws.XWindLimit > 256
@@ -3177,7 +3196,7 @@ static void show_sprite()
 
   WriteS( "Show sprite " ); WriteNum( workspace.vectors.zp.vdu_drivers.ws.XWindLimit ); WriteS( "x" ); WriteNum( workspace.vectors.zp.vdu_drivers.ws.YWindLimit ); Space; WriteNum( shift ); Space; WriteNum( mask ); NewLine;
 
-  uint32_t const *start = workspace.vectors.zp.vdu_drivers.ws.ScreenStart;
+  uint32_t const *start = (void*) workspace.vectors.zp.vdu_drivers.ws.ScreenStart;
   // "The image contains the rows of the sprite from top to bottom, all word-aligned" PRM 1-780
 
   // Reversed y, because printing top line first
@@ -3207,6 +3226,7 @@ static void show_sprite()
   }
   NewLine;
 }
+#endif
 
 void __attribute__(( noinline )) c_horizontal_line_draw( uint32_t left, uint32_t y, uint32_t right, uint32_t action )
 {
@@ -3240,12 +3260,10 @@ void __attribute__(( noinline )) c_horizontal_line_draw( uint32_t left, uint32_t
 #endif
 
   // FIXME These things need to be moved into some graphics context. The Kernel/s/vdu stuff accesses this directly, but the DrawMod uses the ReadVduVariables interface.
-  extern uint32_t *vduvarloc[];
 
   // EcfOraEor *ecf;
-  extern uint32_t frame_buffer;
   uint32_t bpp = 1 << workspace.vectors.zp.vdu_drivers.ws.Log2BPP;
-  uint32_t *screen = workspace.vectors.zp.vdu_drivers.ws.ScreenStart;
+  uint32_t *screen = (void*) workspace.vectors.zp.vdu_drivers.ws.ScreenStart;
   uint32_t y_from_top = workspace.vectors.zp.vdu_drivers.ws.YWindLimit - y;
   int32_t stride = (((workspace.vectors.zp.vdu_drivers.ws.XWindLimit + 1) * bpp + 31) / 32);
   uint32_t *row = screen + stride * y_from_top;
@@ -3269,7 +3287,6 @@ void __attribute__(( noinline )) c_horizontal_line_draw( uint32_t left, uint32_t
     break;
   case 5: // 32bpp
     c = screen_colour_from_os_colour( workspace.vectors.zp.vdu_drivers.ws.FgEcf[0] );
-    //c = screen_colour_from_os_colour( *vduvarloc[154 - 128] );
     break;
   default:
     WriteS( "Unsupported bit depth" ); NewLine;
@@ -3462,7 +3479,7 @@ static void set_up_legacy_zero_page()
   // These three read together in vduplot
   workspace.vectors.zp.vdu_drivers.ws.XShftFactor = 0;
   workspace.vectors.zp.vdu_drivers.ws.GColAdr = &workspace.vectors.zp.vdu_drivers.ws.FgEcfOraEor;
-  workspace.vectors.zp.vdu_drivers.ws.ScreenStart = (uint32_t) &frame_buffer;
+  workspace.vectors.zp.vdu_drivers.ws.ScreenStart = (void*) &frame_buffer;
 
   // What's the difference between GcolOraEorAddr and GColAdr?
 
@@ -3660,6 +3677,9 @@ void PreUsrBoot()
 #endif
 
     initialise_module( &regs, (void*) &_binary_Modules_HAL_start, args );
+#ifdef DEBUG__SHOW_MODULE_INIT
+  WriteS( "HAL initialised" );
+#endif
   }
 
 workspace.kernel.frame_buffer_initialised = 1;
@@ -3686,7 +3706,8 @@ static uint32_t start_idle_task()
   return handle;
 }
 
-static void __attribute__(( noreturn, noinline )) BootWithFullSVCStack()
+// Not static, only called from inline assembler
+void __attribute__(( noreturn, noinline )) BootWithFullSVCStack()
 {
   start_idle_task(); // The one that's always there
 
@@ -3735,17 +3756,16 @@ void Boot()
   assert( Task_now() != 0 );
   assert( TaskSlot_now() == slot );
 
-  MMU_switch_to( slot );
-
   extern uint32_t svc_stack_top;
 
   // Up until now, we've been running with the minimal boot stack set up in 
   // boot.c
   // We'll use it again for switching between slots which now have their own
-  // SVC stack.
+  // SVC stack and for Tasks that do not own their slot's svc stack.
   asm volatile ( "mov sp, %[sp]"
              "\n  b BootWithFullSVCStack"
              :
-             : [sp] "r" (&svc_stack_top)
-             , "m" (BootWithFullSVCStack) );
+             : [sp] "r" (&svc_stack_top) );
+
+  __builtin_unreachable();
 }
