@@ -925,6 +925,8 @@ static inline void stop_and_blink( struct workspace *workspace )
   }
 }
 
+// FIXME: Don't busy-wait for responses, have a module that handles
+// GPU mailbox communications asynchronously!
 uint32_t initialise_frame_buffer( struct workspace *workspace )
 {
   GPU_mailbox volatile *mailbox = &workspace->gpu->mailbox[0];
@@ -954,7 +956,7 @@ uint32_t initialise_frame_buffer( struct workspace *workspace )
   dma_tags[index++] = 0x00048006;    // Pixel order
   dma_tags[index++] = 4;
   dma_tags[index++] = 0;
-  dma_tags[index++] = 1;             // 0 = BGR, 1 = RGB
+  dma_tags[index++] = 0;             // 0 = BGR, 1 = RGB
   dma_tags[index++] = 0x00048003;    // Set physical (display) width/height
   dma_tags[index++] = 8;
   dma_tags[index++] = 0;
@@ -1434,7 +1436,7 @@ static void uart_interrupt_task( uint32_t handle, struct core_workspace *ws, int
 
 static uint32_t start_uart_interrupt_task( struct core_workspace *ws, int device )
 {
-  register uint32_t request asm ( "r0" ) = 254; // 0; // Create Thread
+  register uint32_t request asm ( "r0" ) = 0; // Create Thread
   register void *code asm ( "r1" ) = uart_interrupt_task;
   register void *stack_top asm ( "r2" ) = (&ws->shared->uart_task_stack+1);
   register struct core_workspace *workspace asm( "r3" ) = ws;
@@ -1457,7 +1459,7 @@ static uint32_t start_uart_interrupt_task( struct core_workspace *ws, int device
 
 #include "include/pipeop.h"
 
-static void console_task( uint32_t handle, struct core_workspace *ws, uint32_t read_pipe )
+static void __attribute__(( noreturn )) console_task( uint32_t handle, struct core_workspace *ws, uint32_t read_pipe )
 {
   PipeSpace data = { 0, 0, 0 };
   add_string( "Starting console task, pipe: ", ws );
@@ -1493,7 +1495,7 @@ static uint32_t start_console_task( struct core_workspace *ws, uint32_t pipe )
 {
   uint64_t *stack = (void*) ((&ws->console_stack)+1);
 
-  register uint32_t request asm ( "r0" ) = 254; // FIXME FIXME FIXME RunFree
+  register uint32_t request asm ( "r0" ) = 0; // 254; // FIXME FIXME FIXME RunFree
   register void *code asm ( "r1" ) = console_task;
   register void *stack_top asm ( "r2" ) = stack;
   register struct core_workspace *workspace asm( "r3" ) = ws;
@@ -1657,7 +1659,7 @@ add_num( pipe, &workspace->core_specific[this_core] );
     workspace->qa7->Core_IRQ_Source[this_core] = 0xd;
   }
 
-  if (1) {
+  if (0) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
 
