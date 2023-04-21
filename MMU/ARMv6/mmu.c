@@ -723,6 +723,8 @@ static bool stack_overflow( uint32_t address, uint32_t type )
 
 static bool stack_underflow( uint32_t address, uint32_t type )
 {
+
+show_tasks_state();
   // Access to safety page above a system stack
   asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   return false;

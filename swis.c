@@ -191,6 +191,7 @@ static bool do_OS_SetEnv( svc_registers *regs ) { Write0( __func__ ); NewLine; r
 static bool do_OS_IntOn( svc_registers *regs )
 {
   //Write0( __func__ ); NewLine;
+asm ( ".word 0xffffffff" );
   regs->spsr = (regs->spsr & ~0x80);
   return true;
 }
@@ -906,7 +907,7 @@ static bool do_OS_SetCallBack( svc_registers *regs )
   // Yes, if interrupts are enabled, and with the sole exception of
   // return from this SWI. PRM 1-315
   //set_transient_callback( regs->r[0], regs->r[1] );
-  asm ( "bkpt 9" );
+  WriteS( "OS_SetCallBack" ); NewLine;
 
   return true;
 }
@@ -2534,7 +2535,8 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
   trace_wimp_calls_in( regs, number & 0x3f );
   switch (number & 0x3f) {
   case 0x1e:
-    WriteS( "Start task: " ); Write0( regs->r[0] ); 
+    WriteS( "Start task, passed to legacy Wimp: " ); Write0( regs->r[0] );
+    WriteS( ", caller: " ); WriteNum( regs->lr ); NewLine;
     return false;
     break;
   case 0x00: // Wimp_Initialise
@@ -2639,12 +2641,12 @@ static void swi_completed( uint32_t number )
   case OS_FSControl:
     {
       // One caller at a time, system wide for now.
-      return Task_kernel_release();
+      Task_kernel_release();
     }
   }
 }
 
-static inline void run_transient_callbacks()
+/* static inline */void run_transient_callbacks()
 {
   if (workspace.kernel.transient_callbacks == 0) return;
 

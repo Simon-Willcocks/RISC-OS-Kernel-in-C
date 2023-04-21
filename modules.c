@@ -308,6 +308,7 @@ static void run_interruptable_vector( svc_registers *regs, vector *v )
       "\n  orr r1, r1, r2"
       "\n  str r1, [r14, %[spsr]]"
       : "=r" (v) // Updated by code
+      , "=r" (regs) // Corrupted by DrawV, I think
       : [regs] "r" (regs)
       , [v] "r" (vec)
 
@@ -1662,7 +1663,7 @@ static void __attribute__(( noinline )) default_os_byte_c( uint32_t *regs )
   switch (regs[0]) {
   case 0x00: // Display OS version or return machine type
     {
-      static error_block version = { 0, "RISC OS, C Kernel 0.01 (1 May 2022)" };
+      static error_block version = { 0, "RISC OS, C Kernel 0.01 ("__DATE__")" };
       if (regs[1] == 0) {
         regs[0] = (uint32_t) &version;
         set_VF();
@@ -3678,7 +3679,7 @@ void PreUsrBoot()
 
     initialise_module( &regs, (void*) &_binary_Modules_HAL_start, args );
 #ifdef DEBUG__SHOW_MODULE_INIT
-  WriteS( "HAL initialised" );
+  WriteS( "HAL initialised" ); NewLine;
 #endif
   }
 
@@ -3713,17 +3714,8 @@ void __attribute__(( noreturn, noinline )) BootWithFullSVCStack()
 
   PreUsrBoot();
 
-WriteS( "Location of shared.task_slot.special_waiting_lock: " ); WriteNum( &shared.task_slot.special_waiting_lock ); NewLine;
-WriteS( "Physical shared.task_slot.special_waiting_lock: " ); WriteNum( &shared.task_slot.special_waiting_lock ); NewLine;
-  // No App memory initially, but a small stack in the RMA
-union {
-  struct {
-    uint32_t wanted:1;
-    uint32_t handle:31;
-  };
-  uint32_t raw;
-} number = { .wanted = 1 };
-WriteS( "Wanted? " ); WriteNum( number.raw ); NewLine;
+  // No App memory initially
+
   // The HAL will have ensured that no extraneous interrupts are occuring,
   // so we can reset the SVC stack, enable interrupts and drop to USR mode.
   static uint32_t const root_stack_size = 1024;
@@ -3734,6 +3726,8 @@ WriteS( "Wanted? " ); WriteNum( number.raw ); NewLine;
   // processor mode)
   register uint32_t *stack_top asm ( "r0" ) = &svc_stack_top;
   register uint32_t *usr_stack_top asm ( "r1" ) = &stack[root_stack_size];
+
+  // Note: The first SWI from usr mode will release this slot's svc_stack
 
   asm ( "mov sp, r0"
     "\n  cpsie aif, #0x10"

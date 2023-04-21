@@ -446,6 +446,9 @@ show_tasks_state();
   show_word( 1000, 130, regs[14], Green );
   WriteS( "Exiting " ); Write0( TaskSlot_Command( running->slot ) ); NewLine;
 
+  for (;;) Sleep( 0 );
+
+asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   workspace.task_slot.running = running->next;
   dll_detatch_Task( running );
   return;
@@ -453,7 +456,6 @@ show_tasks_state();
   asm ( "\n  svc %[leave]" : : [leave] "i" (OS_LeaveOS) : "lr" );
 
   //for (;;) { Sleep( 100000 ); }
-asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
 }
 
 static void __attribute__(( naked )) ExitHandler()
@@ -1357,11 +1359,13 @@ static Task *next_irq_task()
     handler = workspace.task_slot.irq_tasks[device];
     workspace.task_slot.irq_tasks[device] = 0; // Not waiting for interrupts
 
+if (handler == 0) { register uint32_t r0 asm( "r0" ) = device; asm ( "bkpt 888" : : "r"(r0) ); } // handler hasn't reported for duty yet, it should have disabled the interrupt at source
 #ifdef DEBUG__SHOW_TASK_SWITCHES
   Write0( __func__ ); Space; WriteNum( workspace.task_slot.running ); Space; WriteNum( handler ); Space; WriteNum( handler->next ); NewLine;
 #endif
   }
 
+  // Either no handler, or it's not in a queue
   assert( handler == 0 || handler->next == handler );
 
   return handler;
@@ -1379,7 +1383,7 @@ static Task *next_irq_task()
 
   if (workspace.task_slot.irq_tasks == 0) {
     int count = shared.task_slot.number_of_interrupt_sources;
-    workspace.task_slot.irq_tasks = shared.task_slot.irq_tasks + (count + workspace.core_number);
+    workspace.task_slot.irq_tasks = shared.task_slot.irq_tasks + (count * workspace.core_number);
     for (int i = 0; i < count; i++) {
       workspace.task_slot.irq_tasks[i] = 0;
     }
@@ -2124,7 +2128,8 @@ static bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
 
   // TODO: Flush only that area, and only as far as necessary (are the two
   // slots only single core and running on the same core?)
-  asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME
+  // TEST TEST TEST restore the following line!
+  ///asm ( "svc %[swi]" : : [swi] "i" (OS_FlushCache) : "lr" ); // Flush whole cache FIXME
 
   bool reclaimed = claim_lock( &shared.kernel.pipes_lock );
 
@@ -2319,6 +2324,7 @@ static bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
 
   if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
 
+assert( 0x2a2a2a2a != regs->r[3] );
   return true;
 }
 
@@ -2532,8 +2538,8 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
       "\n  pop { r0, r1 }     // Resume address, SPSR"
       "\n  stm lr!, { r0, r1 }"
       "\n  tst r1, #0xf"
-      "\n  stmeq lr, { sp, lr }^"
-      "\n  sub %[task], lr, #15*4"
+      "\n  stmeq lr, { sp, lr }^ // Does not update lr, so..."
+      "\n  sub %[task], lr, #15*4 // restores its value"
       : [task] "=r" (interrupted_task)
       : "r" (running)
       ); // Calling task state saved, except for SVC sp & lr
@@ -2560,22 +2566,44 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
   // banked LR and the resume address on the stack and have the task
   // resume at an instruction that pops them both.
   if ((regs->spsr & 0x1f) == 0x13) {
+    // Interrupts are never enabled during interrupt safe SWIs
+    assert( owner_of_slot_svc_stack( interrupted_task ) );
+
     register uint32_t resume asm ( "r2" ) = regs->lr;
     asm volatile ( "mrs r1, lr_svc"
-               "\n  mrs r0, sp_svc"
-               "\n  sub r0, r0, #8"
-               "\n  msr sp_svc, r0"
-               "\n  stm r0, { r1, r2 }"
+               "\n  mrs %[resume_sp], sp_svc"
+               "\n  stmdb %[resume_sp]!, { r1, r2 }"
+               "\n  msr sp_svc, %[resume_sp]"
                : "=r" (resume)
+               , [resume_sp] "=r" (interrupted_task->slot->svc_sp_when_unmapped)
                : "r" (resume)
-               : "r0", "r1", "memory" );
-    asm volatile ( "" : : "r" (resume) ); // FIXME, isn't there a prefix for this problem, like "+r"?
+               : "r1", "memory" );
+
     regs->lr = (uint32_t) ResumeSVC;
+
+    asm volatile (
+      "\n  msr sp_svc, %[reset_sp]"
+      :
+      : [reset_sp] "r" (core_svc_stack_top()) );
   }
 
-  Task *task = c_run_irq_tasks( interrupted_task );
+  Task *irq_task = c_run_irq_tasks( interrupted_task );
 
-  register svc_registers *lr asm ( "lr" ) = &task->regs;
+  // The returned task might be the interrupted task, if the interrupt was spurious
+
+  if (irq_task->slot != interrupted_task->slot) {
+    // IRQ stack is core-specific, so switching slots does not affect its mapping
+    MMU_switch_to( irq_task->slot );
+
+    assert( !owner_of_slot_svc_stack( irq_task ) );
+
+    asm volatile (
+      "\n  msr sp_svc, %[reset_sp]"
+      :
+      : [reset_sp] "r" (core_svc_stack_top()) );
+  }
+
+  register svc_registers *lr asm ( "lr" ) = &irq_task->regs;
   asm (
       "\n  ldm lr!, {r0-r12}"
       "\n  rfeia lr // Restore execution and SPSR"
@@ -2872,6 +2900,7 @@ void kick_debug_handler_thread()
 
   if (pipe == 0) return;
 
+//show_tasks_state();
   os_pipe *p = (void*) pipe;
   Task *receiver = p->receiver;
   Task *running = workspace.task_slot.running;
@@ -3101,8 +3130,17 @@ Each independent TaskSlot has:
 static bool interrupt_safe_swi( int number )
 {
   // TODO: include intercepted Wimp SWIs
+
+  if (number == OS_IntOn
+   || number == OS_IntOff) return true;
+
+  // FIXME This is a hack so that transient callbacks are only
+  // called with a extendible svc stack
+  if (workspace.kernel.transient_callbacks != 0) return false;
+
   return (number == OS_ThreadOp
-       || number == OS_PipeOp);
+       || number == OS_PipeOp
+       || number == OS_FlushCache);
 }
 
 /* SWIs are only called by the running task
@@ -3176,27 +3214,29 @@ void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
     else {
       // Block until the stack is free
       // Put task into list of waiting tasks in slot
+      regs->lr -= 4; // Resume at the SVC instruction, not after it
       workspace.task_slot.running = caller->next;
       dll_detatch_Task( caller );
       mpsafe_insert_at_tail( &slot->waiting_for_slot_stack, caller );
     }
   }
 
-  assert( interrupt_safe_swi( number & ~Xbit ) || owner_of_slot_svc_stack( caller ) );
-
   Task *resume = workspace.task_slot.running;
 
   if (resume == caller) {
+    assert( interrupt_safe_swi( number & ~Xbit ) || owner_of_slot_svc_stack( caller ) );
+
     // SWI can be executed by this Task, so go ahead
     execute_swi( regs, number );
 
     resume = workspace.task_slot.running;
   }
 
-  // Whether or not we're restoring from a Task or the stack,
-  // the stack has had stuff pushed onto it
-  // If regs points onto the slot's SVC stack, the data will
-  // not be overwritten because interrupts are disabled.
+  if (resume == caller) {
+    kick_debug_handler_thread();
+
+    resume = workspace.task_slot.running;
+  }
 
   if (resume != caller) {
     // Swapping out the current task, store its state
@@ -3264,6 +3304,13 @@ void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
 
     slot->svc_stack_owner = mpsafe_detatch_head( &slot->waiting_for_slot_stack );
     slot->svc_sp_when_unmapped = (uint32_t*) &svc_stack_top;
+    if (slot->svc_stack_owner != 0) {
+      //dll_attach_Task( slot->svc_stack_owner, &workspace.task_slot.running->next );
+      Task *tail = workspace.task_slot.running->next;
+      dll_attach_Task( slot->svc_stack_owner, &tail );
+      //workspace.task_slot.running = workspace.task_slot.running->next;
+      //regs = &workspace.task_slot.running->regs;
+    }
 
     resume_sp = core_svc_stack_top();
   }
@@ -3300,14 +3347,17 @@ Task *__attribute__(( noinline )) c_run_irq_tasks( Task *running )
 
   // This will be a problem if there are spurious interrupts, which are
   // sometimes acceptable. FIXME
-  assert( irq_task != 0 );
+  if (irq_task != 0) {
 
-  // Not in a list
-  assert( irq_task->next == irq_task && irq_task->prev == irq_task );
+    // Not in a list
+    assert( irq_task->next == irq_task && irq_task->prev == irq_task );
 
-  dll_attach_Task( irq_task, &workspace.task_slot.running );
+    // Block the running task, but keep it on this core
+    dll_attach_Task( irq_task, &workspace.task_slot.running );
+  }
+  // TODO count spurious interrupts, I seem to be getting one in QEMU!
 
-  return irq_task;
+  return workspace.task_slot.running;
 }
 
 /*

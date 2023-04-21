@@ -1132,51 +1132,99 @@ static int __attribute__(( noinline )) C_IrqV_handler( struct core_workspace *wo
   QA7 volatile *qa7 = workspace->shared->qa7;
 
   memory_read_barrier();
+
+  // Source is: QA7 core interrupt source; bit 8 is GPU interrupt, bit 0 is physical timer
+
   uint32_t source = qa7->Core_IRQ_Source[core( workspace )];
   bool found = false;
   GPU *gpu = workspace->shared->gpu;
+
+  // TODO is the basic_pending register still a thing?
+  // TODO ignore interrupts that come from the GPU! They may be masked, but do they still show as pending?
 
   memory_read_barrier();
 
   // There are a few speedups possible
   //  e.g. test bits by seeing if (int32_t) (source << (32-irq)) is -ve, or zero (skip the rest of the bits)
+  //  count leading zeros instruction...
 
-  int irq = workspace->last_reported_irq;
+  int last_reported_irq = workspace->last_reported_irq;
+  int irq = last_reported_irq;
+  bool last_possibility = false;
 
   // Write0( "IRQ " ); WriteNum( source ); Space; WriteNum( gpu->pending1 ); Space; WriteNum( gpu->pending1 ); NewLine;
+  if (0) {
+    register uint32_t r0 asm( "r0" ) = source;
+    register uint32_t r1 asm( "r1" ) = gpu->pending1;
+    register uint32_t r2 asm( "r2" ) = gpu->pending2;
+    asm ( " .word 0xffffffff" : : "r"(r0), "r"(r1), "r"(r2) );
+  }
   do {
     irq++;
+    last_possibility = irq == last_reported_irq;
     // WriteNum( irq ); Space;
-    switch (irq) {
-    case 0  ... 31:
-      if (0 != (source & (1 << 8))) {
-        found = 0 != (gpu->pending1 & (1 << irq));
-      }
-      else {
+    if (irq >= 0 && irq < 64) {
+      if (0 == (source & (1 << 8))) {
+        // Nothing from GPU, don't check anything under 64
         irq = 63;
       }
-      break;
-    case 32 ... 63:
-      if (0 != (source & (1 << 8))) {
-        found = 0 != (gpu->pending2 & (1 << (irq - 32)));
-      }
       else {
-        irq = 63;
+        uint32_t pending;
+        if (irq < 32) {
+          pending = gpu->pending1;
+        }
+        else {
+          pending = gpu->pending2;
+        }
+        // We only get here with irq & 0x1f non-zero if the previous reported was in this range
+        assert( (0 != (irq & 0x1f)) == (irq == last_reported_irq+1) );
+        pending = pending >> (irq & 0x1f);
+        while (pending != 0 && 0 == (pending & 1)) {
+          irq++;
+          pending = pending >> 1;
+        }
+        found = pending != 0;
+        if (!found) {
+          irq = irq | 0x1f;
+        }
+        // Next time round will be in next 32-bit chunk
+        assert( found || 0x1f == (irq & 0x1f) );
       }
-      break;
-    case 64 ... 75:
-      //Space; WriteNum( (1 << (irq - 64)) ); NewLine;
-      found = (0 != (source & (1 << (irq - 64))));
-      break;
-    case 76:
-      irq = -1;
-      break;
     }
-  } while (irq != -1 && !found);
+    else if (irq == 72) {
+      // Covered by 0..63
+    }
+    else if (irq < 76) {
+      // 64 CNTPSIRQ
+      // 65 CNTPNSIRQ
+      // 66 CNTHPIRQ
+      // 67 CNTVIRQ
+      // 68 Mailbox 0
+      // 69 Mailbox 1
+      // 70 Mailbox 2
+      // 71 Mailbox 3
+      // 72 (GPU, be more specific)
+      // 73 PMU 
+      // 74 AXI outstanding (core 0 only)
+      // 75 Local timer 
+      found = (0 != (source & (1 << (irq & 0x1f))));
+    }
+    else
+      irq = -1; // Wrap around to 0 on the next loop
 
-  workspace->last_reported_irq = irq;
+    // Check each possible source once, but stop if found
+  } while (!found && !last_possibility);
 
-  return irq;
+  // if (irq == -1) { asm( "bkpt 777\n add %[s], %[p1], %[p2]" : : [s] "r" (source), [p1]"r" (gpu->pending1), [p2]"r" (gpu->pending2) : "lr" ); }
+
+  if (found) {
+    workspace->last_reported_irq = irq;
+
+    return irq;
+  }
+  else {
+    return -1;
+  }
 }
 
 static void __attribute__(( naked )) IrqV_handler()
@@ -1350,7 +1398,9 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
 
     timer_set_countdown( timer );
 
-    // interrupt_is_off( device ); // If we wanted to enable interrupts
+    // If we wanted to enable interrupts we would ensure the
+    // source of the interrupt was disabled, then call:
+    // interrupt_is_off( device );
     ticks += missed_ticks;
 
     if (ticks >= tick_divider) resume_task( tickerv_handle );
@@ -1659,7 +1709,10 @@ add_num( pipe, &workspace->core_specific[this_core] );
     workspace->qa7->Core_IRQ_Source[this_core] = 0xd;
   }
 
-  if (0) {
+  GPU *gpu = workspace->gpu;
+  Write0( "IRQs enabled " ); WriteNum( gpu->enable_basic ); Space; WriteNum( gpu->enable_irqs1 ); Space; WriteNum( gpu->enable_irqs2 ); NewLine;
+
+  if (1) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
 
