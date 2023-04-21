@@ -1712,7 +1712,7 @@ add_num( pipe, &workspace->core_specific[this_core] );
   GPU *gpu = workspace->gpu;
   Write0( "IRQs enabled " ); WriteNum( gpu->enable_basic ); Space; WriteNum( gpu->enable_irqs1 ); Space; WriteNum( gpu->enable_irqs2 ); NewLine;
 
-  if (1) {
+  if (0) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
 
