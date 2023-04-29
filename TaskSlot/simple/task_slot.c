@@ -110,23 +110,23 @@ bool do_OS_GetEnv( svc_registers *regs )
 
 /* Handlers. Per slot, or per thread, I wonder? I'll go for per slot, to start with (matches with the idea of
    cleaning up the handlers on exit).
-0 	Memory limit 	Memory limit 	Unused 	Unused
-1 	Undefined instruction 	Handler code 	Unused 	Unused
-2 	Prefetch abort 	Handler code 	Unused 	Unused
-3 	Data abort 	Handler code 	Unused 	Unused
-4 	Address exception 	Handler code 	Unused 	Unused
-5 	Other exceptions (reserved) 	Unused 	Unused 	Unused
-6 	Error 	Handler code 	Handler R0 	Error buffer
-7 	CallBack 	Handler code 	Handler R12 	Register dump buffer
-8 	BreakPoint? 	Handler code 	Handler R12 	Register dump buffer
-9 	Escape 	Handler code 	Handler R12 	Unused
-10 	Event? 	Handler code 	Handler R12 	Unused
-11 	Exit 	Handler code 	Handler R12 	Unused
-12 	Unused SWI? 	Handler code 	Handler R12 	Unused
-13 	Exception registers 	Register dump buffer 	Unused 	Unused
-14 	Application space 	Memory limit 	Unused 	Unused
-15 	Currently active object 	CAO pointer 	Unused 	Unused
-16 	UpCall 	Handler code 	Handler R12 	Unused
+0 	Memory limit 	        Memory limit 	Unused 	        Unused
+1 	Undefined instruction 	Handler code 	Unused 	        Unused
+2 	Prefetch abort 	        Handler code 	Unused 	        Unused
+3 	Data abort 	        Handler code 	Unused 	        Unused
+4 	Address exception 	Handler code 	Unused 	        Unused
+5 	Other exceptions (res) 	Unused 	        Unused 	        Unused
+6 	Error 	                Handler code 	Handler R0 	Error buffer
+7 	CallBack 	        Handler code 	Handler R12 	Register dump buffer
+8 	BreakPoint? 	        Handler code 	Handler R12 	Register dump buffer
+9 	Escape 	                Handler code 	Handler R12 	Unused
+10 	Event? 	                Handler code 	Handler R12 	Unused
+11 	Exit 	                Handler code 	Handler R12 	Unused
+12 	Unused SWI? 	        Handler code 	Handler R12 	Unused
+13 	Exception registers 	Register buffer Unused 	        Unused
+14 	Application space 	Memory limit 	Unused 	        Unused
+15 	Currently active object CAO pointer 	Unused 	        Unused
+16 	UpCall 	                Handler code 	Handler R12 	Unused
 */
 
 void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
@@ -182,6 +182,22 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
   regs[3] = old.buffer;
 
   if ((regs[1] | regs[2] | regs[3]) == 0) asm ( "bkpt 55" );
+}
+
+bool do_OS_SetCallBack( svc_registers *regs )
+{
+  // This is for use when a task wants its CallBack handler called.
+  // That is the ChangeEnvironment-type handler
+  // PRM 1-326
+  // Is the CallBack handler called every time the OS drops to usr32?
+  // Yes, if interrupts are enabled, and with the sole exception of
+  // return from this SWI. PRM 1-315
+  //set_transient_callback( regs->r[0], regs->r[1] );
+  WriteS( "OS_SetCallBack" ); NewLine;
+
+  TaskSlot_now()->callback_requested = true;
+
+  return true;
 }
 
 void __attribute__(( naked )) default_os_changeenvironment()
@@ -249,6 +265,7 @@ found:
 static void free_task( Task *task )
 {
   task->regs.lr = 1; // Never a valid pc, so unallocated
+
 }
 
 static void free_task_slot( TaskSlot *slot )
@@ -288,13 +305,18 @@ static void allocate_taskslot_memory()
 
   if (first_core) {
     bzero( task_slots, INITIAL_MEMORY_FOR_TASKS_AND_SLOTS );
-    bzero( tasks, INITIAL_MEMORY_FOR_TASKS_AND_SLOTS );
     for (int i = 0; i < INITIAL_MEMORY_FOR_TASKS_AND_SLOTS/sizeof( TaskSlot ); i++) {
       free_task_slot( &task_slots[i] );
     }
-    for (int i = 0; i < INITIAL_MEMORY_FOR_TASKS_AND_SLOTS/sizeof( Task ); i++) {
+    uint32_t const initial_tasks = INITIAL_MEMORY_FOR_TASKS_AND_SLOTS/sizeof( Task );
+    shared.task_slot.tasks_pool = 0;
+    for (int i = 0; i < initial_tasks; i++) {
+      static const Task empty = { 0 };
+      tasks[i] = empty;
+      dll_new_Task( &tasks[i] );
       free_task( &tasks[i] );
     }
+    shared.task_slot.next_to_allocate = &tasks[initial_tasks];
   }
 }
 
@@ -333,7 +355,7 @@ show_tasks_state();
 
 asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   workspace.task_slot.running = running->next;
-  dll_detatch_Task( running );
+  dll_detach_Task( running );
   return;
 
   asm ( "\n  svc %[leave]" : : [leave] "i" (OS_LeaveOS) : "lr" );
@@ -668,7 +690,7 @@ TaskSlot *TaskSlot_new( char const *command_line )
   return slot;
 }
 
-void TaskSlot_detatch_from_creator( TaskSlot *slot )
+void TaskSlot_detach_from_creator( TaskSlot *slot )
 {
   Task *creator = slot->creator;
 
@@ -691,6 +713,43 @@ void TaskSlot_new_application( char const *command, char const *args )
   new_command_line( slot, command, 0, args );
 
   slot->start_time = 0; // cs since Jan 1st 1900 TODO
+}
+
+void TaskSlot_enter_application( void *start_address, void *private_word )
+{
+  Task *running = workspace.task_slot.running;
+  TaskSlot *slot = running->slot;
+
+  if (owner_of_slot_svc_stack( running )) {
+    // Done with slot's svc_stack
+
+    slot->svc_stack_owner = mpsafe_detach_Task_at_head( &slot->waiting_for_slot_stack );
+    slot->svc_sp_when_unmapped = (uint32_t*) &svc_stack_top;
+    if (slot->svc_stack_owner != 0) {
+      //dll_attach_Task( slot->svc_stack_owner, &workspace.task_slot.running->next );
+      Task *tail = workspace.task_slot.running->next;
+      dll_attach_Task( slot->svc_stack_owner, &tail );
+      //workspace.task_slot.running = workspace.task_slot.running->next;
+      //regs = &workspace.task_slot.running->regs;
+    }
+  }
+
+  register void *private asm ( "r12" ) = private_word;
+  asm ( "isb"
+    "\n\tmov sp, %[sp]"
+    "\n\tmsr spsr, %[usermode]"
+    "\n\tmov lr, %[usr]"
+    "\n\tmsr sp_usr, %[stacktop]"
+    "\n\tisb"
+    "\n\teret"
+    :
+    : [stacktop] "r" (0)       // Dummy. It's up to the module to allocate stack if it needs it
+    , [usr] "r" (start_address)
+    , [usermode] "r" (0x10)
+    , [sp] "r" (core_svc_stack_top())
+    , "r" (private) );
+
+  __builtin_unreachable();
 }
 
 void Task_free( Task *task )
@@ -931,7 +990,7 @@ static void __attribute__(( noinline )) c_default_ticker()
       assert( last_resume != 0 );
 
       // Some (maybe all) have woken...
-      dll_detatch_Tasks_until( &workspace.task_slot.sleeping, last_resume );
+      dll_detach_Tasks_until( &workspace.task_slot.sleeping, last_resume );
 
       assert( workspace.task_slot.sleeping == still_sleeping
            || still_sleeping == first );
@@ -949,6 +1008,19 @@ void __attribute__(( naked )) default_ticker()
   asm ( "pop { "C_CLOBBERED", pc }" );
 }
 
+/* WaitUntilWoken/Resume TODO:
+ *
+ * Return the number of resumes from WaitUntilWoken. WaitUntilWoken can
+ * only be called by the task putting itself to sleep; it saves system
+ * calls if it can deal with a number of resumes before potentially
+ * putting itself back to sleep.
+ *
+ * Another advantage: the task could call Resume on itself once in order
+ * that the WaitUntilWoken will return immediately with the number of
+ * pending resumes. If that turns out to be zero, the task could trigger
+ * another task to perform some action after a delay (e.g. powering off
+ * a external drive) before calling WaitUntilWoken "for real".
+ */
 /* static */ error_block *TaskOpWaitUntilWoken( svc_registers *regs )
 {
   Task *running = workspace.task_slot.running;
@@ -968,7 +1040,7 @@ void __attribute__(( naked )) default_ticker()
 
     // It's up to the programmer to remember the handle for this Task,
     // so it can resume it.
-    dll_detatch_Task( running );
+    dll_detach_Task( running );
   }
 
   return 0;
@@ -990,7 +1062,7 @@ void __attribute__(( naked )) default_ticker()
   Task *waiting = task_from_handle( regs->r[1] );
   waiting->resumes++;
   if (waiting->resumes == 0) {
-    // Is waiting, detatched from the running list
+    // Is waiting, detached from the running list
     // Don't replace head, place at head of tail
     Task *tail = running->next;
     assert( tail != running );
@@ -1081,7 +1153,7 @@ typedef union {
       workspace.task_slot.running = running->next;
 
       // Remove from old list
-      dll_detatch_Task( running );
+      dll_detach_Task( running );
       dll_attach_Task( running, &slot->waiting );
       assert( slot->waiting != 0 );
       // Put running at end of list, not head
@@ -1285,7 +1357,7 @@ if (handler == 0) { register uint32_t r0 asm( "r0" ) = device; asm ( "bkpt 888" 
 
   workspace.task_slot.running = running->next;
   assert( running != workspace.task_slot.running );
-  dll_detatch_Task( running );
+  dll_detach_Task( running );
 
   workspace.task_slot.irq_tasks[device] = running;
 
@@ -1433,7 +1505,7 @@ show_task_state( new_task, Blue );
 
         // If resume is the idle thread, resume->next may be running.
 
-        dll_detatch_Task( running );
+        dll_detach_Task( running );
         dll_attach_Task( running, &tail );
       }
 
@@ -1460,7 +1532,7 @@ WriteS( "Sleeping " ); WriteNum( running ); WriteS( ", waking " ); WriteNum( wor
 
     assert( running != workspace.task_slot.running );
 
-    dll_detatch_Task( running );
+    dll_detach_Task( running );
 
     if (sleeper == 0) {
       workspace.task_slot.sleeping = running;
@@ -1828,7 +1900,7 @@ void yield_whole_slot()
   assert( last_resume != 0 );
 
   // Some (maybe all) have woken...
-  dll_detatch_Tasks_until( &workspace.task_slot.sleeping, last_resume );
+  dll_detach_Tasks_until( &workspace.task_slot.sleeping, last_resume );
 
   assert( workspace.task_slot.sleeping == still_sleeping
        || still_sleeping == first );
@@ -1902,7 +1974,7 @@ bool Task_kernel_in_use( svc_registers *regs )
   workspace.task_slot.running = running->next;
 
   // Remove from old list
-  dll_detatch_Task( running );
+  dll_detach_Task( running );
   dll_attach_Task( running, &shared.task_slot.special_waiting );
   assert( shared.task_slot.special_waiting != 0 );
   // Put running at end of list, not head
@@ -1949,7 +2021,7 @@ void Task_kernel_release()
       }
       else {
         shared.task_slot.special_waiting = resume->next;
-        dll_detatch_Task( resume );
+        dll_detach_Task( resume );
         resumed.wanted = 1;
       }
 
@@ -2122,55 +2194,6 @@ These adjustments have the huge advantage that there will not be any more signif
 
  */
 
-static void mpsafe_insert_at_tail( Task **head, Task *task )
-{
-  // TODO add SEV/WFE
-  for (;;) {
-    Task *old = *head;
-    uint32_t uold = (uint32_t) old;
-    if (old == 0) {
-      // Empty list, but another core might add something...
-      if (0 == change_word_if_equal( (uint32_t*) head, 0, (uint32_t) task )) {
-        return;
-      }
-    }
-    else if (uold == change_word_if_equal( (uint32_t*) head, uold, 1 )) {
-      // Replaced head pointer with 1, can work on list safely...
-      Task **tail = &old->prev;
-      dll_attach_Task( task, tail );
-      if (1 != change_word_if_equal( (uint32_t*) head, 1, uold )) {
-        asm ( "bkpt 4" );
-      }
-      else {
-        return;
-      }
-    }
-  }
-}
-
-static Task *mpsafe_detatch_head( Task **head )
-{
-  Task *result = *head;
-  while (result != 0) {
-    uint32_t uresult = (uint32_t) result;
-    if (uresult == change_word_if_equal( (uint32_t*) head, uresult, 1 )) {
-      // Replaced head pointer with 1, can work on list safely...
-      Task *tail = result->next;
-      if (tail == result) {
-        // Only item in queue
-        *head = 0;
-      }
-      else {
-        dll_detatch_Task( result );
-        *head = tail;
-      }
-      break;
-    }
-    result = *head;
-  }
-  return result;
-}
-
 /*
 20230402 Final form?
 
@@ -2188,12 +2211,9 @@ static bool interrupt_safe_swi( int number )
 {
   // TODO: include intercepted Wimp SWIs
 
-  if (number == OS_IntOn
-   || number == OS_IntOff) return true;
-
   // FIXME This is a hack so that transient callbacks are only
-  // called with a extendible svc stack
-  if (workspace.kernel.transient_callbacks != 0) return false;
+  // called with an extendible svc stack
+  if (TaskSlot_now()->transient_callbacks != 0) return false;
 
   return (number == OS_ThreadOp
        || number == OS_PipeOp
@@ -2218,24 +2238,52 @@ static bool interrupt_safe_swi( int number )
  *                              Block task until SVC stack claimed
  *                              Execute SWI
  *
+ *
+ * A SWI may cause the currently running task to be suspended and
+ * another resumed.
+ *
+ * So might:
+ *  1. Being blocked waiting for the svc stack
+ *  2. The debug output pipe receiver being scheduled
+ *  3. 
+ *
+ * When a SWI run by the owner of the slot's stack returns and empties
+ * the stack, it gives up ownership to the first task waiting for the
+ * stack and schedules that task (or sets the owner to 0).
+ *
+ ** Current bug: Sometimes a SWI is called by the owner of the slot's
+ ** stack, but the svc stack pointer is set to the core's stack.
+ *
+ ** The SVC stack pointer is set when:
+ **  1. The running task gains ownership of the slot's stack (the core's
+ **     stack state gets copied into it)
+ **  2. The resumed task is not in the same slot as the caller task
+ *
  * Interrupt safe SWIs never enable interrupts.
  */
 
-void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
+void __attribute__(( noinline, noreturn, naked )) c_execute_swi( svc_registers *regs )
 {
   Task *caller = workspace.task_slot.running;
   svc_registers *resume_sp = regs + 1;
 
   uint32_t number = get_swi_number( regs->lr );
+  uint32_t swi = (number & ~Xbit);
 
-  if ((number & ~Xbit) == OS_CallASWI) number = regs->r[9];
-  else if ((number & ~Xbit) == OS_CallASWIR12) number = regs->r[12];
+  if (swi == OS_CallASWI) { number = regs->r[9]; swi = (number & ~Xbit); }
+  else if (swi == OS_CallASWIR12) { number = regs->r[12]; swi = (number & ~Xbit); }
 
   // FIXME What should happen if you call CallASWI using CallASWI?
-  if ((number & ~Xbit) == OS_CallASWI
-   || (number & ~Xbit) == OS_CallASWIR12) asm ( "bkpt 1" ); // FIXME
+  if (swi == OS_CallASWI
+   || swi == OS_CallASWIR12) asm ( "bkpt 1" ); // FIXME
+
+  if (swi == OS_IntOn) { regs->spsr &= ~0x80; goto fast_return; }
+  if (swi == OS_IntOff) { regs->spsr |= 0x80; goto fast_return; }
 
   TaskSlot *slot = caller->slot;
+
+  if (owner_of_slot_svc_stack( caller )) { assert( using_slot_svc_stack() ); }
+  else { assert( !using_slot_svc_stack() ); }
 
   assert( owner_of_slot_svc_stack( caller ) == using_slot_svc_stack() );
 
@@ -2249,7 +2297,7 @@ void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
         );
   }
 
-  if (!interrupt_safe_swi( number & ~Xbit )
+  if (!interrupt_safe_swi( swi )
    && !owner_of_slot_svc_stack( caller )) {
     // Not the owner of the slot's SVC stack, but caller needs to be...
   
@@ -2262,26 +2310,36 @@ void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
 
     if (0 == change_word_if_equal( (uint32_t*) &slot->svc_stack_owner, 0, (uint32_t) caller )) {
       // Now the owner of the slot specific svc stack
-      svc_registers *task_regs = (&svc_stack_top)-1;
-      *task_regs = *regs;
-      asm volatile ( "mov sp, %[newsp]" : : [newsp] "r" (task_regs) );
-      regs = task_regs;
+
+      // Copy the whole stack contents to the slot's svc_stack, including
+      // any values pushed on to the stack by this routine.
+      register uint32_t *stack asm ( "sp" );
+      uint32_t *core_stack = core_svc_stack_top();
+      uint32_t *slot_stack = (uint32_t *) &svc_stack_top;
+
+      while (core_stack > stack) {
+        *--slot_stack = *--core_stack;
+      }
+
+      asm volatile ( "mov sp, %[newsp]" : : [newsp] "r" (slot_stack) );
+
       resume_sp = regs + 1;
+      regs = resume_sp-1;
     }
     else {
       // Block until the stack is free
       // Put task into list of waiting tasks in slot
       regs->lr -= 4; // Resume at the SVC instruction, not after it
       workspace.task_slot.running = caller->next;
-      dll_detatch_Task( caller );
-      mpsafe_insert_at_tail( &slot->waiting_for_slot_stack, caller );
+      dll_detach_Task( caller );
+      mpsafe_insert_Task_at_tail( &slot->waiting_for_slot_stack, caller );
     }
   }
 
   Task *resume = workspace.task_slot.running;
 
   if (resume == caller) {
-    assert( interrupt_safe_swi( number & ~Xbit ) || owner_of_slot_svc_stack( caller ) );
+    assert( interrupt_safe_swi( swi ) || owner_of_slot_svc_stack( caller ) );
 
     // SWI can be executed by this Task, so go ahead
     execute_swi( regs, number );
@@ -2309,8 +2367,7 @@ void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
     regs = &resume->regs;
 
     if (slot != resume->slot) {
-      // Note that there will be writable space on the stack for this value
-      // because we just increased the stack pointer by sizeof( svc_registers )
+      // Note: clobbers the core's stack
 
       // Set the stack to the top of the core's SVC stack, which is mapped
       // globally for the core and won't be mapped out by MMU_switch_to.
@@ -2332,9 +2389,10 @@ void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
     slot = resume->slot;
 
     // Now the resumed task's slot is mapped in, with the word at the
-    // restored stack pointer being the old value for svc_sp_when_unmapped
-    // If the task owns the stack, restore the stack pointer, otherwise
-    // leave it pointing at the core's svc_stack
+    // restored stack pointer being the old value for 
+    // If the task owns the stack, restore the stack pointer from
+    // svc_sp_when_unmapped, otherwise leave it pointing at the core's
+    // svc_stack
 
     if (owner_of_slot_svc_stack( resume )) {
       resume_sp = (void*) slot->svc_sp_when_unmapped;
@@ -2356,32 +2414,64 @@ void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
   // 2.1 The running task is the owner of the svc stack, in which case
   //  a) The stack pointer is the value it had when this task was swapped out last time
 
-  if (resume_sp == &svc_stack_top) {
+  if (resume == caller
+   && resume_sp == &svc_stack_top) {
     // Done with slot's svc_stack
+    // If we're switching tasks, the ownership shouldn't change
 
-    slot->svc_stack_owner = mpsafe_detatch_head( &slot->waiting_for_slot_stack );
+    assert( owner_of_slot_svc_stack( resume ) );
+
+    slot->svc_stack_owner = mpsafe_detach_Task_at_head( &slot->waiting_for_slot_stack );
     slot->svc_sp_when_unmapped = (uint32_t*) &svc_stack_top;
+    assert( slot->svc_stack_owner != resume );
+
     if (slot->svc_stack_owner != 0) {
-      //dll_attach_Task( slot->svc_stack_owner, &workspace.task_slot.running->next );
+      // FIXME put into shared runnable list instead
       Task *tail = workspace.task_slot.running->next;
       dll_attach_Task( slot->svc_stack_owner, &tail );
-      //workspace.task_slot.running = workspace.task_slot.running->next;
-      //regs = &workspace.task_slot.running->regs;
+      resume_sp = &svc_stack_top;
     }
-
-    resume_sp = core_svc_stack_top();
+    else
+      resume_sp = core_svc_stack_top();
   }
 
-  if (0 == (regs->spsr & 0xf)) {
-    asm (
-      "\n  msr sp_usr, %[usrsp]"
-      "\n  msr lr_usr, %[usrlr]"
-      :
-      : [usrsp] "r" (resume->banked_sp_usr)
-      , [usrlr] "r" (resume->banked_lr_usr)
-    );
+  if (usr32_caller( regs )) {
+    assert( resume_sp == core_svc_stack_top()
+         || resume_sp == &svc_stack_top ); // Is it still the owner? Why? What? Wherefore?
+
+    if (slot->callback_requested) {
+      // Exit through the callback handler, which will
+      // update the usr sp and lr for us...
+      slot->callback_requested = false;
+
+      handler *h = &slot->handlers[7];
+      uint32_t *buffer = (void*) h->buffer;
+      for (int i = 0; i < 13; i++) {
+        buffer[i] = regs->r[i];
+      }
+      buffer[13] = resume->banked_sp_usr;
+      buffer[14] = resume->banked_lr_usr;
+      buffer[15] = regs->lr;
+      register void (*handler)() asm( "lr" ) = h->code;
+      register void *r12 asm( "r12" ) = h->code;
+      // Note: it appears the called handler is expected to know 
+      // where it wanted the registers stored, buffer is not passed
+      // to the handler.
+      asm ( "bx lr" : : "r" (handler), "r" (r12) );
+      __builtin_unreachable();
+    }
+    else {
+      asm (
+        "\n  msr sp_usr, %[usrsp]"
+        "\n  msr lr_usr, %[usrlr]"
+        :
+        : [usrsp] "r" (resume->banked_sp_usr)
+        , [usrlr] "r" (resume->banked_lr_usr)
+      );
+    }
   }
 
+fast_return:
   asm volatile ( "mov sp, %[top]" : : [top] "r" (resume_sp) );
 
   register svc_registers *lr asm ( "lr" ) = regs;

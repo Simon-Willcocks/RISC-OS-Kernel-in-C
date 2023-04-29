@@ -352,7 +352,7 @@ static bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
     regs->r[2] = 0xb00b00b0;
 
     // Blocked, waiting for data.
-    dll_detatch_Task( running );
+    dll_detach_Task( running );
   }
 
   if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
@@ -411,6 +411,7 @@ static bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
     assert( (receiver != running) || (pipe->receiver_waiting_for == 0) );
 
     // Special case: the debug_pipe is sometimes filled from the reader task
+    // FIXME Is it really, any more? I don't think so.
 
     if (pipe->receiver_waiting_for > 0
      && pipe->receiver_waiting_for <= data_in_pipe( pipe )) {
@@ -460,7 +461,7 @@ static bool PipeNoMoreData( svc_registers *regs, os_pipe *pipe )
   return Kernel_Error_UnimplementedSWI( regs );
 }
 
-static bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
+/* static inline */ bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
 {
   uint32_t amount = regs->r[2];
   // TODO validation
@@ -510,7 +511,7 @@ static bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
     assert( workspace.task_slot.running != running );
 
     // Blocked, waiting for data.
-    dll_detatch_Task( running );
+    dll_detach_Task( running );
 
     regs->r[2] = 0x22002200; // FIXME remove; just something to look for in the qemu log
     regs->r[3] = 0x33003300; // FIXME remove; just something to look for in the qemu log
@@ -754,6 +755,12 @@ bool do_OS_PipeOp( svc_registers *regs )
   return PipeOp_InvalidCode( regs );
 }
 
+// The debug handler pipe is the special case, where every task
+// can send to it, and the receiver is scheduled whenever there's
+// text in the buffer and this routine is called.
+
+// (The receiver end does not have to be special, FIXME)
+
 // Looking from the outside!
 #include "include/pipeop.h"
 
@@ -784,7 +791,7 @@ void kick_debug_handler_thread()
   else if (p->receiver_waiting_for == 0) {
     // Receiver is running
     // Make it the current task
-    // dll_detatch_Task( receiver );
+    // dll_detach_Task( receiver );
     // dll_attach_Task( receiver, &workspace.task_slot.running );
   }
   else {

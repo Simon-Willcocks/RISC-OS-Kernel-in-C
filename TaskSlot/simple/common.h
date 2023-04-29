@@ -19,7 +19,16 @@
  */
 
 #include "inkernel.h"
+
+// Tasks reside in doubly linked lists
 #include "include/doubly_linked_list.h"
+
+// The lists are often accessed from more than one core simultaneously.
+// The mpsafe functions protect the list from being corrupted and execute
+// with O(1) (the number of items in the list is irrelevant).
+#include "include/mpsafe_dll.h"
+
+#include "include/callbacks.h"
 
 typedef struct handler handler;
 typedef struct os_pipe os_pipe;
@@ -37,6 +46,8 @@ struct TaskSlot {
   Task *svc_stack_owner;
   Task *waiting_for_slot_stack;
 
+  transient_callback *transient_callbacks;
+
   uint32_t lock;
   physical_memory_block blocks[50];
   handler handlers[17];
@@ -46,6 +57,8 @@ struct TaskSlot {
   char const *tail;
   uint64_t start_time;
   Task *waiting;       // 0 or more tasks waiting for locks
+
+  bool callback_requested;
 
   uint32_t *wimp_poll_block;
   Task *wimp_task;
@@ -62,8 +75,8 @@ struct __attribute__(( packed, aligned( 4 ) )) Task {
   Task *prev; // Tasks not in a list will be a list of 1.
 };
 
-// Declare functions like dll_attach_Task
-dll_type( Task );
+// Declare functions like dll_attach_Task and mpsafe_detach_Task_head
+MPSAFE_DLL_TYPE( Task );
 
 extern svc_registers svc_stack_top;
 

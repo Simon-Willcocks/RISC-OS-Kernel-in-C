@@ -23,16 +23,17 @@ TaskSlot *TaskSlot_first();
 
 // New TaskSlot and a Task to run the command, replacing the calling
 // Task which will be resumed when the slot exits or
-// TaskSlot_detatch_from_creator is called.
+// TaskSlot_detach_from_creator is called.
 // The new slot will have NO application memory allocted to it.
 TaskSlot *TaskSlot_new( char const *command_line );
 
 // Resume the task that created the TaskSlot, returning it a handle to
 // the independently running program.
-void TaskSlot_detatch_from_creator( TaskSlot *slot );
+void TaskSlot_detach_from_creator( TaskSlot *slot );
 
 // Replaces the old application, using the same application memory.
 void TaskSlot_new_application( char const *command, char const *args );
+void __attribute__(( noreturn )) TaskSlot_enter_application( void *start_address, void *private_word );
 
 Task *Task_new( TaskSlot *slot );
 
@@ -88,6 +89,9 @@ struct TaskSlot_shared_workspace {
 
   uint32_t slots_memory; // FIXME more than one page, extendible, etc.
   uint32_t tasks_memory;
+
+  Task *tasks_pool;
+  Task *next_to_allocate; // For when the pool needs expanding
 
   // Until filesystems learn to play along, only one task at a time can
   // make filesystem calls.
