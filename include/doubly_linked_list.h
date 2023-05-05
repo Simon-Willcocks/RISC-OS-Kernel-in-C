@@ -47,8 +47,8 @@ static inline void dll_attach_##T( T *i, T **l ) { \
 } \
  \
 /* Detatch the item from any list it is in (if it is the head of a */ \
-/* list, it will effectively detatch the rest of the list instead!) */ \
-static inline void dll_detatch_##T( T *i ) { \
+/* list, it will effectively detach the rest of the list instead!) */ \
+static inline void dll_detach_##T( T *i ) { \
   dll_assert( i->prev->next == i ); \
   dll_assert( i->next->prev == i ); \
   i->prev->next = i->next; \
@@ -98,7 +98,7 @@ static inline void dll_replace_##T( T *i1, T *i2, T **l ) { \
   } \
 } \
 /* Detatch all the items between the head and last from the list */ \
-static inline void dll_detatch_##T##s_until( T **l, T *last ) { \
+static inline void dll_detach_##T##s_until( T **l, T *last ) { \
   T *first = *l; \
   if (last->next == first) { \
     /* Removing whole list */ \
@@ -125,5 +125,18 @@ static inline void dll_insert_##T##_list_at_head( T *head, T **l ) { \
   } \
  \
   *l = head; \
+} \
+static inline T* T##_pool( T *(*alloc)( int size ), int number ) \
+{ \
+  T *result = alloc( number * sizeof( T ) ); \
+  if (result != 0) { \
+    for (int i = 0; i < number; i++) { \
+      result[i].next = &result[i+1]; \
+      result[i].prev = &result[i-1]; \
+    } \
+    result[number-1].next = &result[0]; \
+    result[0].prev = &result[number-1]; \
+  } \
+  return result; \
 }
 
