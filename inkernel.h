@@ -46,7 +46,9 @@ static inline error_block *OSCLI( const char *command )
 extern svc_registers regs[];
 extern void __attribute__(( noreturn )) assertion_failed( uint32_t *abt, svc_registers *regs, const char *assertion );
 
-#define assert( x ) if (!(x)) asm ( "bkpt %[line]" : : [line] "i" (__LINE__), "r" (#x) );
+// Doesn't corrupt a register when it fails
+#define assert( x ) if (!(x)) asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
+//#define assert( x ) if (!(x)) asm ( "bkpt %[line]" : : [line] "i" (__LINE__), "r" (#x) );
 //{ asm volatile ( "push {r0-r12,r14,r15}" ); register svc_registers *r asm( "r1" ) = &regs[0]; register const char *ass asm( "r2" ) = #x; asm volatile ( "mov r0, sp\n  bl assertion_failed" : : "r" (r), "r" (ass) ); }
 //#define assert( x ) while (!(x)) { asm ( "wfi"  : : "r" (#x) ); }
 

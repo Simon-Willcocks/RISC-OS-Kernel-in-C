@@ -1,5 +1,6 @@
 Modules
 Set Boot$Dir <Obey$Dir>
+Set Alias$Pointer echo Pointer command ignored
 echo <CPU$Core>
 if "<CPU$Core>"="" Then Echo CPU$Core not found
 echo Running Desktop or Balls

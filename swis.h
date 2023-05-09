@@ -68,7 +68,6 @@ bool do_OS_FSControl( svc_registers *regs );
 bool do_OS_GenerateEvent( svc_registers *regs );
 bool do_OS_Mouse( svc_registers *regs );
 bool do_OS_UpCall( svc_registers *regs );
-bool do_OS_ChangeEnvironment( svc_registers *regs );
 bool do_OS_SpriteOp( svc_registers *regs );
 bool do_OS_SerialOp( svc_registers *regs );
 
@@ -83,6 +82,13 @@ bool do_OS_ThreadOp( svc_registers *regs );
 bool do_OS_PipeOp( svc_registers *regs ); // because it blocks tasks
 bool do_OS_ReadDefaultHandler( svc_registers *regs );
 bool do_OS_AMBControl( svc_registers *regs );
+bool do_OS_ChangeEnvironment( svc_registers *regs );
+
+bool do_OS_SetCallBack( svc_registers *regs );
+
+bool do_OS_AddCallBack( svc_registers *regs );
+bool do_OS_RemoveCallBack( svc_registers *regs );
+void run_transient_callbacks();
 
 // memory/
 

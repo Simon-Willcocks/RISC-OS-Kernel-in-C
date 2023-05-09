@@ -238,6 +238,10 @@ bool excluded( const char *name )
 
                                   , "MbufManager"       // 0xe200004d
 
+                                  //, "MessageTrans"     // Breaks the SVC stack when TokNFnd (recurses endlessly) It used to work! - I was initialising it twice
+                                  , "ColourPicker"     // Init fails
+                                  , "DrawFile"     // Init fails
+
                                   // , "DragASprite"       // Doesn't return, afaics
                                   , "RamFS"
                                   // , "Filer"             // Doesn't return, afaics
@@ -914,6 +918,10 @@ void __attribute__(( noreturn )) UsrBoot()
        , "r" (module)
        , [os_module] "i" (OS_Module)
        : "lr", "cc", "memory" );
+  }
+
+  for (;;) { 
+    Sleep( 1000 );
   }
 
   if (core_number == 0) {

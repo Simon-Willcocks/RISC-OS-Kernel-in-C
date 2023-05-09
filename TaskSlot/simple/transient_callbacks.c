@@ -71,12 +71,12 @@ void set_transient_callback( uint32_t code, uint32_t private )
   Task *running = workspace.task_slot.running;
   TaskSlot *slot = running->slot;
 #ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
-  WriteS( "New transient callback: " ); WriteNum( regs->r[0] ); WriteS( ", " ); WriteNum( regs->r[1] ); NewLine;
+  WriteS( "New transient callback: " ); WriteNum( code ); WriteS( ", " ); WriteNum( private ); NewLine;
 #endif
   transient_callback *callback = callback_new( &shared.kernel.callbacks_pool );
 
   if (callback == 0) {
-    asm ( "bkpt 0x1002" );
+    asm ( "bkpt 0x1002" ); // FIXME
   }
 
   callback->code = code;

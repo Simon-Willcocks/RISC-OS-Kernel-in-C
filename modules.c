@@ -14,6 +14,7 @@
  */
 
 #include "inkernel.h"
+#include "include/callbacks.h"
 
 static bool Kernel_Error_NoMoreModules( svc_registers *regs )
 {
@@ -146,10 +147,9 @@ static inline bool run_initialisation_code( const char *env, module *m, uint32_t
   // FIXME return error_block * instead of bool
   if (error != 0) {
     NewLine;
-    WriteS( "\005Failed\005" );
+    WriteS( "Module initialisation returned error: " );
     Write0( error->desc );
     NewLine;
-    Sleep( 1000 );
   }
 
   return error == 0;
@@ -265,11 +265,6 @@ if (svc == 0x41b40 || svc == 0x61b40) {
 vector do_nothing;
 #endif
 
-struct vector_go {
-  vector *v;
-  svc_registers *regs;
-};
-
 static void run_interruptable_vector( svc_registers *regs, vector *v )
 {
   // "If your routine passes the call on, you can deliberately alter some of
@@ -324,14 +319,15 @@ bool run_vector( svc_registers *regs, int vec )
 {
 #ifdef DEBUG__SHOW_VECTORS_VERBOSE
   // Ignore WrchV, TickerV
-  if (vec != 3 && vec != 0x1c && workspace.kernel.vectors[3] != &do_nothing)
+  if (vec != 3 && vec != 0x1c)
   {
     WriteS( "Running vector " ); WriteNum( vec ); NewLine;
     vector *v = workspace.kernel.vectors[vec];
-    while (v != 0) {
+    assert( v != 0 );
+    do {
       WriteNum( v->code ); WriteS( " " ); WriteNum( v->private_word ); WriteS( " " ); WriteNum( v->next ); NewLine;
       v = v->next;
-    }
+    } while (v != workspace.kernel.vectors[vec]);
     NewLine;
     for (int i = 0; i < 10; i++) { WriteNum( regs->r[i] ); WriteS( " " ); }
     WriteNum( regs->lr );
@@ -342,7 +338,7 @@ bool run_vector( svc_registers *regs, int vec )
 #ifdef DEBUG__SHOW_VECTORS_VERBOSE
   if (vec != 3 && vec != 0x1c && workspace.kernel.vectors[3] != &do_nothing)
   {
-    WriteS( "Vector " ); WriteNum( vec ); Space; WriteNum( flags ); NewLine;
+    WriteS( "Vector " ); WriteNum( vec ); NewLine;
   }
 #endif
   return (regs->spsr & VF) == 0;
@@ -1022,21 +1018,9 @@ WriteS( "Start address: " ); WriteNum( start_address ); NewLine;
       : "r2", "r3", "lr" );
   }
 
-  // Remember: eret is unpredictable in System mode
-  // TODO: This does not yet reset the SVC stack.
+  TaskSlot_enter_application( start_address, m->private_word );
 
-  register void *private asm ( "r12" ) = m->private_word;
-  asm ( "isb"
-    "\n\tmsr spsr, %[usermode]"
-    "\n\tmov lr, %[usr]"
-    "\n\tmsr sp_usr, %[stacktop]"
-    "\n\tisb"
-    "\n\teret"
-    :
-    : [stacktop] "r" (0)       // Dummy. It's up to the module to allocate stack if it needs it
-    , [usr] "r" (start_address)
-    , [usermode] "r" (0x10)
-    , "r" (private) );
+  __builtin_unreachable();
 
   return false;
 }
@@ -1551,16 +1535,10 @@ static bool error_InvalidVector( svc_registers *regs )
   return false;
 }
 
-static callback *get_a_callback()
+static inline bool equal_callback( callback *a, callback *b )
 {
-  callback *result = workspace.kernel.callbacks_pool;
-  if (result != 0) {
-    workspace.kernel.callbacks_pool = result->next;
-  }
-  else {
-    result = rma_allocate( sizeof( callback ) );
-  }
-  return result;
+  assert( a != 0 && b != 0 );
+  return (a->code == b->code) && (a->private_word == b->private_word);
 }
 
 bool do_OS_Claim( svc_registers *regs )
@@ -1576,39 +1554,39 @@ bool do_OS_Claim( svc_registers *regs )
   }
 
   vector **p = &workspace.kernel.vectors[number];
-  vector *v = *p;
+  assert( *p != 0 );
 
-  while (v != 0) {
-    if (v->code == regs->r[1] && v->private_word == regs->r[2]) {
-      // Duplicate to be removed, except we'll just move it up to the head instead,
-      // without having to allocate new space.
-#ifdef DEBUG__SHOW_VECTORS
-  WriteS( "Raising vector to top" ); NewLine;
-#endif
-      *p = v->next; // Removed from list
-      v->next = workspace.kernel.vectors[number];
-      workspace.kernel.vectors[number] = v; // Added at head;
-      return true;
+  vector cb = { .code = regs->r[1], .private_word = regs->r[2] };
+  assert( equal_callback( &cb, &cb ) );
+
+  vector *found = mpsafe_find_and_remove_callback( p, &cb, equal_callback );
+
+  vector *new;
+
+  if (found != 0) {
+    // Duplicate to be removed, except we'll just move it up to the head instead,
+    // without having to allocate new space.
+    new = found;
+  }
+  else {
+    new = callback_new( &shared.kernel.callbacks_pool );
+    if (new == 0) {
+      return error_nomem( regs );
     }
 
-    p = &v->next;
-    v = v->next;
+    new->code = regs->r[1];
+    new->private_word = regs->r[2];
   }
 
-  vector *new = get_a_callback();
-  if (new == 0) {
-    return error_nomem( regs );
-  }
+  assert( new->code == regs->r[1] && new->private_word == regs->r[2] );
+
+  mpsafe_insert_callback_at_head( p, new );
+
+  assert( *p == new );
 
 #ifdef DEBUG__SHOW_VECTORS
   WriteS( "New new vector" ); NewLine;
 #endif
-
-  new->code = regs->r[1];
-  new->private_word = regs->r[2];
-  new->next = workspace.kernel.vectors[number];
-
-  workspace.kernel.vectors[number] = new;
 
   return true;
 }
@@ -1621,20 +1599,18 @@ bool do_OS_Release( svc_registers *regs )
   }
 
   vector **p = &workspace.kernel.vectors[number];
-  vector *v = *p;
 
-  while (v != 0) {
-    if (v->code == regs->r[1] && v->private_word == regs->r[2]) {
-      // Duplicate to be removed
-      *p = v->next; // Removed from list
-      v->next = workspace.kernel.callbacks_pool;
-      workspace.kernel.callbacks_pool = v;
-      return true;
-    }
+  vector cb = { .code = regs->r[1], .private_word = regs->r[2] };
 
-    p = &v->next;
-    v = v->next;
-  }
+  vector *found;
+
+  do {
+    found = mpsafe_find_and_remove_callback( p, &cb, equal_callback );
+    if (found != 0)
+      mpsafe_insert_callback_at_tail( &shared.kernel.callbacks_pool, found );
+  } while (found != 0);
+
+  if (found != 0) return true;
 
   static error_block not_there = { 0x1a1, "Bad vector release" };
   regs->r[0] = (uint32_t) &not_there;
@@ -1643,6 +1619,7 @@ bool do_OS_Release( svc_registers *regs )
 
 bool do_OS_AddToVector( svc_registers *regs )
 {
+  asm ( "bkpt 0x1999" );
   return Kernel_Error_UnknownSWI( regs );
 }
 bool do_OS_DelinkApplication( svc_registers *regs )
@@ -2062,7 +2039,19 @@ workspace.vectors.zp.EnvTime[0]++;
     break;
   case 0x15:
     {
-    asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
+      WriteS( "Define pointer and mouse parameters: TODO\n" );
+      char *block = (void*) regs[1];
+      WriteNum( block[0] ); NewLine;
+      switch (block[0]) {
+      case 0: break; // Define pointer size, shape, and active point
+      case 1: break; // Define Mouse coordinates bounding box
+      case 2: break; // Define Mouse multipliers
+      case 3: break; // Set Mouse position
+      case 4: block[1] = 0; block[2] = 0; block[3] = 0; block[4] = 0; break; // Get unbuffered Mouse position
+      case 5: break; // Set pointer position
+      case 6: block[1] = 0; block[2] = 0; block[3] = 0; block[4] = 0; break; // Get pointer position
+      default: asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
+      }
     }
     break;
   case 0x16:
@@ -2937,7 +2926,7 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
   if (run_free) {
     asm ( "bkpt 8" ); // This doesn't look like it ever worked...
     TaskSlot *child = TaskSlot_new( command );
-    TaskSlot_detatch_from_creator( child );
+    TaskSlot_detach_from_creator( child );
   }
 
   if (run) {
@@ -3122,11 +3111,6 @@ static void __attribute__(( naked )) finish_vector()
   asm volatile ( "pop {pc}" );
 }
 
-static void __attribute__(( naked )) break_vector()
-{
-  asm volatile ( "bkpt %[line]" : : [line] "i" (__LINE__) );
-}
-
 // SwiSpriteOp does BranchNotJustUs, which accesses internal kernel structures. Avoid this, by going directly
 // to SpriteVecHandler. FIXME: This might no longer be necessary; I've bypassed this in another way, somewhere...
 extern void SpriteVecHandler();
@@ -3134,49 +3118,14 @@ extern void SpriteVecHandler();
 extern void MOSPaletteV();
 extern void MOSGraphicsV();
 
-vector should_not_reach = { .next = 0, .code = (uint32_t) break_vector, .private_word = 0 };
-vector do_nothing = { .next = &should_not_reach, .code = (uint32_t) finish_vector, .private_word = 0 };
-
-vector default_SpriteV = { .next = &do_nothing, .code = (uint32_t) SpriteVecHandler, .private_word = 0 };
-vector default_ByteV = { .next = &should_not_reach, .code = (uint32_t) default_os_byte, .private_word = 0 };
-vector default_WordV = { .next = &should_not_reach, .code = (uint32_t) default_os_word, .private_word = 0 };
-vector default_ArgsV = { .next = &should_not_reach, .code = (uint32_t) default_os_args, .private_word = 0 };
-vector default_FSControlV = { .next = &should_not_reach, .code = (uint32_t) default_os_fscontrol, .private_word = 0 };
-vector default_UpCallV = { .next = &should_not_reach, .code = (uint32_t) default_os_upcall, .private_word = 0 };
-vector default_ChEnvV = { .next = &should_not_reach, .code = (uint32_t) default_os_changeenvironment, .private_word = 0 };
-vector default_CliV = { .next = &should_not_reach, .code = (uint32_t) default_os_cli, .private_word = 0 };
-vector default_PaletteV = { .next = &do_nothing, .code = (uint32_t) MOSPaletteV, .private_word = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws };
-vector default_GraphicsV = { .next = &do_nothing, .code = (uint32_t) MOSGraphicsV, .private_word = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws };
-vector default_IrqV = { .next = &should_not_reach, .code = (uint32_t) default_irq, .private_word = 0 };
-vector default_TickerV = { .next = &should_not_reach, .code = (uint32_t) default_ticker, .private_word = 0 };
-
-static vector *default_vector( int number )
-{
-  switch (number) {
-  case 0x02: return &default_IrqV;
-  case 0x05: return &default_CliV;
-  case 0x06: return &default_ByteV;
-  case 0x09: return &default_ArgsV;
-  case 0x0f: return &default_FSControlV;
-  case 0x1c: return &default_TickerV;
-  case 0x1d: return &default_UpCallV;
-  case 0x1e: return &default_ChEnvV;
-  case 0x1f: return &default_SpriteV;
-  case 0x22: return &default_GraphicsV;
-  case 0x23: return &default_PaletteV;
-  default:
-    return &do_nothing;
-  }
-}
-
 static uint32_t screen_colour_from_os_colour( uint32_t os )
 {
   union {
     struct { // BGR0
       uint32_t Z:8;
-      uint32_t R:8;
-      uint32_t G:8;
       uint32_t B:8;
+      uint32_t G:8;
+      uint32_t R:8;
     };
     uint32_t raw;
   } os_colour = { .raw = os };
@@ -3590,8 +3539,31 @@ static void set_up_legacy_zero_page()
 
 static void setup_OS_vectors()
 {
+  void (*code)();
+
   for (int i = 0; i < number_of( workspace.kernel.vectors ); i++) {
-    workspace.kernel.vectors[i] = default_vector( i );
+    workspace.kernel.default_vectors[i] = callback_new( &shared.kernel.callbacks_pool );
+    switch (i) {
+    case 0x02: code = default_irq; break;
+    case 0x05: code = default_os_cli; break;
+    case 0x06: code = default_os_byte; break;
+    case 0x07: code = default_os_word; break;
+    case 0x09: code = default_os_args; break;
+    case 0x0f: code = default_os_fscontrol; break;
+    case 0x1c: code = default_ticker; break;
+    case 0x1d: code = default_os_upcall; break;
+    case 0x1e: code = default_os_changeenvironment; break;
+    case 0x1f: code = SpriteVecHandler; break;
+    case 0x22: code = MOSGraphicsV; break;
+    case 0x23: code = MOSPaletteV; break;
+    default:
+      code = finish_vector;
+    }
+    workspace.kernel.default_vectors[i]->code = (uint32_t) code;
+    if (i == 0x22 || i == 0x23)
+      workspace.kernel.default_vectors[i]->private_word = (uint32_t) &workspace.vectors.zp.vdu_drivers.ws;
+
+    workspace.kernel.vectors[i] = workspace.kernel.default_vectors[i];
   }
 }
 
@@ -3610,9 +3582,9 @@ static void __attribute__(( naked, noreturn )) idle_thread()
     asm volatile ( "mov r0, #3 // Sleep"
                "\n  mov r1, #0 // For no time - yield"
                "\n  svc %[swi]"
-//               "\n  bcs 0f // No other tasks running (could report being bored)"
-//               "\n  wfi"
-//               "\n0:"
+               // "\n  bcs 0f // No other tasks running (could report being bored)"
+               // "\n  wfi"     // This isn't working, TODO
+               // "\n0:"
         :
         : [swi] "i" (OS_ThreadOp)
         , "r" (0x65656565) // Something to look out for in qemu output
@@ -3641,9 +3613,9 @@ extern void __attribute__(( noreturn )) UsrBoot();
 
 void PreUsrBoot()
 {
-  setup_OS_vectors();
+  Initialise_system_DAs(); // Including the RMA
 
-  Initialise_system_DAs();
+  setup_OS_vectors(); // Requires the RMA
 
   set_up_legacy_zero_page();
 
@@ -3750,16 +3722,7 @@ void Boot()
   assert( Task_now() != 0 );
   assert( TaskSlot_now() == slot );
 
-  extern uint32_t svc_stack_top;
-
-  // Up until now, we've been running with the minimal boot stack set up in 
-  // boot.c
-  // We'll use it again for switching between slots which now have their own
-  // SVC stack and for Tasks that do not own their slot's svc stack.
-  asm volatile ( "mov sp, %[sp]"
-             "\n  b BootWithFullSVCStack"
-             :
-             : [sp] "r" (&svc_stack_top) );
+  BootWithFullSVCStack();
 
   __builtin_unreachable();
 }

@@ -14,10 +14,11 @@
  */
 
 #include "inkernel.h"
-
+#include "include/callbacks.h"
 
 bool Kernel_Error_UnknownSWI( svc_registers *regs )
 {
+  asm ( ".word 0xffffffff" );
   static error_block error = { 0x1e6, "Unknown SWI" }; // Could be "SWI name not known", or "SWI &3333 not known"
   regs->r[0] = (uint32_t) &error;
   return false;
@@ -191,15 +192,16 @@ static bool do_OS_SetEnv( svc_registers *regs ) { Write0( __func__ ); NewLine; r
 static bool do_OS_IntOn( svc_registers *regs )
 {
   //Write0( __func__ ); NewLine;
-asm ( ".word 0xffffffff" );
-  regs->spsr = (regs->spsr & ~0x80);
+  regs->spsr = regs->spsr & ~0x80;
+  asm ( "bkpt 1" ); // Never reached, dealt with in the SWI handler code
   return true;
 }
 
 static bool do_OS_IntOff( svc_registers *regs )
 {
   //Write0( __func__ ); NewLine;
-  regs->spsr = (regs->spsr & ~0x80) | 0x80;
+  regs->spsr = regs->spsr | 0x80;
+  asm ( "bkpt 1" ); // Never reached, dealt with in the SWI handler code
   return true;
 }
 
@@ -534,46 +536,81 @@ static bool do_OS_ValidateAddress( svc_registers *regs )
 }
 
 // Ticker events
+#ifndef MPSAFE_DLL_TYPE
+#include "include/mpsafe_dll.h"
+#endif
+MPSAFE_DLL_TYPE( ticker_event )
+
+void release_ticker_event( ticker_event **pool, ticker_event *c )
+{
+  mpsafe_insert_ticker_event_at_tail( pool, c );
+}
+
+static inline ticker_event *alloc_ticker_event( int size )
+{
+  return rma_allocate( size );
+}
 
 // Future possibility: Store the TaskSlot associated with the callback
 // (transient callbacks, too), and swap it in and out again as needed.
 static ticker_event *allocate_ticker_event()
 {
-  ticker_event *result = workspace.kernel.ticker_event_pool;
-  if (result == 0) {
-    result = rma_allocate( sizeof( transient_callback ) );
-  }
-  else {
-    workspace.kernel.ticker_event_pool = result->next;
-  }
-  return result;
+  return mpsafe_fill_and_detach_ticker_event_at_head( &shared.kernel.ticker_event_pool, alloc_ticker_event, 64 );
 }
 
 static void find_place_in_queue( ticker_event *new )
 {
   ticker_event **queue = &workspace.kernel.ticker_queue;
-  while (*queue != 0 && (*queue)->remaining >= new->remaining) {
-    new->remaining -= (*queue)->remaining;
-    queue = &(*queue)->next;
+  ticker_event *head = *queue;
+  uint32_t unew = (uint32_t) new;
+  assert( new != 0 );
+
+  for (;;) {
+    if (head == 0) {
+      head = (ticker_event*) change_word_if_equal( (uint32_t*) head, 0, unew );
+      if (0 == head) { // Successfully attached new as only item in list
+        return;
+      }
+    }
+
+    while (head != 0) {
+      uint32_t uint = (uint32_t) head;
+      if (uint == change_word_if_equal( (uint32_t*) head, uint, 1 )) {
+        // I own the non-empty list!
+        ticker_event *item = head;
+        while (item->remaining >= new->remaining) {
+          new->remaining -= (*queue)->remaining;
+          item = item->next;
+          if (item == head) break;
+        }
+        if (item != head) {
+          item->remaining -= new->remaining;
+        }
+        // Put new in front of item in the list, even if item is the old head
+        dll_attach_ticker_event( new, &item );
+        *queue = head;
+        return;
+      }
+    }
   }
-  new->next = (*queue)->next;
-  *queue = new;
 }
 
-static void run_handler( uint32_t code, uint32_t private )
+static inline void run_handler( uint32_t code, uint32_t private )
 {
   // Very trustingly, run module code
   register uint32_t p asm ( "r12" ) = private;
   register uint32_t c asm ( "r14" ) = code;
-  asm volatile ( "blx r14" : : "r" (p), "r" (c) : "cc", "memory" );
+  asm volatile ( "blx r14" : : "r" (p), "r" (c) : "cc", "memory", "lr" );
 }
 
 static void run_ticker_events()
 {
+asm ( "bkpt 0x1999" );
+/*
   asm ( "push { r0-r12, r14 }" );
-  while (workspace.kernel.ticker_queue->remaining == 0) {
-    ticker_event *e = workspace.kernel.ticker_queue;
-    workspace.kernel.ticker_queue = e->next;
+  while (shared.kernel.ticker_queue->remaining == 0) {
+    ticker_event *e = shared.kernel.ticker_queue;
+    shared.kernel.ticker_queue = e->next;
     run_handler( e->code, e->private_word );
     if (e->reload != 0) {
       e->remaining = e->reload;
@@ -581,10 +618,11 @@ static void run_ticker_events()
     }
     else {
       e->next = workspace.kernel.ticker_event_pool;
-      workspace.kernel.ticker_event_pool = e;
+      shared.kernel.ticker_event_pool = e;
     }
   }
   asm ( "pop { r0-r12, pc }" );
+*/
 }
 
 static void __attribute__(( naked )) TickerV_handler();
@@ -676,29 +714,56 @@ static bool do_OS_CallEvery( svc_registers *regs )
   return true;
 }
 
+static inline ticker_event *remove_ticker( ticker_event **head, void *p )
+{
+  ticker_event *e = p;
+  ticker_event *item = *head;
+  ticker_event *found = 0;
+
+  if (item != 0) {
+    do {
+      if (item->code == e->code && item->private_word == e->private_word) {
+        found = item;
+      }
+      else {
+        item = item->next;
+      }
+    } while (item != *head && !found);
+
+    if (found) {
+      if (item->next != *head) {
+        // Not last (only?) item in list
+        item->next->remaining += item->remaining;
+      }
+
+      if (item->next == item) {
+        // Only item in list
+        *head = 0;
+      }
+      else {
+        if (item == *head) {
+          // First item in list with more than one item
+          *head = (*head)->next;
+        }
+        dll_detach_ticker_event( item );
+      }
+    }
+  }
+
+  return found;
+}
+
 static bool do_OS_RemoveTickerEvent( svc_registers *regs )
 {
   // FIXME Is is necessary to return an error if it's not found?
   ticker_event **queue = &workspace.kernel.ticker_queue;
-  bool found = false;
 
-  uint32_t code = regs->r[0];
-  uint32_t private_word = regs->r[1];
+  ticker_event event = { .code = regs->r[1], .private_word = regs->r[2] };
 
-  while (*queue != 0 && !found) {
-    ticker_event *e = *queue;
-    if (e->code == code && e->private_word == private_word) {
-      found = true;
-      if (e->next != 0) {
-        e->next->remaining += e->remaining;
-      }
-      *queue = e->next;
-      e->next = workspace.kernel.ticker_event_pool;
-      workspace.kernel.ticker_event_pool = e;
-    }
-    else {
-      queue = &e->next;
-    }
+  ticker_event *found = mpsafe_manipulate_ticker_event_list_returning_item( queue, remove_ticker, &event );
+
+  if (found != 0) {
+    mpsafe_insert_ticker_event_at_head( &shared.kernel.ticker_event_pool, found );
   }
 
   // Don't release the vector if the event wasn't found
@@ -871,46 +936,6 @@ static bool do_OS_ReadMemMapInfo( svc_registers *regs )
 
 static bool do_OS_ReadMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_SetMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-
-static void set_transient_callback( uint32_t code, uint32_t private )
-{
-#ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
-  WriteS( "New transient callback: " ); WriteNum( regs->r[0] ); WriteS( ", " ); WriteNum( regs->r[1] ); NewLine;
-#endif
-  transient_callback *callback = workspace.kernel.transient_callbacks_pool;
-  if (callback == 0) {
-    callback = rma_allocate( sizeof( transient_callback ) );
-  }
-  else {
-    workspace.kernel.transient_callbacks_pool = callback->next;
-  }
-  // Most recently requested gets called first, I don't know if that's
-  // right or not.
-  callback->next = workspace.kernel.transient_callbacks;
-  workspace.kernel.transient_callbacks = callback;
-
-  callback->code = code;
-  callback->private_word = private;
-}
-
-static bool do_OS_AddCallBack( svc_registers *regs )
-{
-  set_transient_callback( regs->r[0], regs->r[1] );
-
-  return true;
-}
-
-static bool do_OS_SetCallBack( svc_registers *regs )
-{
-  // I don't know why this wouldn't happen anyway?
-  // Is the CallBack handler called every time the OS drops to usr32?
-  // Yes, if interrupts are enabled, and with the sole exception of
-  // return from this SWI. PRM 1-315
-  //set_transient_callback( regs->r[0], regs->r[1] );
-  WriteS( "OS_SetCallBack" ); NewLine;
-
-  return true;
-}
 
 // OS_ReadSysInfo 6 values
 // Not all of these will be needed or supported.
@@ -1111,22 +1136,6 @@ static bool do_OS_CRC( svc_registers *regs ) { Write0( __func__ ); NewLine; retu
 
 static bool do_OS_PrintChar( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ChangeRedirection( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
-static bool do_OS_RemoveCallBack( svc_registers *regs )
-{
-  // This is not at all reentrant, and I'm not sure how you could make it so...
-  transient_callback **cp = &workspace.kernel.transient_callbacks;
-  while (*cp != 0 && ((*cp)->code != regs->r[0] || (*cp)->private_word != regs->r[1])) {
-    cp = &(*cp)->next;
-  }
-  if ((*cp) != 0) {
-    transient_callback *callback = (*cp);
-    *cp = callback->next;
-    callback->next = workspace.kernel.transient_callbacks_pool;
-    workspace.kernel.transient_callbacks_pool = callback;
-  }
-  return true;
-}
-
 
 static bool do_OS_FindMemMapEntries( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
@@ -2535,8 +2544,10 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
   trace_wimp_calls_in( regs, number & 0x3f );
   switch (number & 0x3f) {
   case 0x1e:
-    WriteS( "Start task, passed to legacy Wimp: " ); Write0( regs->r[0] );
-    WriteS( ", caller: " ); WriteNum( regs->lr ); NewLine;
+    WriteS( "Start task, passed to legacy Wimp: " ); Write0( (char*) regs->r[0] );
+    WriteS( ", caller: " ); WriteNum( regs->lr );
+    WriteS( ", slot: " ); WriteNum( TaskSlot_now() );
+    WriteS( ", task: " ); WriteNum( Task_now() ); NewLine;
     return false;
     break;
   case 0x00: // Wimp_Initialise
@@ -2545,6 +2556,11 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
       // Store Wimp handle, current task in slot
       // Special poll word
       // Resume creator with handle?
+
+    WriteS( "Wimp_Initialise: " ); Write0( (char*) regs->r[2] );
+    WriteS( ", caller: " ); WriteNum( regs->lr );
+    WriteS( ", slot: " ); WriteNum( TaskSlot_now() );
+    WriteS( ", task: " ); WriteNum( Task_now() ); NewLine;
 
       // Task description is control-terminated
       int len = 0;
@@ -2601,7 +2617,7 @@ static bool special_swi( svc_registers *regs, uint32_t number )
     return hack_wimp_in( regs, number );
     break;
   case 0x80146: regs->r[0] = 0; return true; // PDriver_CurrentJob (called from Desktop?!)
-  // case 0x41506: WriteS( "Translating error " ); Write0( regs->r[0] + 4 ); NewLine; break;
+  case 0x41506: WriteS( "Translating error " ); Write0( regs->r[0] + 4 ); Space; WriteNum( regs->lr ); NewLine; break;
   case 0x487c0: regs->r[0] = (uint32_t) "HD Monitor"; return true;
   }
 
@@ -2620,6 +2636,9 @@ static bool swi_blocked( svc_registers *regs, uint32_t number )
   case OS_Find:
   case OS_FSControl:
     {
+#ifdef DEBUG__SHOW_LEGACY_PROTECTION
+      WriteS( "SWI " ); WriteNum( number ); WriteS( " starting" ); NewLine;
+#endif
       // One caller at a time, system wide for now.
       return Task_kernel_in_use( regs );
     }
@@ -2641,30 +2660,11 @@ static void swi_completed( uint32_t number )
   case OS_FSControl:
     {
       // One caller at a time, system wide for now.
+#ifdef DEBUG__SHOW_LEGACY_PROTECTION
+      WriteS( "SWI " ); WriteNum( number ); WriteS( " completed" ); NewLine;
+#endif
       Task_kernel_release();
     }
-  }
-}
-
-/* static inline */void run_transient_callbacks()
-{
-  if (workspace.kernel.transient_callbacks == 0) return;
-
-  while (workspace.kernel.transient_callbacks != 0) {
-    transient_callback *callback = workspace.kernel.transient_callbacks;
-
-    // In case the callback registers a callback, make a private copy of the
-    // callback details and sort out the list before making the call. 
-    transient_callback latest = *callback;
-
-    callback->next = workspace.kernel.transient_callbacks_pool;
-    workspace.kernel.transient_callbacks_pool = callback;
-    workspace.kernel.transient_callbacks = latest.next;
-
-#ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
-  WriteS( "Call transient callback: " ); WriteNum( latest.code ); WriteS( ", " ); WriteNum( latest.private_word ); NewLine;
-#endif
-    run_handler( latest.code, latest.private_word );
   }
 }
 
@@ -2730,9 +2730,7 @@ if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
       case 0x62fc0 ... 0x62fcf: // Portable
         break;
       default:
-        WriteS( "Unimplemented!" ); NewLine;
-        WriteNum( number ); NewLine;
-        assert( false );
+        WriteS( "Unimplemented SWI: " ); WriteNum( number ); NewLine;
       }
     }
     regs->spsr |= VF;
@@ -2757,10 +2755,6 @@ if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
   case 0x400c0 ... 0x400ff:
     hack_wimp_out( regs, number & 0x3f );
     break;
-  }
-
-  if (0x10 == (regs->spsr & 0x9f)) { // Not if interrupts disabled
-    run_transient_callbacks();
   }
 
   swi_completed( number );

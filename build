@@ -141,7 +141,7 @@ function build_gcc_module {
 
   arm-linux-gnueabi-gcc-8 $SRC/*.c -Wall -o /tmp/module$$.elf -fpic \
         -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
-        -g -march=armv8-a+nofp -T module.script -I . \
+        -g -march=armv8-a+nofp -T module.script -I . -I include \
         $* &&
   arm-linux-gnueabi-objdump -x --disassemble-all /tmp/module$$.elf > Modules/$M.dump &&
   arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/$M &&

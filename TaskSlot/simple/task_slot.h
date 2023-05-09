@@ -71,7 +71,6 @@ void Task_kernel_release();
 
 struct TaskSlot_workspace {
   Task *running;        // The task that is running on this core
-  Task *runnable;       // The tasks that may only run on this core
   bool memory_mapped;   // Have the shared.task_slot.tasks_memory and shared.task_slot.slots_memory been mapped into this core's MMU?
   Task *sleeping;       // 0 or more sleeping tasks
 
@@ -82,6 +81,11 @@ struct TaskSlot_workspace {
   uint32_t irqs_usr;
   uint32_t irqs_svc;
   uint32_t irqs_sys;
+
+  uint32_t svc_stack_nothing_waiting;
+  uint32_t svc_stack_claims;
+  uint32_t svc_stack_releases;
+  uint32_t svc_stack_resets;
 };
 
 struct TaskSlot_shared_workspace {
@@ -95,13 +99,15 @@ struct TaskSlot_shared_workspace {
 
   // Until filesystems learn to play along, only one task at a time can
   // make filesystem calls.
-  Task *special_waiting;
-  uint32_t special_lock; // Task lock
-  uint32_t depth; // How many times special_lock has been claimed by this task
-  uint32_t special_waiting_lock; // Core lock
+  // The task with access is allowed to recurse, though.
+  // The task with access can be in other lists, so legacy_caller is
+  // just a pointer to a Task which is probably in the running list.
+  // legacy_callers are the Tasks that have been blocked.
+  Task *legacy_callers;
+  Task *legacy_caller;
+  uint32_t legacy_depth;
 
   Task *runnable;       // Tasks that may run on any core
-  Task **core_runnable; // Array of Tasks that may run on that core
 
   uint32_t number_of_interrupt_sources;
   Task **irq_tasks;     // Array of tasks handling interrupts, number of cores x number of sources

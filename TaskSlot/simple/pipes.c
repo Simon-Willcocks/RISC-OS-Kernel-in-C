@@ -307,7 +307,10 @@ static uint32_t write_location( os_pipe *pipe, TaskSlot *slot )
   return pipe->sender_va + (pipe->write_index % pipe->max_block_size);
 }
 
-static bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
+#ifdef NOT_DEBUGGING
+static inline
+#endif
+bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
 {
   uint32_t amount = regs->r[2];
   // TODO validation
@@ -348,6 +351,9 @@ static bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
   else {
     pipe->sender_waiting_for = amount;
 
+    assert( running != next );
+
+    save_task_context( running, regs );
     workspace.task_slot.running = next;
     regs->r[2] = 0xb00b00b0;
 
@@ -360,7 +366,10 @@ static bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
   return true;
 }
 
-static bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
+#ifdef NOT_DEBUGGING
+static inline
+#endif
+bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
 {
   error_block *error = 0;
 
@@ -428,7 +437,10 @@ static bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
       // Make the receiver ready to run when the sender blocks (likely when
       // the pipe is full).
       dll_attach_Task( receiver, &workspace.task_slot.running );
+      save_task_context( running, regs );
       workspace.task_slot.running = workspace.task_slot.running->next;
+
+      assert( workspace.task_slot.running->next != workspace.task_slot.running );
 
       assert( receiver->next = running );
       assert( running->prev == receiver );
@@ -440,7 +452,10 @@ static bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
   return error == 0;
 }
 
-static bool PipePassingOver( svc_registers *regs, os_pipe *pipe )
+#ifdef NOT_DEBUGGING
+static inline
+#endif
+bool PipePassingOver( svc_registers *regs, os_pipe *pipe )
 {
   pipe->sender = task_from_handle( regs->r[2] );
   pipe->sender_va = 0; // FIXME unmap and free the virtual area for re-use
@@ -448,20 +463,29 @@ static bool PipePassingOver( svc_registers *regs, os_pipe *pipe )
   return true;
 }
 
-static bool PipeUnreadData( svc_registers *regs, os_pipe *pipe )
+#ifdef NOT_DEBUGGING
+static inline
+#endif
+bool PipeUnreadData( svc_registers *regs, os_pipe *pipe )
 {
   regs->r[2] = data_in_pipe( pipe );
 
   return true;
 }
 
-static bool PipeNoMoreData( svc_registers *regs, os_pipe *pipe )
+#ifdef NOT_DEBUGGING
+static inline
+#endif
+bool PipeNoMoreData( svc_registers *regs, os_pipe *pipe )
 {
   // Write0( __func__ ); NewLine;
   return Kernel_Error_UnimplementedSWI( regs );
 }
 
-/* static inline */ bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
+#ifdef NOT_DEBUGGING
+static inline
+#endif
+bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
 {
   uint32_t amount = regs->r[2];
   // TODO validation
@@ -506,6 +530,7 @@ static bool PipeNoMoreData( svc_registers *regs, os_pipe *pipe )
 #ifdef DEBUG__PIPEOP
   // WriteS( "Blocking receiver" ); NewLine;
 #endif
+    save_task_context( running, regs );
     workspace.task_slot.running = next;
 
     assert( workspace.task_slot.running != running );
@@ -522,7 +547,10 @@ static bool PipeNoMoreData( svc_registers *regs, os_pipe *pipe )
   return true;
 }
 
-static bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
+#ifdef NOT_DEBUGGING
+static inline
+#endif
+bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
 {
   uint32_t amount = regs->r[2];
   // TODO validation
@@ -582,7 +610,10 @@ assert( 0x2a2a2a2a != regs->r[3] );
   return true;
 }
 
-static bool PipePassingOff( svc_registers *regs, os_pipe *pipe )
+#ifdef NOT_DEBUGGING
+static inline
+#endif
+bool PipePassingOff( svc_registers *regs, os_pipe *pipe )
 {
   pipe->receiver = task_from_handle( regs->r[2] );
   pipe->receiver_va = 0; // FIXME unmap and free the virtual area for re-use
@@ -592,7 +623,10 @@ static bool PipePassingOff( svc_registers *regs, os_pipe *pipe )
   return true;
 }
 
-static bool PipeNotListening( svc_registers *regs, os_pipe *pipe )
+#ifdef NOT_DEBUGGING
+static inline
+#endif
+bool PipeNotListening( svc_registers *regs, os_pipe *pipe )
 {
   // Write0( __func__ ); NewLine;
   return Kernel_Error_UnimplementedSWI( regs );
@@ -764,7 +798,7 @@ bool do_OS_PipeOp( svc_registers *regs )
 // Looking from the outside!
 #include "include/pipeop.h"
 
-void kick_debug_handler_thread()
+void kick_debug_handler_thread( svc_registers *regs )
 {
   // Push any debug text written in SVC mode to the pipe.
   // No need to lock the pipes in this routine since:
@@ -801,8 +835,10 @@ void kick_debug_handler_thread()
     if (workspace.task_slot.running->prev == receiver) {
       // Rather than wait for the debug pipe to fill up, we'll yield to
       // the receiver.
-      assert( p->receiver_waiting_for == 0 ); // Woken
+      assert( p->receiver_waiting_for == 0 ); // Woken by above SpaceFilled
+      save_task_context( running, regs );
       workspace.task_slot.running = workspace.task_slot.running->prev;
+      assert( workspace.task_slot.running->next != workspace.task_slot.running );
     }
   }
 }

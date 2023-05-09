@@ -87,8 +87,10 @@ static inline void *core_svc_stack_top()
 
 static inline bool using_slot_svc_stack()
 {
-  register uint32_t sp asm ( "sp" );
-  return (sp >> 20) == (((uint32_t) &svc_stack_top) >> 20);
+  // Cannot use register sp asm( "sp" ), the optimiser may cache the result
+  uint32_t sp_section;
+  asm ( "mov %[sp], sp, lsr #20" : [sp] "=r" (sp_section) );
+  return sp_section == (((uint32_t) &svc_stack_top) >> 20);
 }
 
 static inline bool using_core_svc_stack()
@@ -118,5 +120,33 @@ static inline uint32_t handle_from_task( Task *task )
   return (uint32_t) task;
 }
 
+// This routine must be called on the old value before
+// changing workspace.task_slot.running in response to
+// a SWI.
+// It is ESSENTIAL that this is called BEFORE adding the
+// task to a shared list; another core might pick it up
+// before this one has a chance to store it.
+// (If this changes, the Kernel_default_irq routine
+// will also have to be changed. Possibly undef and
+// abort, too.)
+static inline void save_task_context( Task *task, svc_registers const *regs )
+{
+  task->regs = *regs;
+
+  // TODO floating point context, etc.; these should be done
+  // in a lazy way, trapping the next use of FP and storing
+  // and restoring its state then, if necessary.
+  // Each task should have its own state, but only if FP used.
+}
+
 void kick_debug_handler_thread();
 bool this_is_debug_receiver();
+
+static inline bool is_a_task( Task *t )
+{
+  // TODO maybe a little more?
+  // Like allocated... Bigger than 64k...
+  extern Task tasks[];
+  return (((uint32_t) t) >> 16) == (((uint32_t) &tasks) >> 16);
+}
+

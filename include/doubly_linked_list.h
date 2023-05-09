@@ -36,14 +36,15 @@ static inline void dll_new_##T( T *i ) { \
 /* check for an empty list!) */ \
 static inline void dll_attach_##T( T *i, T **l ) { \
   dll_assert( i->next == i && i->prev == i ); \
+  dll_assert( i != 0 ); \
   T *head = *l; \
-  (*l) = i; \
   if (head != 0) { \
     i->next = head; \
     i->prev = head->prev; \
     i->prev->next = i; \
     head->prev = i; \
   } \
+  (*l) = i; \
 } \
  \
 /* Detatch the item from any list it is in (if it is the head of a */ \

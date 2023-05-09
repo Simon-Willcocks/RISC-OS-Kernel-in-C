@@ -40,9 +40,8 @@ typedef struct shared_workspace shared_workspace;
 #include "task_slot.h"
 #include "interrupts.h"
 
-typedef struct callback callback;
-
 typedef struct module module;
+typedef struct callback callback;
 typedef callback vector;
 typedef callback transient_callback;
 typedef struct variable variable;
@@ -55,12 +54,7 @@ struct ticker_event {
   uint32_t remaining;
   uint32_t reload;
   ticker_event *next;
-};
-
-struct callback {
-  uint32_t code;
-  uint32_t private_word;
-  callback *next;
+  ticker_event *prev; // Doubly linked list
 };
 
 // Stacks sizes need to be checked (or use the zp memory)
@@ -77,25 +71,23 @@ struct Kernel_workspace {
   uint32_t debug_written; // Written, but not reported to the pipe
   PipeSpace debug_space;
 
-  callback *callbacks_pool;
-
   module *module_list_head;
   module *module_list_tail;
   uint32_t DomainId;
   vector *vectors[64];   // https://www.riscosopen.org/wiki/documentation/show/Software%20Vector%20Numbers
+  vector *default_vectors[64]; // Needs to be core-specific for, e.g., DrawV, shouldn't be for others...
 
   // 0 -> disabled
   // There is no associated code, it will be listening for EventV.
   uint32_t event_enabled[29];
 
   variable *variables; // Should be shared?
-  transient_callback *transient_callbacks;
-  // I cannot tell a lie, this is because there's no HeapFree
-  // implementation, yet, but it's probably also an efficient
-  // approach:
-  transient_callback *transient_callbacks_pool;
+
   ticker_event *ticker_queue;
-  ticker_event *ticker_event_pool;
+
+  struct {
+    uint32_t abt[64];
+  } abort_stack;
 
   struct {
     uint32_t und[64];
@@ -134,10 +126,14 @@ struct Kernel_shared_workspace {
   // first has a chance to initialise their shared workspace).
   uint32_t mp_module_init_lock;
 
+  // FIXME: no longer true?
   // The elements of this linked list won't be used directly, they're a place to hold the private word for
   // multi-processing modules; all cores share the same private word.
   module *module_list_head;
   module *module_list_tail;
+
+  callback *callbacks_pool;
+  ticker_event *ticker_event_pool;
 
   uint32_t pipes_lock;
   os_pipe *pipes;

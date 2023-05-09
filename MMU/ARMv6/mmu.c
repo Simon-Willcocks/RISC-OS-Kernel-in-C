@@ -539,7 +539,7 @@ static bool allocate_core_specific_zero_section( uint32_t address, uint32_t type
 Write0( __func__ ); Space; Write0( "Zero section access " ); WriteNum( address ); Space; WriteNum( type ); NewLine;
 
   assert( address < (1 << 20) );
-  assert( (type & ~0x8f0) == 5 ); // From experience, not necessarily always the case. 0x800 => write, real hardware may report a non-zero domain
+  assert( (type & ~0x8f0) == 5 ); // 0x800 => write. From experience, real hardware may report a non-zero domain
   assert( workspace.mmu.zero_page_l2tt == 0 );
 
   // One-shot per core, claims a L2TT for the bottom MiB of RAM and initialises it.
@@ -803,7 +803,7 @@ void Initialise_privileged_mode_stacks()
   extern uint32_t stack_limit; // Not really a pointer!
   extern uint32_t svc_stack_top;
   //extern uint32_t undef_stack_top;
-  extern uint32_t abt_stack_top;
+  //extern uint32_t abt_stack_top;
   extern uint32_t irq_stack_top;
   extern uint32_t fiq_stack_top;
 
@@ -833,7 +833,7 @@ void Initialise_privileged_mode_stacks()
   // These modes will simply store the task state and tell another task
   // to deal with the problem.
   // setup_stack_pages( &undef_stack_top, &stack_limit );
-  setup_stack_pages( &abt_stack_top, &stack_limit );
+  // setup_stack_pages( &abt_stack_top, &stack_limit );
   setup_stack_pages( &irq_stack_top, &stack_limit );
   setup_stack_pages( &fiq_stack_top, &stack_limit );
 }

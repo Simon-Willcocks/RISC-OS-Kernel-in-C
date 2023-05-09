@@ -1165,7 +1165,7 @@ static int __attribute__(( noinline )) C_IrqV_handler( struct core_workspace *wo
     // WriteNum( irq ); Space;
     if (irq >= 0 && irq < 64) {
       if (0 == (source & (1 << 8))) {
-        // Nothing from GPU, don't check anything under 64
+        // Nothing from GPU, don't need to check anything under 64
         irq = 63;
       }
       else {
@@ -1339,8 +1339,9 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
 {
   int this_core = core( ws );
 
-  uint32_t ticks_per_interval = ws->shared->ticks_per_interval;
-  QA7 volatile *qa7 = ws->shared->qa7;
+  struct workspace *shared = ws->shared;
+  uint32_t ticks_per_interval = shared->ticks_per_interval;
+  QA7 volatile *qa7 = shared->qa7;
 
   uint32_t tickerv_handle;
 
@@ -1397,6 +1398,14 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
     // TODO: Report missed ticks?
 
     timer_set_countdown( timer );
+
+    {
+    GPU volatile *gpu = shared->gpu;
+    if (0 != (gpu->basic_pending & 1)) {
+      WriteS( "IRQ still outstanding!" ); NewLine;
+    }
+    else WriteS( "." );
+    }
 
     // If we wanted to enable interrupts we would ensure the
     // source of the interrupt was disabled, then call:
@@ -1712,7 +1721,7 @@ add_num( pipe, &workspace->core_specific[this_core] );
   GPU *gpu = workspace->gpu;
   Write0( "IRQs enabled " ); WriteNum( gpu->enable_basic ); Space; WriteNum( gpu->enable_irqs1 ); Space; WriteNum( gpu->enable_irqs2 ); NewLine;
 
-  if (0) {
+  if (1) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
 
