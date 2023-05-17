@@ -129,10 +129,20 @@ static inline uint32_t handle_from_task( Task *task )
 // (If this changes, the Kernel_default_irq routine
 // will also have to be changed. Possibly undef and
 // abort, too.)
-static inline void save_task_context( Task *task, svc_registers const *regs )
+#ifndef NOT_DEBUGGING
+static inline 
+#endif
+void save_task_context( Task *task, svc_registers const *regs )
 {
+  TaskSlot *slot = task->slot;
+
   task->regs = *regs;
 
+  if (owner_of_slot_svc_stack( task )) {
+    slot->svc_sp_when_unmapped = (uint32_t*) (regs+1);
+  }
+
+asm( ".word 0xfffffffe" );
   // TODO floating point context, etc.; these should be done
   // in a lazy way, trapping the next use of FP and storing
   // and restoring its state then, if necessary.

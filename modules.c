@@ -3697,17 +3697,23 @@ void __attribute__(( noreturn, noinline )) BootWithFullSVCStack()
   // Named registers so that no banked register is used (we're changing
   // processor mode)
   register uint32_t *stack_top asm ( "r0" ) = &svc_stack_top;
-  register uint32_t *usr_stack_top asm ( "r1" ) = &stack[root_stack_size];
-
-  // Note: The first SWI from usr mode will release this slot's svc_stack
+  register uint32_t *usr_stack_top asm ( "r12" ) = &stack[root_stack_size];
 
   asm ( "mov sp, r0"
+
+    // This yield will release the slot's svc stack
+    "\n  mov r0, %[sleep]"
+    "\n  mov r1, #0"
+    "\n  svc %[swi]"
+
     "\n  cpsie aif, #0x10"
-    "\n  mov sp, r1"
+    "\n  mov sp, r12"
     "\n  b UsrBoot"
     :
     : "r" (stack_top)
     , "r" (usr_stack_top)
+    , [swi] "i" (OS_ThreadOp)
+    , [sleep] "i" (0xff)// TaskOp_Sleep)
     : "sp", "lr" );
 
   __builtin_unreachable();

@@ -21,6 +21,13 @@ extern Task tasks[];
 // For debugging only FIXME
 #include "trivial_display.h"
 
+static inline bool TaskOp_Error_StackOwner( svc_registers *regs )
+{
+  static error_block error = { 0x888, "Programmer error: sleeping while owner of svc stack" };
+  regs->r[0] = (uint32_t) &error;
+  return false;
+}
+
 static inline bool is_irq_task( Task *t )
 {
   for (int i = 0; i < shared.task_slot.number_of_interrupt_sources; i++) {
@@ -658,8 +665,11 @@ TaskSlot *TaskSlot_first()
 
   workspace.task_slot.running = new_task;
 
-  slot->svc_stack_owner = 0;
+  // Has to either be new_task and &svc_stack_top or 0 and core_svc_stack_top
+  slot->svc_stack_owner = new_task;
   slot->svc_sp_when_unmapped = (void*) &svc_stack_top;
+  slot->svc_stack_owner = 0;
+  slot->svc_sp_when_unmapped = (void*) core_svc_stack_top();
 
   assert( workspace.task_slot.running != 0 );
   assert( workspace.task_slot.running == new_task );
@@ -761,7 +771,6 @@ workspace.task_slot.svc_stack_resets++;
 
   if (owner_of_slot_svc_stack( running )) {
     // Done with slot's svc_stack
-
     release_task_waiting_for_stack( running );
   }
 
@@ -1010,6 +1019,7 @@ static void __attribute__(( noinline )) c_default_ticker()
       Task *still_sleeping = first;
       Task *last_resume = first;
 
+asm ( "bkpt 7" );
       // r[1] contains the number of ticks left to sleep for
       // Find all the tasks to be woken (this one, and all the following with
       // r[1] == 0).
@@ -1550,6 +1560,16 @@ WriteS( "Yielding " ); WriteNum( running ); WriteS( ", waking " ); WriteNum( res
       regs->spsr &= ~CF;
   }
   else {
+    if (running->slot->svc_stack_owner == running) {
+      if (regs+1 == &svc_stack_top) {
+        release_task_waiting_for_stack( running );
+      }
+      else {
+        static error_block error = { 0x888, "Programmer error: sleeping while owner of svc stack" };
+        return &error;
+      }
+    }
+
     Task *sleeper = workspace.task_slot.sleeping;
 
 #ifdef DEBUG__SHOW_TASK_SWITCHES
@@ -1759,6 +1779,19 @@ void __attribute__(( naked, noreturn )) ResumeSVC()
   asm volatile ( "pop { lr, pc }" );
 }
 
+void __attribute__(( naked, noreturn )) ResumeAfterCallBack()
+{
+  // CallBack handlers can no longer restore PC and PSR in one instruction,
+  register Task **running asm ( "lr" ) = &workspace.task_slot.running; 
+  asm volatile (
+      "\n  ldr lr, [lr]"
+      "\n  add lr, lr, %[offset]"
+      "\n  rfeia lr"
+      :
+      : "r" (running)
+      , [offset] "i" (&((Task*) 0)->regs.lr) );
+}
+
 Task *__attribute__(( noinline )) c_run_irq_tasks( Task *running );
 
 #define PROVE_OFFSET( o, t, n ) \
@@ -1779,14 +1812,13 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
   assert( 0 == (void*) &((Task*) 0)->regs );
   // Need to be careful with this, that the compiler doesn't insert any code to
   // set up lr using another register, corrupting it.
-  register Task **running asm ( "lr" ) = &workspace.task_slot.running;
-
   PROVE_OFFSET( regs, Task, 0 );
   PROVE_OFFSET( lr, svc_registers, 13 * 4 );
   PROVE_OFFSET( spsr, svc_registers, 14 * 4 );
   PROVE_OFFSET( banked_sp_usr, Task, 15 * 4 );
   PROVE_OFFSET( banked_lr_usr, Task, 16 * 4 );
 
+  register Task **running asm ( "lr" ) = &workspace.task_slot.running; 
   asm volatile (
       "\n  ldr lr, [lr]"
       "\n  stm lr!, {r0-r12}  // lr -> banked_sp_usr"
@@ -1821,7 +1853,7 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
   // If the interrupted task is in the middle of a SWI, store the
   // banked LR and the resume address on the stack and have the task
   // resume at an instruction that pops them both.
-  if ((regs->spsr & 0x1f) == 0x13) {
+  if (interrupted_mode == 0x13) {
     // Interrupts are never enabled during interrupt safe SWIs
     assert( owner_of_slot_svc_stack( interrupted_task ) );
 
@@ -1845,28 +1877,45 @@ void __attribute__(( naked, noreturn )) Kernel_default_irq()
 
   Task *irq_task = c_run_irq_tasks( interrupted_task );
 
-  // The returned task might be the interrupted task, if the interrupt was spurious
+  assert( irq_task == workspace.task_slot.running );
 
-  if (irq_task->slot != interrupted_task->slot) {
-    // IRQ stack is core-specific, so switching slots does not affect its mapping
-    MMU_switch_to( irq_task->slot );
+  // The returned task might be the interrupted task, if the interrupt was spurious
+  if (irq_task != interrupted_task) {
+    // Not a spurious interrupt
+    // The interrupt task is always in OS_ThreadOp, WaitForInterrupt, and therefore
+    // not the svc stack owner.
 
     assert( !owner_of_slot_svc_stack( irq_task ) );
+
+    if (irq_task->slot != interrupted_task->slot) {
+      // IRQ stack is core-specific, so switching slots does not affect its mapping
+      // (We can call this routine without the stack disappearing.)
+      MMU_switch_to( irq_task->slot );
+    }
 
     asm volatile (
       "\n  msr sp_svc, %[reset_sp]"
       :
       : [reset_sp] "r" (core_svc_stack_top()) );
-  }
 
-  if (irq_task != interrupted_task && usr32_caller( &irq_task->regs )) {
-    asm (
-      "\n  msr sp_usr, %[usrsp]"
-      "\n  msr lr_usr, %[usrlr]"
-      :
-      : [usrsp] "r" (irq_task->banked_sp_usr)
-      , [usrlr] "r" (irq_task->banked_lr_usr)
-    );
+    if (usr32_caller( &irq_task->regs )) {
+      asm (
+        "\n  msr sp_usr, %[usrsp]"
+        "\n  msr lr_usr, %[usrlr]"
+        :
+        : [usrsp] "r" (irq_task->banked_sp_usr)
+        , [usrlr] "r" (irq_task->banked_lr_usr)
+      );
+    }
+
+    {
+    uint32_t sp;
+    asm ( 
+                 "\n  mrs %[sp], sp_svc"
+                 : [sp] "=r" (sp) );
+    assert( owner_of_slot_svc_stack( workspace.task_slot.running )
+         == (((sp) >> 20) == ((uint32_t) &svc_stack_top) >> 20) );
+    }
   }
 
   register svc_registers *lr asm ( "lr" ) = &irq_task->regs;
@@ -2001,6 +2050,7 @@ bool Task_kernel_in_use( svc_registers *regs )
       if (0 == change_word_if_equal( (uint32_t*) &shared.task_slot.legacy_caller, 0, n )) {
         // We're the only legacy caller at the moment after all, so remove ourselves from
         // the waiting queue and continue as if we'd got permission immediately.
+asm( "bkpt 7" );
         mpsafe_detach_Task( &slot->waiting_for_slot_stack, running );
         assert( shared.task_slot.legacy_depth == 0 );
         shared.task_slot.legacy_depth = 1;
@@ -2031,7 +2081,8 @@ void Task_kernel_release()
       // That task is still blocked, so cannot affect legacy_depth yet
       shared.task_slot.legacy_depth = 1;
       WriteS( "Resuming task " ); WriteNum( shared.task_slot.legacy_caller ); NewLine;
-      mpsafe_insert_Task_at_head( &shared.task_slot.runnable, shared.task_slot.legacy_caller );
+      // TODO mpsafe_insert_Task_at_head( &shared.task_slot.runnable, shared.task_slot.legacy_caller );
+      mpsafe_insert_Task_at_head( &workspace.task_slot.running, shared.task_slot.legacy_caller );
       // Assume it's running on another core right now
     }
 #ifdef DEBUG__SHOW_LEGACY_PROTECTION
@@ -2296,6 +2347,8 @@ void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
   // The banked registers are only saved and restored when
   // the task moves from or to usr32 mode.
   if (usr32_caller( regs )) {
+    show_tasks_state();
+
     asm ( "\n  mrs %[usrsp], sp_usr"
           "\n  mrs %[usrlr], lr_usr"
           : [usrsp] "=r" (caller->banked_sp_usr)
@@ -2325,6 +2378,7 @@ void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
     asm volatile ( "add sp, %[newsp], #4" : : [newsp] "r" (slot_stack) );
 
     asm ( "sub %[regs], %[regs], %[core]"
+    "\n  .word 0xffffffff"
       "\n  add %[regs], %[regs], %[slot]"
       : [regs] "=&r" (regs)
       : [core] "r" (core_stack), [slot] "r" (slot_stack) );
@@ -2356,11 +2410,8 @@ workspace.task_slot.svc_stack_claims++;
   }
 
   if (resume != caller) {
-    if (owner_of_slot_svc_stack( caller )) {
-      slot->svc_sp_when_unmapped = (uint32_t*) resume_sp;
-    }
-
     assert( slot == caller->slot );
+    assert( owner_of_slot_svc_stack( caller ) == (caller->slot->svc_sp_when_unmapped == (uint32_t*) (regs+1)) );
 
 assert( caller->regs.lr != 0 );
     resume_task( resume, slot );
@@ -2376,10 +2427,13 @@ assert( caller->regs.lr != 0 );
 
     if (0 == (regs->spsr & 0x80) // Not if interrupts disabled
      && slot->transient_callbacks != 0) {
+asm ( ".word 0xfffffffd" );
       run_transient_callbacks();
+      assert( workspace.task_slot.running == caller );
     }
 
     if (caller != workspace.task_slot.running) {
+asm ( ".word 0xfffffffc" );
 asm  ( "bkpt 4" );
       if (owner_of_slot_svc_stack( caller )) {
         slot->svc_sp_when_unmapped = (uint32_t*) resume_sp;
@@ -2393,10 +2447,24 @@ assert( caller->regs.lr != 0 );
       __builtin_unreachable();
     }
 
-    if (slot->callback_requested) {
+    // PRM1-299: "In RISC OS 3 (version 3.10) or later, the supervisor stack must also
+    // be empty when the CallBack handler is called. This ensures that certain module
+    // SWIs that temporarily enter User mode (so that transient CallBacks are called)
+    // do not cause the CallBack handler to be called."
+    //
+    // I think that means the CallBack handler will only be called if the stack is
+    // already empty, not that the stack can be assumed to be empty by the CallBack
+    // code.
+    //
+    // I will call it when the current task is the owner of the svc_stack, so the
+    // CallBack can make legacy SWI calls. FIXME?
+
+    if (slot->callback_requested && resume_sp == &svc_stack_top) {
       // Exit through the callback handler, which will
       // update the usr sp and lr for us...
       slot->callback_requested = false;
+
+      assert( owner_of_slot_svc_stack( resume ) );
 
       handler *h = &slot->handlers[7];
 
@@ -2408,13 +2476,16 @@ assert( caller->regs.lr != 0 );
       }
       buffer[13] = resume->banked_sp_usr;
       buffer[14] = resume->banked_lr_usr;
-      buffer[15] = regs->lr;
+      buffer[15] = (uint32_t) ResumeAfterCallBack;
+
       register void (*handler)() asm( "lr" ) = h->code;
       register uint32_t r12 asm( "r12" ) = h->private_word;
       // Note: it appears the called handler is expected to know 
       // where it wanted the registers stored, buffer is not passed
       // to the handler.
-      asm ( "bx lr" : : "r" (handler), "r" (r12) );
+      asm ( "mov sp, %[top]"
+        "\n  bx lr" : : "r" (handler), "r" (r12), [top] "r" (resume_sp) );
+
       __builtin_unreachable();
     }
     else {
@@ -2459,19 +2530,26 @@ static void __attribute__(( noinline )) release_task_waiting_for_stack( Task *ta
   assert( owner_of_slot_svc_stack( task ) );
 
   TaskSlot *slot = task->slot;
+  assert( slot->svc_stack_owner == task );
 
   // This task has permission, as the owner, to change the owner
-  // The new owner cannot run until it has been put into the running list
+  // The new owner cannot do anything until it has been put into the running list
   slot->svc_stack_owner = mpsafe_detach_Task_at_head( &slot->waiting_for_slot_stack );
-  slot->svc_sp_when_unmapped = (uint32_t*) &svc_stack_top;
   assert( slot->svc_stack_owner != task );
+asm ( ".word 0xffffffff" );
 
-workspace.task_slot.svc_stack_nothing_waiting++;
 workspace.task_slot.svc_stack_releases++;
 
   if (slot->svc_stack_owner != 0) {
     // FIXME put into shared runnable list instead
+    // Only needs mpsafe call when shared
     mpsafe_insert_Task_after_head( &workspace.task_slot.running, slot->svc_stack_owner );
+    slot->svc_sp_when_unmapped = (uint32_t*) &svc_stack_top;
+  }
+  else {
+workspace.task_slot.svc_stack_nothing_waiting++;
+    // This will be set to &svc_stack_top when a new task claims ownership
+    slot->svc_sp_when_unmapped = (uint32_t*) 0xbaadf00d;
   }
 }
 
@@ -2519,6 +2597,14 @@ static void __attribute__(( noinline, noreturn )) resume_task( Task *resume, Tas
   }
 
   assert( owner_of_slot_svc_stack( resume ) == using_slot_svc_stack() );
+
+  assert( resume == workspace.task_slot.running );
+
+  {
+  register uint32_t sp asm( "sp" );
+  assert( owner_of_slot_svc_stack( workspace.task_slot.running )
+       == (((sp) >> 20) == ((uint32_t) &svc_stack_top) >> 20) );
+  }
 
   register svc_registers *lr asm ( "lr" ) = &resume->regs;
   asm (

@@ -2617,7 +2617,12 @@ static bool special_swi( svc_registers *regs, uint32_t number )
     return hack_wimp_in( regs, number );
     break;
   case 0x80146: regs->r[0] = 0; return true; // PDriver_CurrentJob (called from Desktop?!)
-  case 0x41506: WriteS( "Translating error " ); Write0( regs->r[0] + 4 ); Space; WriteNum( regs->lr ); NewLine; break;
+  case 0x41506: {
+#ifdef DEBUG__SHOW_ERRORS
+    WriteS( "Translating error " ); Write0( regs->r[0] + 4 ); Space; WriteNum( regs->lr ); NewLine; 
+#endif
+    }
+    break;
   case 0x487c0: regs->r[0] = (uint32_t) "HD Monitor"; return true;
   }
 

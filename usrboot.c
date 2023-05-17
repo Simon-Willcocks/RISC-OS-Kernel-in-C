@@ -889,8 +889,6 @@ void __attribute__(( noreturn )) UsrBoot()
 {
   set_core_var(); // <CPU$Core>, read-only code variable.
 
-  Sleep( 0 ); // Run HAL callbacks and/or tasks
-
   uint32_t core_number;
 
   asm ( 
@@ -903,6 +901,8 @@ void __attribute__(( noreturn )) UsrBoot()
     : "memory" );
 
   core_number = 0; // FIXME
+
+  Sleep( 0 ); // Run HAL callbacks and/or tasks
 
   asm volatile ( "svc 0x13" ); // OS_IntOn
 
@@ -918,10 +918,6 @@ void __attribute__(( noreturn )) UsrBoot()
        , "r" (module)
        , [os_module] "i" (OS_Module)
        : "lr", "cc", "memory" );
-  }
-
-  for (;;) { 
-    Sleep( 1000 );
   }
 
   if (core_number == 0) {
