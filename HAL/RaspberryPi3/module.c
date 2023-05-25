@@ -140,7 +140,8 @@ typedef struct {
 } GPU_mailbox;
 
 typedef struct __attribute__(( packed )) {
-  uint32_t res0[0x200/4];
+  uint32_t to0x200[0x200/4];
+  // 0x200
   union {
     struct {
       uint32_t basic_pending;
@@ -154,8 +155,23 @@ typedef struct __attribute__(( packed )) {
       uint32_t disable_irqs2;
       uint32_t disable_basic;
     };
-    uint32_t res1[0x680/4];
+    uint32_t to0x400[0x200/4];
   };
+  // 0x400
+  union {
+    struct {
+      uint32_t load;
+      uint32_t value;
+      uint32_t control;
+      uint32_t irq;
+      uint32_t irq_raw;
+      uint32_t irq_masked;
+      uint32_t pre_deivider;
+      uint32_t counter;
+    } regular_timer;
+    uint32_t to0x880[0x480/4];
+  };
+  // 0x880
   GPU_mailbox mailbox[2]; // ARM may read mailbox 0, write mailbox 1.
 
 } GPU;
@@ -250,11 +266,11 @@ static struct workspace *new_workspace( uint32_t number_of_cores )
 enum fb_colours {
   Black   = 0xff000000,
   Grey    = 0xff888888,
-  Blue    = 0xffff0000,
+  Blue    = 0xff0000ff,
   Green   = 0xff00ff00,
-  Red     = 0xff0000ff,
-  Yellow  = 0xff00ffff,
-  Magenta = 0xffff00ff,
+  Red     = 0xffff0000,
+  Yellow  = 0xffffff00,
+  Magenta = 0xff00ffff,
   White   = 0xffffffff };
 
 static inline void set_pixel( uint32_t x, uint32_t y, uint32_t colour, struct workspace *ws )
@@ -1328,10 +1344,12 @@ static void tickerv_task( uint32_t handle, struct core_workspace *ws )
     NewLine;
 */
     // Vector is called with interrupts disabled
+    asm ( "svc %[swi]" : : [swi] "i" (OS_IntOff) );
     asm ( 
       "\n  mov r9, #0x1c// TickerV"
-      "\n  svc 0x20034  // OS_CallAVector"
-      : : : "r9", "lr" );
+      "\n  svc %[swi]"
+      : : [swi] "i" (Xbit | OS_CallAVector) : "r9", "lr" );
+    asm ( "svc %[swi]" : : [swi] "i" (OS_IntOn) );
   }
 }
 
@@ -1345,10 +1363,11 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
 
   uint32_t tickerv_handle;
 
+WriteS( "Timer interrupt task" ); NewLine;
   {
     uint64_t *stack = (void*) ((&ws->tickerv_stack)+1);
 
-    register uint32_t request asm ( "r0" ) = 0; // Create Thread
+    register uint32_t request asm ( "r0" ) = TaskOp_Start;
     register void *code asm ( "r1" ) = tickerv_task;
     register void *stack_top asm ( "r2" ) = stack;
     register struct core_workspace *cws asm( "r3" ) = ws;
@@ -1404,7 +1423,13 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
     if (0 != (gpu->basic_pending & 1)) {
       WriteS( "IRQ still outstanding!" ); NewLine;
     }
-    else WriteS( "." );
+    else {
+      WriteS( "." );
+      asm ( 
+        "\n  mov r0, #0xff"
+        "\n  svc %[swi]"
+        : : [swi] "i" (Xbit | OS_ThreadOp) : "r0", "lr" );
+    }
     }
 
     // If we wanted to enable interrupts we would ensure the
@@ -1412,7 +1437,11 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
     // interrupt_is_off( device );
     ticks += missed_ticks;
 
-    if (ticks >= tick_divider) resume_task( tickerv_handle );
+    if (ticks >= tick_divider) //resume_task( tickerv_handle );
+    asm ( 
+      "\n  mov r9, #0x1c// TickerV"
+      "\n  svc %[swi]"
+      : : [swi] "i" (Xbit | OS_CallAVector) : "r9", "lr" );
 
     while (ticks >= tick_divider) {
       ticks -= tick_divider;
@@ -1424,7 +1453,7 @@ static uint32_t start_timer_interrupt_task( struct core_workspace *ws, int devic
 {
   uint64_t *stack = (void*) ((&ws->ticker_stack)+1);
 
-  register uint32_t request asm ( "r0" ) = 0; // Create Thread
+  register uint32_t request asm ( "r0" ) = TaskOp_Start + 0x100; // In separate slot
   register void *code asm ( "r1" ) = timer_interrupt_task;
   register void *stack_top asm ( "r2" ) = stack;
   register struct core_workspace *workspace asm( "r3" ) = ws;
@@ -1495,7 +1524,7 @@ static void uart_interrupt_task( uint32_t handle, struct core_workspace *ws, int
 
 static uint32_t start_uart_interrupt_task( struct core_workspace *ws, int device )
 {
-  register uint32_t request asm ( "r0" ) = 0; // Create Thread
+  register uint32_t request asm ( "r0" ) = TaskOp_Start;
   register void *code asm ( "r1" ) = uart_interrupt_task;
   register void *stack_top asm ( "r2" ) = (&ws->shared->uart_task_stack+1);
   register struct core_workspace *workspace asm( "r3" ) = ws;
@@ -1554,7 +1583,7 @@ static uint32_t start_console_task( struct core_workspace *ws, uint32_t pipe )
 {
   uint64_t *stack = (void*) ((&ws->console_stack)+1);
 
-  register uint32_t request asm ( "r0" ) = 0; // 254; // FIXME FIXME FIXME RunFree
+  register uint32_t request asm ( "r0" ) = TaskOp_Start;
   register void *code asm ( "r1" ) = console_task;
   register void *stack_top asm ( "r2" ) = stack;
   register struct core_workspace *workspace asm( "r3" ) = ws;
@@ -1677,8 +1706,6 @@ add_string( "starting console task ", &workspace->core_specific[this_core] );
 add_num( pipe, &workspace->core_specific[this_core] );
       uint32_t handle = start_console_task( &workspace->core_specific[this_core], pipe );
       handle = handle; // unused variable
-
-      Yield();
     }
   }
 
@@ -1721,11 +1748,9 @@ add_num( pipe, &workspace->core_specific[this_core] );
   GPU *gpu = workspace->gpu;
   Write0( "IRQs enabled " ); WriteNum( gpu->enable_basic ); Space; WriteNum( gpu->enable_irqs1 ); Space; WriteNum( gpu->enable_irqs2 ); NewLine;
 
-  if (1) {
+  if (0) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
-
-    Yield(); // Let the task start the timer
   }
   else {
     WriteS( "No timer interrupts" ); NewLine;
@@ -1734,8 +1759,6 @@ add_num( pipe, &workspace->core_specific[this_core] );
   if (first_entry) {
     uint32_t handle = start_uart_interrupt_task( &workspace->core_specific[this_core], 57 );
     Write0( "UART task: " ); WriteNum( handle ); NewLine;
-
-    Yield(); // Let the task start listening to the uart
   }
   else {
     WriteS( "No uart interrupts" ); NewLine;
@@ -1749,6 +1772,10 @@ add_num( pipe, &workspace->core_specific[this_core] );
     register struct core_workspace *ws asm( "r1" ) = cws;
     asm( "svc %[swi]" : : [swi] "i" (OS_AddCallBack | 0x20000), "r" (callback), "r" (ws) );
   }
+
+show_word( this_core * (1920/4), 96, 0x11111111, first_entry ? Red : Green, workspace ); 
+  asm ( "svc %[swi]" : : [swi] "i" (OS_IntOn) );
+  Yield();
 
   clear_VF();
 }

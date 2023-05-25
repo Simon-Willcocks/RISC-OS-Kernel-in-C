@@ -922,6 +922,23 @@ void __attribute__(( noreturn )) UsrBoot()
 
   if (core_number == 0) {
     init_modules();
+
+    //init_module( "UtilityModule" );
+    //init_module( "FileSwitch" ); // needed by...
+
+    extern uint32_t _binary_Modules_DumbFS_start;
+    register uint32_t code asm( "r0" ) = 10;
+    register uint32_t module asm( "r1" ) = 4 + (uint32_t) &_binary_Modules_DumbFS_start;
+
+    asm volatile ( "svc %[os_module]"
+       :
+       : "r" (code)
+       , "r" (module)
+       , [os_module] "i" (OS_Module)
+       : "lr", "cc", "memory" );
+
+    // OSCLI( "Fat32FS" );
+    OSCLI( "info DumbFS:603b10000_40000000" );
   }
   else {
     init_module( "UtilityModule" );
@@ -940,7 +957,6 @@ void __attribute__(( noreturn )) UsrBoot()
 
   WriteS( "About to run Resources:$.!Boot\n" );
 
-  //error_block *err = OSCLI( "MTWimpStart" );
   error_block *err = OSCLI( "Resources:$.!Boot.!Run" ); // FIXME Take out the .!Run when do_CLI fixed
   //error_block *err = OSCLI( "Desktop" );
 

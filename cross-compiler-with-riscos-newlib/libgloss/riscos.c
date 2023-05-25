@@ -13,7 +13,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-#include "./pipeop.h"
+#include "../../pipeop.h"
 
 /* Forward prototypes.  */
 int	_system		(const char *);

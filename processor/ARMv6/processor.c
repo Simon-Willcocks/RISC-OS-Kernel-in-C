@@ -276,15 +276,15 @@ void *memset(void *s, int c, uint32_t n)
   return s;
 }
 
-void *memcpy(void *d, const void *s, uint32_t n)
+void *memcpy(void *dest, const void *src, unsigned len)
 {
-  uint8_t *dest = d;
-  const uint8_t *src = s;
-  for (int i = 0; i < n; i++) { dest[i] = src[i]; }
-  return d;
+  uint8_t const *s = src;
+  uint8_t *d = dest;
+  while (*s != '\0' && len-- > 0) {
+    *d++ = *s++;
+  }
+  return dest;
 }
-
-
 
 // Change the word at `word' to the value `to' if it contained `from'.
 // Returns the original content of word (= from if changed successfully)

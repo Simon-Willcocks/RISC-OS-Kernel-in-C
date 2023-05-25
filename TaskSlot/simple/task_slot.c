@@ -60,41 +60,48 @@ static inline void show_task_state( Task *t, uint32_t colour )
 static void __attribute__(( noinline, noreturn )) resume_task( Task *resume, TaskSlot *loaded );
 static void __attribute__(( noinline )) release_task_waiting_for_stack( Task *task );
 
+static bool is_in_list( Task *task, Task **list )
+{
+  Task *t = *list;
+  if (t == 0) return false;
+  do {
+    if (task == t) return true;
+    t = t->next;
+  } while (t != *list);
+  return false;
+}
+
+static bool is_running( Task *task )
+{
+  return is_in_list( task, &workspace.task_slot.running );
+}
+
+static bool is_sleeping( Task *task )
+{
+  return is_in_list( task, &workspace.task_slot.sleeping );
+}
+
+static bool is_waiting_for_stack( Task *task )
+{
+  return is_in_list( task, &task->slot->waiting_for_slot_stack );
+}
+
 bool show_tasks_state()
 {
   for (int i = 0; i < 20; i++) {
     Task *t = &tasks[i];
-      show_task_state( t, White ); //is_irq_task( t ) ? Blue : White );
     if (0 == (t->regs.lr & 1)) {
-      //if (t == workspace.task_slot.running) continue;
-      show_task_state( t, is_irq_task( t ) ? Blue : White );
+      uint32_t colour = White;
+      if (is_running( t )) colour = Green;
+      if (is_irq_task( t )) colour = Blue;
+      if (is_sleeping( t )) colour = Yellow;
+      if (is_waiting_for_stack( t )) colour = Magenta;
+      if (t->slot->svc_stack_owner == t) colour = Grey;
+      show_task_state( t, colour );
     }
   }
 
-  Task *t = workspace.task_slot.running;
-  uint32_t colour = Green;
-  do {
-    show_task_state( t, colour );
-    colour = Yellow;
-    t = t->next;
-  } while (t != workspace.task_slot.running);
-
   return true;
-}
-
-static inline void show_running_queue( int x )
-{
-  Task *t = workspace.task_slot.running;
-  int y = 100;
-  WriteS( "Running: " );
-  do {
-    WriteNum( t ); Space;
-    show_word( x, y, (uint32_t) t, Green );
-    t = t->next;
-    y += 10;
-  } while (t != workspace.task_slot.running);
-  show_word( x, y, 0, Red );
-  NewLine;
 }
 
 static inline TaskSlot *slot_from_handle( uint32_t handle )
@@ -174,6 +181,9 @@ bool do_OS_GetEnv( svc_registers *regs )
 
 void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
 {
+  static const uint32_t ignored_r2 = 0b11111111111111101110000000111111;
+  static const uint32_t ignored_r3 = 0b11111111111111111111111000111111;
+
   assert( workspace.task_slot.running != 0 );
 
   Task *running = workspace.task_slot.running;
@@ -182,13 +192,16 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
 
   TaskSlot *slot = running->slot;
 
-  if (regs[0] > number_of( slot->handlers )) {
+  int env = regs[0];
+
+  if (env > number_of( slot->handlers )) {
+    // FIXME Return an error instead
     asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
   }
 
-  handler *h = &slot->handlers[regs[0]];
+  handler *h = &slot->handlers[env];
 
-  if (regs[0] == 0 || regs[0] == 14) {
+  if (env == 0 || env == 14) {
     //  0 Memory Limit (special case)
     // 14 Application Space (special case)
     //    When are they different?
@@ -196,27 +209,30 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
 
     // R2 and R3 are ignored, may be set to "random" values by callers.
 
-    if (regs[0] == 0 && regs[1] != 0) {
+    if (env == 0 && regs[1] != 0) {
       TaskSlot_adjust_app_memory( slot, (regs[1] + 0xfff) & ~0xfff );
     }
 
-    h->code = (void (*)()) TaskSlot_Himem( workspace.task_slot.running->slot );
-  }
-
-  handler old = *h;
-  if (regs[1] != 0) {
-    h->code = (void*) regs[1];
-  }
-  if (regs[2] != 0) {
-    h->private_word = regs[2];
-  }
-  if (regs[3] != 0) {
-    h->buffer = regs[3];
+    h->code = (void (*)()) TaskSlot_Himem( slot );
   }
 
 #ifdef DEBUG__SHOW_ENVIRONMENT_CHANGES
   WriteS( "Changed environment " ); WriteNum( regs[0] ); NewLine;
   WriteNum( regs[1] ); Space; WriteNum( regs[2] ); Space; WriteNum( regs[3] ); NewLine;
+#endif
+
+  handler old = *h;
+  if (regs[1] != 0) {
+    h->code = (void*) regs[1];
+  }
+  if (regs[2] != 0 && 0 == (ignored_r2 & (1 << env))) {
+    h->private_word = regs[2];
+  }
+  if (regs[3] != 0 && 0 == (ignored_r3 & (1 << env))) {
+    h->buffer = regs[3];
+  }
+
+#ifdef DEBUG__SHOW_ENVIRONMENT_CHANGES
   WriteNum( old.code ); Space; WriteNum( old.private_word ); Space; WriteNum( old.buffer ); NewLine;
   WriteNum( h->code ); Space; WriteNum( h->private_word ); Space; WriteNum( h->buffer ); NewLine;
 #endif
@@ -363,7 +379,7 @@ static void allocate_taskslot_memory()
   }
 }
 
-static void __attribute__(( noinline, naked )) ignore_event()
+static void __attribute__(( noinline, naked )) ignore_upcall()
 {
   asm ( "bx lr" );
 }
@@ -426,38 +442,64 @@ void __attribute__(( naked )) unset_handler()
 }
 
 static const handler default_handlers[17] = {
-  { 0, 0, 0 },                // RAM Limit for program (0x8000 + amount of RAM)
+  { 0, 0, 0 },                   // RAM Limit for program (0x8000 + amount of RAM)
   { unset_handler, 0, 0 },       // Undefined instruction
   { unset_handler, 0, 0 },       // Prefetch abort
   { unset_handler, 0, 0 },       // Data abort
   { unset_handler, 0, 0 },       // Address exception
   { unset_handler, 0, 0 },       // Other exceptions
-  { ErrorHandler, 0, 0 },       // Error
+  { ErrorHandler, 0, 0 },        // Error
   { unset_handler, 0, 0 },       // CallBack
   { unset_handler, 0, 0 },       // Breakpoint
   { unset_handler, 0, 0 },       // Escape
   { unset_handler, 0, 0 },       // Event
-  { ExitHandler, 0, 0 },       // Exit (entered in usr mode)
+  { ExitHandler, 0, 0 },         // Exit (entered in usr mode)
   { unset_handler, 0, 0 },       // Unused SWI
+  // IDK if Exception registers should have a default, this value will
+  // fault if someone tries to write to it...
   { unset_handler, 0, 0 },       // Exception registers
-  { 0, 0, 0 },                // Application space limit
-  { unset_handler, 0, 0 },       // Currently Active Object
-  { ignore_event, 0, 0 }        // UpCall handler
+  { 0, 0, 0 },                   // Application space limit
+  { 0, 0, 0 },                   // Currently Active Object
+  { ignore_upcall, 0, 0 }        // UpCall handler
 };
 
 bool do_OS_ReadDefaultHandler( svc_registers *regs )
 {
-  if (regs->r[0] > number_of( default_handlers )) {
+  int env = regs->r[0];
+  if (env > number_of( default_handlers )) {
     static error_block error = { 0x888, "Handler number out of range" };
     regs->r[0] = (uint32_t) &error;
     return false;
   }
 
-  handler h = default_handlers[ regs->r[0] ];
+  handler h = default_handlers[ env ];
 
-  regs->r[1] = (uint32_t) h.code;
-  regs->r[2] = h.private_word;
-  regs->r[3] = 0; // Only relevant for Error, CallBack, BreakPoint. These will probably have to be associated with Task Slots...?
+  Task *running = workspace.task_slot.running;
+  TaskSlot *slot = running->slot;
+
+  switch (env) {
+  case 15: assert( (uint32_t) h.code == (uint32_t) slot );
+  case 0 ... 5:
+  case 13 ... 14:
+    regs->r[1] = (uint32_t) h.code;
+    break;
+
+  case 6 ... 8:
+    regs->r[1] = (uint32_t) h.code;
+    regs->r[2] = h.private_word;
+    regs->r[3] = h.buffer;
+    break;
+
+  case 9 ... 12:
+  case 16:
+    regs->r[1] = (uint32_t) h.code;
+    regs->r[2] = h.private_word;
+    regs->r[3] = 0;
+    break;
+
+  default:
+    asm ( "bkpt 1" ); // Out of range has already been checked
+  }
 
   return true;
 }
@@ -1195,7 +1237,7 @@ asm ( "bkpt 1" );
     }
     else {
       // Another task owns it, add to blocked list for task slot, block...
-
+asm ( "bkpt 6" );
       retry_from_swi( regs, running, &slot->waiting );
 
       return 0;
@@ -1307,7 +1349,7 @@ static int next_interrupt_source()
 
   // This is relatively inefficient, but it shows up on qemu traces
   register uint32_t vector asm( "r9" ) = 2;
-  asm ( "svc %[swi]" : "=r" (device) : [swi] "i" (OS_CallAVector), "r" (vector) : "lr", "memory", "cc" );
+  asm ( "svc %[swi]" : "=r" (device) : [swi] "i" (Xbit | OS_CallAVector), "r" (vector) : "lr", "memory", "cc" );
 #else
 
   // It is expected that the HAL will have claimed this vector and will return
@@ -1355,7 +1397,7 @@ static Task *next_irq_task()
 
     workspace.task_slot.irq_tasks[device] = 0; // Not waiting for interrupts
 
-if (handler == 0) { register uint32_t r0 asm( "r0" ) = device; asm ( "bkpt 888" : : "r"(r0) ); } // handler hasn't reported for duty yet, it should have disabled the interrupt at source
+if (handler == 0) { register uint32_t r0 asm( "r0" ) = device; asm ( "bkpt 888" : : "r"(r0) ); } // handler hasn't reported for duty yet, it should have disabled the interrupt at source before interrupts were re-enabled.
 assert( (handler->regs.spsr & 0x80) != 0 || (handler == workspace.task_slot.running) );
 
 #ifdef DEBUG__SHOW_TASK_SWITCHES
@@ -1483,9 +1525,20 @@ WriteS( "IRQ task " ); WriteNum( irq_task ); NewLine;
 {
   Task *running = workspace.task_slot.running;
 
-  Task *new_task = Task_new( running->slot );
+WriteS( "TaskOpStart " ); WriteNum( regs->r[0] ); Space; WriteNum( regs->r[1] ); NewLine;
+  TaskSlot *slot;
+  if (0 != (regs->r[0] & 0x100)) {
+WriteS( "TaskOpStart separate" ); NewLine;
+    slot = TaskSlot_new( "Separate" );
+  }
+  else {
+    slot = running->slot;
+  }
 
-  assert( new_task->slot == running->slot );
+  Task *new_task = Task_new( slot );
+
+show_task_state( new_task, Yellow );
+  assert( new_task->slot == slot );
 
   // The creating task gets to continue, although its code should
   // not assume that the new task will wait for it to yield.
@@ -1494,12 +1547,8 @@ WriteS( "IRQ task " ); WriteNum( irq_task ); NewLine;
   // lock is released, the child will continue.
   assert( running != 0 );
 
-//show_running_queue( 1000 );
-
-//show_running_queue( 1100 );
-
   new_task->regs.spsr = 0x10; // Tasks always start in usr32 mode
-  new_task->regs.lr = regs->r[1];
+  new_task->regs.lr = regs->r[1] & ~3;
   new_task->banked_lr_usr = (uint32_t) task_exit;
   new_task->banked_sp_usr = regs->r[2];
   new_task->regs.r[0] = handle_from_task( new_task );
@@ -1644,6 +1693,7 @@ if (regs->r[0] == 255) return show_tasks_state();
 if (regs->r[0] == 254) {
   Task *creator = workspace.task_slot.running;
 
+asm ( "bkpt 99" );
   WriteS( "ThreadOp RunFree " ); WriteNum( regs->r[1] ); NewLine;
   WriteS( "Creator: " ); WriteNum( creator ); NewLine;
   TaskSlot *child = TaskSlot_new( "RunFree" );
@@ -1689,10 +1739,10 @@ if (regs->r[0] == 254) {
   }
 
   if ((regs->spsr & 0x1f) != 0x10                       // Not usr32 mode
-   && regs->r[0] != TaskOp_Start                        // Start user task
-   && regs->r[0] != TaskOp_CoreNumber                   // Returns the current core number as a string
-   && regs->r[0] != TaskOp_DebugString
-   && regs->r[0] != TaskOp_DebugNumber
+   && (0xff & regs->r[0]) != TaskOp_Start                        // Start user task
+   && (0xff & regs->r[0]) != TaskOp_CoreNumber                   // Returns the current core number as a string
+   && (0xff & regs->r[0]) != TaskOp_DebugString
+   && (0xff & regs->r[0]) != TaskOp_DebugNumber
    && !(regs->r[0] == TaskOp_Sleep && regs->r[1] == 0)) { // yield
     WriteNum( regs->lr ); Space; WriteNum( regs->spsr ); NewLine;
     static error_block error = { 0x888, "Blocking OS_ThreadOp only supported from usr mode." };
@@ -1721,7 +1771,7 @@ if (regs->r[0] == 254) {
   // Wake thread (setting registers?)
   // Get the handle of the current thread
   // Set interrupt handler (not strictly thread related)
-  switch (regs->r[0]) {
+  switch (regs->r[0] & 0xff) { // Allow up to 24 flags
   case TaskOp_Start: error = TaskOpStart( regs ); break;
   case TaskOp_Sleep: error = TaskOpSleep( regs ); break;
   case TaskOp_WaitUntilWoken: TaskOpWaitUntilWoken( regs ); break;
@@ -2010,7 +2060,7 @@ bool Task_kernel_in_use( svc_registers *regs )
     assert( shared.task_slot.legacy_depth > 0 );
     shared.task_slot.legacy_depth++;
 #ifdef DEBUG__SHOW_LEGACY_PROTECTION
-    WriteS( "Legacy re-claimed by " ); WriteNum( running ); WriteS( ", depth now " ); WriteNum( shared.task_slot.legacy_depth ); NewLine;
+    WriteS( "Legacy re-claimed by " ); WriteNum( running ); WriteS( " at " ); WriteNum( regs->lr ); WriteS( ", depth now " ); WriteNum( shared.task_slot.legacy_depth ); NewLine;
 #endif
     return false;
   }
@@ -2025,7 +2075,7 @@ bool Task_kernel_in_use( svc_registers *regs )
     if (attempt == 0) {
       // I'm the new legacy caller!
 #ifdef DEBUG__SHOW_LEGACY_PROTECTION
-      WriteS( "Legacy claimed by " ); WriteNum( n ); NewLine;
+      WriteS( "Legacy claimed by task " ); WriteNum( running ); WriteS( " at " ); WriteNum( regs->lr );  NewLine;
 #endif
       assert( shared.task_slot.legacy_depth == 0 );
       shared.task_slot.legacy_depth = 1;
@@ -2043,6 +2093,7 @@ bool Task_kernel_in_use( svc_registers *regs )
 #ifdef DEBUG__SHOW_LEGACY_PROTECTION
       WriteS( "Legacy claimed by task " ); WriteNum( n ); WriteS( ", blocking " ); WriteNum( attempt ); NewLine;
 #endif
+asm ( "bkpt 5" );
       retry_from_swi( regs, running, &shared.task_slot.legacy_callers );
 
       // In case the legacy_caller finished before we registered our interest by
@@ -2073,7 +2124,7 @@ void Task_kernel_release()
   Task *running = workspace.task_slot.running;
   assert( running == shared.task_slot.legacy_caller );
 #ifdef DEBUG__SHOW_LEGACY_PROTECTION
-  WriteS( "Legacy release by task " ); WriteNum( running ); NewLine;
+  WriteS( "Legacy release by task " ); WriteNum( running ); WriteS( " at " ); WriteNum( regs->lr ); WriteS( ", depth currently " ); WriteNum( shared.task_slot.legacy_depth ); NewLine;
 #endif
   if (0 == --shared.task_slot.legacy_depth) {
     shared.task_slot.legacy_caller = mpsafe_detach_Task_at_head( &shared.task_slot.legacy_callers );
@@ -2326,29 +2377,34 @@ void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
   uint32_t number = get_swi_number( regs->lr );
   uint32_t swi = (number & ~Xbit);
 
+#ifdef DEBUG__SHOW_EVERY_SWI
+WriteS( "SWI " ); WriteNum( number ); WriteS( " in Task " ); WriteNum( caller ); WriteS( " (" ); WriteNum( regs->spsr ); WriteS( ", " ); WriteNum( regs->lr ); WriteS( ")" ); NewLine;
+#endif
+
   if (swi == OS_CallASWI) { number = regs->r[9]; swi = (number & ~Xbit); }
   else if (swi == OS_CallASWIR12) { number = regs->r[12]; swi = (number & ~Xbit); }
 
-  // FIXME What should happen if you call CallASWI using CallASWI?
-  if (swi == OS_CallASWI
-   || swi == OS_CallASWIR12) asm ( "bkpt 1" ); // FIXME
-
   svc_registers *resume_sp = regs + 1;
+
+  TaskSlot *slot = caller->slot;
 
   assert( owner_of_slot_svc_stack( caller ) == ((((uint32_t) resume_sp) >> 20) == ((uint32_t) &svc_stack_top) >> 20) );
 
+  if (swi == OS_CallASWI || swi == OS_CallASWIR12) {
+    static error_block error = { 0x666, "Do not use CallASWI to run CallASWI!" };
+    regs->r[0] = (uint32_t) &error;
+    regs->spsr |= VF;
+    goto fast_return;
+  }
+
   if (swi == OS_IntOn) { regs->spsr &= ~0x80; goto fast_return; }
   if (swi == OS_IntOff) { regs->spsr |= 0x80; goto fast_return; }
-
-  TaskSlot *slot = caller->slot;
 
   assert( owner_of_slot_svc_stack( caller ) == using_slot_svc_stack() );
 
   // The banked registers are only saved and restored when
   // the task moves from or to usr32 mode.
   if (usr32_caller( regs )) {
-    show_tasks_state();
-
     asm ( "\n  mrs %[usrsp], sp_usr"
           "\n  mrs %[usrlr], lr_usr"
           : [usrsp] "=r" (caller->banked_sp_usr)
@@ -2396,24 +2452,44 @@ workspace.task_slot.svc_stack_claims++;
     execute_swi( regs, number );
   }
   else {
-    // Block until the stack is free
-    // Put task into list of waiting tasks in slot
-    retry_from_swi( regs, caller, &slot->waiting_for_slot_stack );
+    WriteS( "Blocking for slot stack " ); WriteNum( caller ); NewLine;
+    if (0 != (regs->spsr & 0x80)) {
+      static error_block error = { 0x444, "Would block with IRQ disabled" };
+      regs->r[0] = (uint32_t) &error;
+      regs->spsr |= VF;
+    }
+    else {
+      // Block until the stack is free
+      // Put task into list of waiting tasks in slot
+asm ( "bkpt 4" );
+      retry_from_swi( regs, caller, &slot->waiting_for_slot_stack );
+    }
   }
 
   Task *resume = workspace.task_slot.running;
 
-  if (resume == caller) {
+#ifdef DEBUG__TASK_SWITCHES
+  if (resume != caller) {
+    WriteS( "New running: " ); WriteNum( resume ); WriteS( " from " ); WriteNum( caller ); NewLine;
+  }
+#endif
+
+  if (resume == caller && 0 == (regs->spsr & 0x80)) {
+    // Only if interrupts enabled in caller
     kick_debug_handler_thread( regs );
 
     resume = workspace.task_slot.running;
+    // resume, if it's not caller, will be the debug pipe receiver
   }
 
   if (resume != caller) {
     assert( slot == caller->slot );
-    assert( owner_of_slot_svc_stack( caller ) == (caller->slot->svc_sp_when_unmapped == (uint32_t*) (regs+1)) );
 
 assert( caller->regs.lr != 0 );
+assert( swi == (number & ~Xbit) );
+//assert( (regs->spsr & 0x80) == 0 // Mustn't change tasks while interrupts are disabled
+//      || (swi == OS_ThreadOp && regs->r[0] == TaskOp_WaitForInterrupt) ); // unless, of course, that's the point...
+
     resume_task( resume, slot );
 
     __builtin_unreachable();
@@ -2470,13 +2546,15 @@ assert( caller->regs.lr != 0 );
 
       WriteS( "Running callback UpCall " ); WriteNum( h->code ); Space; WriteNum( h->private_word ); Space; WriteNum( h->buffer ); NewLine;
 
+      // Note: Since ARM7, the buffer is 17 words
       uint32_t *buffer = (void*) h->buffer;
       for (int i = 0; i < 13; i++) {
         buffer[i] = regs->r[i];
       }
       buffer[13] = resume->banked_sp_usr;
       buffer[14] = resume->banked_lr_usr;
-      buffer[15] = (uint32_t) ResumeAfterCallBack;
+      buffer[15] = regs->lr;
+      buffer[16] = regs->spsr;
 
       register void (*handler)() asm( "lr" ) = h->code;
       register uint32_t r12 asm( "r12" ) = h->private_word;
@@ -2750,11 +2828,27 @@ void Wimp_Initialised( uint32_t handle )
 
   slot->wimp_task_handle = handle;
 
-  assert( 0 == slot->wimp_poll_block );
-
-  slot->wimp_poll_block = rma_allocate( 256 );
+  if (0 == slot->wimp_poll_block)
+    slot->wimp_poll_block = rma_allocate( 256 );
 
   assert( 0 != slot->wimp_poll_block );
+
+  WriteS( "Wimp_Initialised " ); WriteNum( slot ); Space; WriteNum( slot->wimp_task_handle ); NewLine;
+
+}
+
+bool Wimp_CloseDown( svc_registers *regs )
+{
+  Task *running = workspace.task_slot.running;
+  TaskSlot *slot = running->slot;
+
+  WriteS( "Wimp_CloseDown " ); WriteNum( slot ); Space; WriteNum( slot->wimp_task_handle ); NewLine;
+
+  //assert( 0 != slot->wimp_task_handle );
+
+  slot->wimp_task_handle = 0;
+
+  return false;
 }
 
 bool do_OS_AMBControl( svc_registers *regs )
@@ -2768,9 +2862,11 @@ bool do_OS_AMBControl( svc_registers *regs )
   switch (regs->r[0] & 7) {
   case AMB_Allocate:
     {
+      WriteS( "AMB_Allocate " ); WriteNum( regs->r[0] ); Space; WriteNum( regs->r[1] ); NewLine;
       TaskSlot *slot = TaskSlot_new( "AMB" );
       TaskSlot_adjust_app_memory( slot, regs->r[1] << 12 );
       regs->r[2] = (uint32_t) slot;
+      WriteS( "AMB_Allocate, slot: " ); WriteNum( regs->r[2] ); NewLine;
       return true;
     }
   case AMB_Deallocate:
@@ -2794,11 +2890,12 @@ bool do_OS_AMBControl( svc_registers *regs )
     }
   default:
     {
-    WriteS( "AMBControl " ); WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); NewLine;
+      WriteS( "AMBControl " ); WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); NewLine;
+      asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
     }
     break;
   }
 
-  return true;
+  return false;
 }
 

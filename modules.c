@@ -43,7 +43,7 @@ static bool Kernel_Error_SWINameNotKnown( svc_registers *regs )
   return false;
 }
 
-static void Sleep( uint32_t centiseconds )
+static inline void Sleep( uint32_t centiseconds )
 {
   register uint32_t request asm ( "r0" ) = TaskOp_Sleep;
   register uint32_t time asm ( "r1" ) = centiseconds; // Shift down a lot for testing!
@@ -107,6 +107,11 @@ static inline void *start_code( module_header *header )
   return pointer_at_offset_from( header, header->offset_to_start );
 }
 
+static inline void *init_code( module_header *header )
+{
+  return pointer_at_offset_from( header, header->offset_to_initialisation );
+}
+
 static inline uint32_t mp_aware( module_header *header )
 {
   uint32_t flags = *(uint32_t *) (((char*) header) + header->offset_to_flags);
@@ -115,9 +120,9 @@ static inline uint32_t mp_aware( module_header *header )
 
 static inline bool run_initialisation_code( const char *env, module *m, uint32_t instance )
 {
-  uint32_t init_code = m->header->offset_to_initialisation + (uint32_t) m->header;
+  uint32_t *code = init_code( m->header );
 
-  register uint32_t non_kernel_code asm( "r14" ) = init_code;
+  register uint32_t *non_kernel_code asm( "r14" ) = code;
   register uint32_t *private_word asm( "r12" ) = m->private_word;
   register uint32_t _instance asm( "r11" ) = instance;
   register const char *environment asm( "r10" ) = env;
@@ -1548,6 +1553,10 @@ bool do_OS_Claim( svc_registers *regs )
   WriteS( " Code " ); WriteNum( regs->r[1] );
   WriteS( " Private " ); WriteNum( regs->r[2] ); NewLine;
 #endif
+
+// FIXME FIXME FIXME FIXME: total internal knowlege
+workspace.kernel.frame_buffer_initialised = 1;
+
   int number = regs->r[0];
   if (number > number_of( workspace.kernel.vectors )) {
     return error_InvalidVector( regs );
@@ -3642,6 +3651,7 @@ void PreUsrBoot()
 
     extern void _binary_Modules_HAL_start();
     // Can't use OS_Module because it doesn't pass arguments to init
+    // I think they're supposed to use OS_ReadArgs
     svc_registers regs = { 0 };
 #ifdef DEBUG__SHOW_MODULE_INIT
   NewLine;
@@ -3654,8 +3664,6 @@ void PreUsrBoot()
   WriteS( "HAL initialised" ); NewLine;
 #endif
   }
-
-workspace.kernel.frame_buffer_initialised = 1;
 }
 
 static uint32_t start_idle_task()
@@ -3713,7 +3721,7 @@ void __attribute__(( noreturn, noinline )) BootWithFullSVCStack()
     : "r" (stack_top)
     , "r" (usr_stack_top)
     , [swi] "i" (OS_ThreadOp)
-    , [sleep] "i" (0xff)// TaskOp_Sleep)
+    , [sleep] "i" (TaskOp_Sleep)
     : "sp", "lr" );
 
   __builtin_unreachable();

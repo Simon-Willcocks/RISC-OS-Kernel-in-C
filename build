@@ -142,7 +142,7 @@ function build_gcc_module {
   arm-linux-gnueabi-gcc-8 $SRC/*.c -Wall -o /tmp/module$$.elf -fpic \
         -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static -O4 \
         -g -march=armv8-a+nofp -T module.script -I . -I include \
-        $* &&
+        -fno-toplevel-reorder $* &&
   arm-linux-gnueabi-objdump -x --disassemble-all /tmp/module$$.elf > Modules/$M.dump &&
   arm-linux-gnueabi-objcopy -R .ignoring -O binary /tmp/module$$.elf Modules/$M &&
   arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 Modules/$M --rename-section .data=.text Modules/$M.o &&
@@ -156,6 +156,7 @@ build_gcc_module VFPSupport &&
 build_gcc_module Portable &&
 build_gcc_module FPEmulator &&
 build_gcc_module MTWimp &&
+build_gcc_module DumbFS &&
 
 if [ -f RiscOS/Sources/Kernel/bin/Kernel_gpa ]; then
   echo Making ROM-specific script >&2 &&

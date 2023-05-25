@@ -424,7 +424,6 @@ bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
 
     if (pipe->receiver_waiting_for > 0
      && pipe->receiver_waiting_for <= data_in_pipe( pipe )) {
-
 #ifdef DEBUG__PIPEOP
       // WriteS( "Data finally available: " ); WriteNum( pipe->receiver_waiting_for ); WriteS( ", remaining: " ); WriteNum( data_in_pipe( pipe ) ); WriteS( ", at " ); WriteNum( read_location( pipe, slot ) ); NewLine;
 #endif
@@ -437,9 +436,9 @@ bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
       // Make the receiver ready to run when the sender blocks (likely when
       // the pipe is full).
       dll_attach_Task( receiver, &workspace.task_slot.running );
-      save_task_context( running, regs );
       workspace.task_slot.running = workspace.task_slot.running->next;
 
+      assert( workspace.task_slot.running == running );
       assert( workspace.task_slot.running->next != workspace.task_slot.running );
 
       assert( receiver->next = running );
@@ -777,14 +776,15 @@ bool do_OS_PipeOp( svc_registers *regs )
   switch (regs->r[0]) {
   case Create: return PipeCreate( regs );
   case WaitForSpace: return PipeWaitForSpace( regs, pipe );
+  case SpaceFilled: return PipeSpaceFilled( regs, pipe );
   case PassingOver: return PipePassingOver( regs, pipe );
   case UnreadData: return PipeUnreadData( regs, pipe );
-  case SpaceFilled: return PipeSpaceFilled( regs, pipe );
   case NoMoreData: return PipeNoMoreData( regs, pipe );
   case WaitForData: return PipeWaitForData( regs, pipe );
   case DataConsumed: return PipeDataConsumed( regs, pipe );
   case PassingOff: return PipePassingOff( regs, pipe );
   case NotListening: return PipeNotListening( regs, pipe );
+  case WaitUntilEmpty: return PipeOp_InvalidCode( regs ); // TODO
   }
   return PipeOp_InvalidCode( regs );
 }
@@ -805,6 +805,8 @@ void kick_debug_handler_thread( svc_registers *regs )
   //   The debug pipe, if it exists, exists forever
   //   The debug pipe is associated with just one core
   //   The core is running with interrupts disabled.
+
+  assert( (regs->spsr & 0x80) == 0 );
 
   uint32_t written = workspace.kernel.debug_written;
 
@@ -836,9 +838,12 @@ void kick_debug_handler_thread( svc_registers *regs )
       // Rather than wait for the debug pipe to fill up, we'll yield to
       // the receiver.
       assert( p->receiver_waiting_for == 0 ); // Woken by above SpaceFilled
+
+      // About to swap out this, the sender, task
+      // (Not needed when the pipe is not the debug pipe.)
       save_task_context( running, regs );
-      workspace.task_slot.running = workspace.task_slot.running->prev;
-      assert( workspace.task_slot.running->next != workspace.task_slot.running );
+
+      workspace.task_slot.running = receiver;
     }
   }
 }

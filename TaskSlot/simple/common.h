@@ -142,7 +142,6 @@ void save_task_context( Task *task, svc_registers const *regs )
     slot->svc_sp_when_unmapped = (uint32_t*) (regs+1);
   }
 
-asm( ".word 0xfffffffe" );
   // TODO floating point context, etc.; these should be done
   // in a lazy way, trapping the next use of FP and storing
   // and restoring its state then, if necessary.

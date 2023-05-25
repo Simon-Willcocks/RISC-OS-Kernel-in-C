@@ -209,15 +209,18 @@ static bool do_OS_CallBack( svc_registers *regs )
 {
   register uint32_t handler asm ( "r0" ) = 7; // CallBack
   register uint32_t address asm ( "r1" ) = regs->r[1];
+  register uint32_t registers asm ( "r2" ) = 0xffffffff;
   register uint32_t buffer asm ( "r3" ) = regs->r[0]; // Buffers
   asm ( "svc 0x20040" // XOS_ChangeEnvironment
     : "+r" (address)  // clobbered, but can't go in the clobber list...
     , "+r" (handler)  // clobbered, but can't go in the clobber list...
+    , "+r" (registers)  // clobbered, but can't go in the clobber list...
     , "+r" (buffer)   // clobbered, but can't go in the clobber list...
     : "r" (handler)
     , "r" (address)
+    , "r" (registers)
     , "r" (buffer)
-    : "r2", "lr" );
+    : "lr" );
 
   return true;
 }
@@ -2511,6 +2514,7 @@ static bool __attribute__(( noinline )) Kernel_go_svc( svc_registers *regs, uint
 }
 
 void StartTask( svc_registers *regs );
+bool Wimp_CloseDown( svc_registers *regs );
 void Wimp_Polling();
 void Wimp_Initialised( uint32_t handle );
 
@@ -2530,12 +2534,16 @@ static void trace_wimp_calls_in( svc_registers *regs, uint32_t number )
 
   WriteN( buffer, written ); Space; WriteNum( 0x400c0 + number );
 
-    if (0x32 == number) {
-      Space; WriteNum( regs->r[0] );
-    }
-    else if (0x2f == number) {
-      Space; if (regs->r[0] != 0xffffffff && regs->r[0] > 1) Write0( regs->r[0] ); else WriteNum( regs->r[0] );
-    }
+  if (0x1e == number) {
+    Space; Write0( regs->r[0] );
+  }
+  else if (0x32 == number) {
+    Space; WriteNum( regs->r[0] );
+  }
+  else if (0x2f == number) {
+    Space; if (regs->r[0] != 0xffffffff && regs->r[0] > 1) Write0( regs->r[0] ); else WriteNum( regs->r[0] );
+  }
+
   NewLine;
 }
 
@@ -2557,6 +2565,18 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
       // Special poll word
       // Resume creator with handle?
 
+  {
+    TaskSlot *slot = TaskSlot_now();
+    register uint32_t handler asm ( "r0" ) = 15; // CAOPointer
+    register void *address asm ( "r1" ) = slot;
+    asm volatile ( "svc 0x20040" // XOS_ChangeEnvironment
+      : "=r" (address)  // clobbered, but can't go in the clobber list...
+      , "=r" (handler)  // clobbered, but can't go in the clobber list...
+      : "r" (handler)
+      , "r" (address)
+      : "r2", "r3", "lr" );
+  }
+
     WriteS( "Wimp_Initialise: " ); Write0( (char*) regs->r[2] );
     WriteS( ", caller: " ); WriteNum( regs->lr );
     WriteS( ", slot: " ); WriteNum( TaskSlot_now() );
@@ -2575,6 +2595,10 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
       Wimp_Polling();
     }
     break;
+  case 0x1d: // Wimp_CloseDown
+    {
+      return Wimp_CloseDown( regs );
+    }
   }
 
   return false; // Not to be treated specially
