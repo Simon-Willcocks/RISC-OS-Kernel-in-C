@@ -346,6 +346,8 @@ static inline uint32_t read_var( char const *name, char *value, int size )
 
   asm ( "svc %[swi]"
       : "=r" (bytes)
+      , "=r" (context)
+      , "=r" (zero4)
       : [swi] "i" (OS_ReadVarVal)
       , "r" (n)
       , "r" (v)

@@ -27,6 +27,7 @@ typedef struct __attribute__(( packed )) svc_registers {
 // OS SWIs implemented or used other than in swis.c:
 
 bool do_OS_GSTrans( svc_registers *regs );
+bool do_OS_EvaluateExpression( svc_registers *regs );
 bool do_OS_SubstituteArgs32( svc_registers *regs );
 
 

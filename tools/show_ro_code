@@ -52,7 +52,7 @@ function vi_cmd {
 
 if [ ! -e /tmp/GPAs ]; then
   echo Finding GPAs
-  find RiscOS/Sources -name *_gpa > /tmp/GPAs
+  find RiscOS/Sources -name *_gpa > /tmp/GPAs || ( rm /tmp/GPAs ;  echo Failed >&2 ; exit 1 )
   echo Found GPAs
 fi
 

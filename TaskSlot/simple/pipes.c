@@ -439,6 +439,7 @@ bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
       workspace.task_slot.running = workspace.task_slot.running->next;
 
       assert( workspace.task_slot.running == running );
+      // At least two runnble tasks, now
       assert( workspace.task_slot.running->next != workspace.task_slot.running );
 
       assert( receiver->next = running );
@@ -806,6 +807,7 @@ void kick_debug_handler_thread( svc_registers *regs )
   //   The debug pipe is associated with just one core
   //   The core is running with interrupts disabled.
 
+  assert( (regs->spsr & 0x8f) == 0 );
   assert( (regs->spsr & 0x80) == 0 );
 
   uint32_t written = workspace.kernel.debug_written;

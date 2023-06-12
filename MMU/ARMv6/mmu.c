@@ -589,6 +589,9 @@ static bool check_global_l2tt( uint32_t address, uint32_t type )
   l2tt_entry global = shared.mmu.kernel_l2tt->entry[pointer.page];
   workspace.mmu.kernel_l2tt->entry[pointer.page] = global;
 
+  // Debugging ProTip for this assertion:
+  // If address is in the top page, look for uninitialised stack pointers
+
   assert( global.handler != check_global_l2tt );
 
   return true;
@@ -1124,7 +1127,7 @@ static void clear_svc_stack_area()
 void MMU_switch_to( TaskSlot *slot )
 {
   bool reclaimed = claim_lock( &shared.mmu.lock );
-  assert( !reclaimed ); // IDK, seems sus.
+  assert( !reclaimed ); // IDK, seems sus, fix it if it happens!
 
   // Write0( "Switching to slot " ); WriteNum( slot ); Space; WriteNum( TaskSlot_asid( slot ) ); NewLine;
   // FIXME Only clear what's used

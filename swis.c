@@ -193,7 +193,7 @@ static bool do_OS_IntOn( svc_registers *regs )
 {
   //Write0( __func__ ); NewLine;
   regs->spsr = regs->spsr & ~0x80;
-  asm ( "bkpt 1" ); // Never reached, dealt with in the SWI handler code
+  // asm ( "bkpt 1" ); // Never reached, dealt with in the SWI handler code
   return true;
 }
 
@@ -201,7 +201,7 @@ static bool do_OS_IntOff( svc_registers *regs )
 {
   //Write0( __func__ ); NewLine;
   regs->spsr = regs->spsr | 0x80;
-  asm ( "bkpt 1" ); // Never reached, dealt with in the SWI handler code
+  // asm ( "bkpt 1" ); // Never reached, dealt with in the SWI handler code
   return true;
 }
 
@@ -328,20 +328,14 @@ static bool do_OS_ReadUnsigned( svc_registers *regs )
   return true;
 }
 
-#if 0
+// Notes about GSTrans and family
+// The final GSRead, which returns with C set, returns a copy
+// of the terminator (0, 10, 13). GSTrans includes the terminator
+// in the buffer, but returns the length of the string before it.
+
 static bool gs_space_is_terminator( uint32_t flags )
 {
   return (0 != (flags & (1 << 29)));
-}
-
-static bool gs_quotes_are_special( uint32_t flags )
-{
-  return (0 == (flags & (1 << 31)));
-}
-
-static bool gs_translate_control_codes( uint32_t flags )
-{
-  return (0 == (flags & (1 << 30)));
 }
 
 static bool terminator( char c, uint32_t flags )
@@ -355,169 +349,151 @@ static bool terminator( char c, uint32_t flags )
   }
 }
 
+static int riscos_strlen( char const *s )
+{
+  int result = 0;
+  while (!terminator( *s++, 0 )) {
+    result++;
+  }
+  return result;
+}
+
+#if 0
+bool do_OS_GSTrans( svc_registers *regs )
+{
+  bool result;
+
+  NewLine;
+  WriteS( "GSTrans (in) \"" ); WriteN( (char*) regs->r[0], riscos_strlen( (char*) regs->r[0] ) ); WriteS( "\"\n" );
+  WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); NewLine;
+
+  {
+    svc_registers gsregs = { .spsr = 0 };
+    gsregs.r[0] = regs->r[0];
+    gsregs.r[2] = regs->r[2] & 0xe0000000;
+
+    char *buffer = (char*) regs->r[1];
+    uint32_t max = regs->r[2] & ~0xe0000000;
+    uint32_t index = 0;
+    char *string = (char*) regs->r[0];
+    char *end = string;
+
+    while (!terminator( *end, gsregs.r[2] )) {
+      end++;
+    }
+    end++;
+
+    result = run_risos_code_implementing_swi( &gsregs, OS_GSInit );
+
+    if (result) {
+      gsregs.spsr &= ~CF;
+      while (result && 0 == (gsregs.spsr & CF) && index < max) {
+        result = run_risos_code_implementing_swi( &gsregs, OS_GSRead );
+        buffer[index++] = gsregs.r[1];
+      }
+
+      if (index == max) regs->spsr |= CF; else regs->spsr &= ~CF;
+    }
+
+    if (result) {
+      regs->r[0] = (uint32_t) end;
+      regs->r[1] = (uint32_t) buffer;
+      regs->r[2] = index-1; // R1+R2 -> terminator in buffer
+    }
+    else {
+      regs->r[0] = gsregs.r[0]; // Error block
+    }
+  }
+
+  if (result) {
+    WriteS( "GSTrans (out) " ); WriteNum( regs->r[2] ); WriteS( " \"" );
+    if (regs->r[1] != 0) {
+      WriteN( (char*) regs->r[1], regs->r[2] );
+    } else {
+      WriteS( "NULL" );
+    }
+    WriteS( "\"\n" );
+  }
+  else {
+    WriteS( "GSTrans failed \"" );
+    error_block *err = (void*) regs->r[0];
+    Write0( err->desc );
+    WriteS( "\"\n" );
+  }
+
+  return result;
+}
+#endif
+
 static bool do_OS_GSInit( svc_registers *regs )
 {
   regs->spsr &= ~CF;
   const char *string = (void*) regs->r[0];
+
   uint32_t flags = regs->r[2];
   while (!terminator( *string, flags ) && *string == ' ') {
     string++;
   }
-  regs->r[0] = (uint32_t) string;
-  regs->r[1] = *string;
-  regs->r[2] = flags & 0xe0000000;
-  return true;
-}
 
-static bool Error_BadString( svc_registers *regs )
-{
-  static error_block error = { 0xfd, "String not recognised" };
-  regs->r[0] = (uint32_t) &error;
-  return false;
+  char *buffer = rma_allocate( 4096 ); // Freed by the final GSRead, not if it's not reached, though.
+
+  // Can't call the default GSTrans here, because all it does is call GSInit/Read
+
+  svc_registers transregs = { .lr = 0, .spsr = 0 };
+  transregs.r[0] = (uint32_t) string;
+  transregs.r[1] = (uint32_t) buffer;
+  transregs.r[2] = 4096  | (regs->r[2] & 0xe0000000);
+
+  bool result = do_OS_GSTrans( &transregs );
+  uint32_t terminator_offset = transregs.r[2];
+
+  // assert( terminator( buffer[terminator_offset], (regs->r[2] & 0xe0000000) ) );
+
+  // TODO shrink buffer to result size, freeing memory
+
+  // The values in r0 and r2 are opaque, this implementation puts 
+  // the address of the buffer or an error block in r0, the
+  // size of the result in the top half word of r2, leaving the bottom
+  // half word for the bytes read so far, or 0xffffffff if there was an
+  // error.
+  if (result) {
+    regs->r[0] = (uint32_t) buffer;
+    regs->r[1] = *string;
+    regs->r[2] = terminator_offset << 16; // offset 0 (see do_OS_GSRead)
+  }
+  else {
+    rma_free( buffer );
+    regs->r[0] = transregs.r[0];
+    regs->r[2] = 0xffffffff; // Error reported when GSRead called
+  }
+
+  return true;
 }
 
 static bool do_OS_GSRead( svc_registers *regs )
 {
-  // This routine is entered with two registers, r0 and r2, containging
-  // the result of the previous OS_GSRead or initial OS_GSInit.
-  // There is necessarily some nesting of calls, because variables may
-  // contain references to other variables, which may, in turn, do the same.
+  char const *translated = (void*) regs->r[0];
 
-  // The kernel workspace contains a stack to accommodate this.
+  if (regs->r[2] == 0xffffffff) return false; // Error already in r0
 
-  // God knows what would happen if a code variable started using these routines.
+  uint32_t index = regs->r[2] & 0xffff;
+  uint32_t terminator_offset = regs->r[2] >> 16;
+  regs->r[1] = translated[index];
+  regs->r[2] ++;
 
-  // "I am currently processing a string (next character pointed to by r0)"
-  // "I am currently processing a variable, from a parent string (the character after the closing >)."
-  // Numbers are one character, decoded in a single call.
-
-  // r2 = flags, type, digit, parent
-  // r0 = pointer
-  uint32_t flags = regs->r[2] & 0xe0000000;
-  //const char *var = regs->r[2] & ~0xe0000000;
-  const char *string = (void*) regs->r[0];
-
-  bool set_top_bit = false;
-  char c;
-  do {
-    c = *string++;
-    if (c == '"' && gs_quotes_are_special( flags )) {
-      // Remove double quotes. Should I check for pairs? Do <> values in quotes not get expanded? FIXME
-      c = *string++;
-    }
-    if (c == '|' && gs_translate_control_codes( flags )) {
-      c = *string++;
-      if (terminator( c, flags )) {
-        return Error_BadString( regs );
-      }
-      else if (c >= '@' && c <= 'Z') c -= '@';
-      else if (c >= 'a' && c <= 'z') c -= '`';
-      else if (c == '?') c = 127;
-      else if (c == '!') set_top_bit = true;
-      else if (c == '[' || c == '{') c = 27;
-      else if (c == '\\') c = 28;
-      else if (c == ']' || c == '}') c = 29;
-      else if (c == '^' || c == '~') c = 30;
-      else if (c == '_' || c == '`') c = 31;
-    }
-    else if (c == '<') {
-      for (;;) { asm ( "bkpt 77\nwfi" ); }
-    }
-  } while (set_top_bit);
-
-  if (set_top_bit) c = c | 0x80;
-
-  regs->r[1] = c;
-
-  if (terminator( c, flags )) {
+  if (index == terminator_offset) {
     regs->spsr |= CF;
+    rma_free( translated );
+    // Note: if the output isn't fully read, there will be a memory leak.
+    // This could be mitigated if each slot gets a heap for GSTrans, released
+    // when the program ends.
   }
-  regs->r[0] = (uint32_t) string;
+  else {
+    regs->spsr &= ~CF;
+  }
+
   return true;
 }
-
-bool do_OS_GSTrans( svc_registers *regs )
-{
-  char *buffer = (void*) regs->r[1];
-  uint32_t maxsize = regs->r[2] & ~0xe0000000;
-  uint32_t translated = 0;
-  regs->r[2] &= 0xe0000000;     // flags
-  bool result = do_OS_GSInit( regs );
-  while (result && 0 == (regs->spsr & CF)) {
-    result = do_OS_GSRead( regs );
-
-    if (result && buffer != 0 && translated < maxsize) {
-      buffer[translated] = regs->r[1];
-    }
-
-    translated++;
-  }
-
-  regs->r[1] = (uint32_t) buffer;
-  regs->r[2] = translated;
-
-  if (translated >= maxsize) {
-    regs->spsr |=  CF;
-    translated = maxsize;
-  }
-  else
-    regs->spsr &= ~CF;
-
-  return result;
-}
-#else
-
-// GSInit, from Kernel/s/Arthur2 can be found using 'push\>[^\n]*\n[^\n]*ldrb\tr1, \[r0], #1[^\n]*\n[^\n]*cmp'
-// fc0206c4
-// GSRead, 'bne\>[^\n]*\n[^\n]*ldrb\tr1, \[r0], #1[^\n]*\n[^\n]*cmp' (then look back to the cpsie before the bic
-// fc02073c
-// GSTrans, the following 'bic\tlr, lr, #.*0x20000000'
-// fc020a50
-
-bool do_OS_GSTrans( svc_registers *regs )
-{
-  WriteNum( regs->r[0] ); WriteNum( regs->lr );
-  WriteS( "GSTrans (in) \"" ); Write0( (char*) regs->r[0] ); WriteS( "\"\n\r" );
-  bool result = run_risos_code_implementing_swi( regs, OS_GSTrans );
-  WriteS( "GSTrans (out) \"" );
-  if (regs->r[1] != 0) {
-    Write0( (char*) regs->r[1] );
-  } else {
-    WriteS( "NULL" );
-  }
-  WriteS( "\"\n\r" );
-  return result;
-}
-
-// They access memory around faff3364, as do a number of modules.
-// See hack in ./memory/simple/memory_manager.c
-// Kernel/Docs/HAL/Notes has a memory map:
-/*
-00000000 16K        Kernel workspace
-00004000 16K        Scratch space
-00008000 Mem-32K    Application memory
-0xxxxxxx 3840M-Mem  Dynamic areas
-F0000000 160M       I/O space (growing downwards if necessary)
-FA000000 1M         HAL workspace
-FA100000 8K         IRQ stack
-FA200000 32K        SVC stack
-FA300000 8K         ABT stack
-FA400000 8K         UND stack
-FAE00000 1M         Reserved for physical memory accesses
-FAF00000 256k       reserved for DCache cleaner address space (eg. StrongARM)
-FAF40000 64k        kernel buffers (for long command lines, size defined by KbuffsMaxSize)
-FAFE8000 32K        HAL workspace
-FAFF0000 32K        "Cursor/System/Sound" block (probably becoming just "System")
-FAFF8000 32K        "Nowhere"
-FB000000 4M         L2PT
-FB400000 16K        L1PT
-FB404000 4M-16K     System heap
-FB800000 8M         Soft CAM
-FC000000 64M        ROM
-*/
-
-
-#endif
 
 //static bool do_OS_BinaryToDecimal( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
@@ -528,7 +504,98 @@ static bool do_OS_ReadEscapeState( svc_registers *regs )
   return true;
 }
 
-//static bool do_OS_EvaluateExpression( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
+#if 0
+struct expression_result {
+  char *buffer;
+  uint32_t length;
+  uint32_t filled;
+  bool is_a_number;
+  uint32_t number;
+  error_block *error;
+};
+
+static void Evaluate( expression_result *result,
+                      char const *left, int llen,
+                      char const *op, int olen,
+                      char const *right, rlen )
+{
+}
+
+// Returns the address of the final quote
+static char const *find_end_of_string( char const *start, int length )
+{
+  bool escaped = false;
+  while (length > 0 && '"' != *start) {
+    if (length > 1 && '|' == *start) {
+      start++;
+      length--;
+    }
+    start++;
+    length--;
+  }
+  return (length == 0) ? 0 : start; // No end, mismatched quotes
+}
+
+static char const *skip_spaces( char const *start, int length )
+{
+  while (length > 0 && (*start == ' ' || *start == '\t')) {
+    start++;
+    length--;
+  }
+  return (length == 0) ? 0 : start;
+}
+
+static void EvaluateExpr( expression_result *result,
+                          char const *expr, int len )
+{
+  char const *skip = skip_spaces( expr, len );
+  if (skip == 0) asm ( "bkpt 1" );
+
+  len -= (skip - expr);
+
+  switch (*expr) {
+  case '"': // Quoted string, to be GSTrans'd
+    {
+      char const *end = find_end_of_string( expr + 1, len - 1 );
+      if (end == 0) {
+        asm ( "bkpt 1" ); // Mismatched quotes
+      }
+
+      char const *lstring = expr + 1;
+      uint32_t llen = (end - lstring);
+
+      // Remaining...
+      len -= (end + 1) - expr;
+      skip = skip_spaces( end + 1, len );
+      if (skip == 0) {
+        asm ( "bkpt 1" ); // Finished, result is lstring (gstrans'd)
+      }
+      expr = skip;
+      len -= (skip - (end + 1));
+    }
+  case '+': // unary +
+  case '-': // unary -
+  case '<': // Variable expansion (may be string or number)
+  case '(': // Subexpression
+  }
+
+}
+
+static bool do_OS_EvaluateExpression( svc_registers *regs )
+{
+  char const *expr = (char*) regs->r[0];
+  uint32_t len = strlen( expr );
+
+  WriteS( "Evaluate \"" ); Write0( expr ); WriteS( "\"" );
+
+  expression_result result = {0};
+
+  EvaluateExpr( &result, expr, len );
+
+  return false;
+}
+#endif 
+
 //static bool do_OS_ReadPalette( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
 static bool do_OS_ValidateAddress( svc_registers *regs )
@@ -1377,11 +1444,6 @@ static bool do_OS_Hardware( svc_registers *regs )
 static bool do_OS_IICOp( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadLine32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
-static bool terminator( char c )
-{
-  return c == 13 || c == 10 || c == 0;
-}
-
 bool do_OS_SubstituteArgs32( svc_registers *regs )
 {
   // Re-write in C of RISC OS code, simply commenting out the following line results in "SWI &7e not known"
@@ -1402,7 +1464,7 @@ bool do_OS_SubstituteArgs32( svc_registers *regs )
     char c = *args;
 
     if (c == '"') {
-      while (!terminator( c = *args )) {
+      while (!terminator( c = *args, 0 )) {
         args++;
         if (c == '"') {
           if (*args == '"') args++; else break;
@@ -1414,7 +1476,7 @@ bool do_OS_SubstituteArgs32( svc_registers *regs )
       args++; // Include the '"'
     }
     else if (parameter < 10) {
-      while (!terminator( c = *args ) && c != ' ') {
+      while (!terminator( c = *args, 0 ) && c != ' ') {
         args++;
         if (c == '"') {
           if (*args == '"') args++; else break;
@@ -1422,7 +1484,7 @@ bool do_OS_SubstituteArgs32( svc_registers *regs )
       }
     }
     else {
-      while (!terminator( c )) {
+      while (!terminator( c, 0 )) {
         c = *++args;
       } 
     }
@@ -2315,15 +2377,10 @@ static swifn os_swis[256] = {
 
   [OS_ReadVarVal] =  do_OS_ReadVarVal,
   [OS_SetVarVal] =  do_OS_SetVarVal,
-/*
-  Using existing RISC OS code for the time being
+
   [OS_GSInit] =  do_OS_GSInit,
   [OS_GSRead] =  do_OS_GSRead,
-  // Except Trans, which will output the initial string...
-*/
-#ifdef DEBUG__SHOW_GSTRANS
   [OS_GSTrans] =  do_OS_GSTrans,
-#endif
 
 //  [OS_BinaryToDecimal] =  do_OS_BinaryToDecimal,
   [OS_FSControl] =  do_OS_FSControl,
@@ -2331,7 +2388,7 @@ static swifn os_swis[256] = {
   [OS_GenerateError] =  do_OS_GenerateError,
 
   [OS_ReadEscapeState] =  do_OS_ReadEscapeState,
-//  [OS_EvaluateExpression] =  do_OS_EvaluateExpression,
+  [OS_EvaluateExpression] =  do_OS_EvaluateExpression,
   [OS_SpriteOp] =  do_OS_SpriteOp,
 //  [OS_ReadPalette] =  do_OS_ReadPalette,
 
@@ -2513,7 +2570,7 @@ static bool __attribute__(( noinline )) Kernel_go_svc( svc_registers *regs, uint
   return do_module_swi( regs, svc );
 }
 
-void StartTask( svc_registers *regs );
+bool Wimp_StartTask( svc_registers *regs );
 bool Wimp_CloseDown( svc_registers *regs );
 void Wimp_Polling();
 void Wimp_Initialised( uint32_t handle );
@@ -2552,11 +2609,7 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
   trace_wimp_calls_in( regs, number & 0x3f );
   switch (number & 0x3f) {
   case 0x1e:
-    WriteS( "Start task, passed to legacy Wimp: " ); Write0( (char*) regs->r[0] );
-    WriteS( ", caller: " ); WriteNum( regs->lr );
-    WriteS( ", slot: " ); WriteNum( TaskSlot_now() );
-    WriteS( ", task: " ); WriteNum( Task_now() ); NewLine;
-    return false;
+    return Wimp_StartTask( regs );
     break;
   case 0x00: // Wimp_Initialise
     {
@@ -2653,9 +2706,29 @@ static bool special_swi( svc_registers *regs, uint32_t number )
   return false;
 }
 
-static bool swi_blocked( svc_registers *regs, uint32_t number )
+// Work in progress.
+// Currently, all legacy SWIs are blocking all others.
+
+// GSInit/GSRead will need changing first, it's still not thread safe
+// even with this blocking mechanism.
+// Run GSTrans on the input string into a buffer, copy the result into
+// RMA, make it a pipe, have GSRead read a character at a time from the
+// pipe and delete it and the memory when the last character read.
+
+// TODO: We might like to make this a level, rather than Boolean.
+// Global, Core, Slot, Safe?
+static bool blockable_swi( uint32_t number )
 {
   switch (number & ~Xbit) { // FIXME
+  case OS_CallAVector:
+    // This SWI needs work, it can be called with interrupts disabled and what's called may call legacy SWIs
+
+  case OS_ThreadOp:
+  case OS_PipeOp:
+  case OS_FlushCache:
+  case OS_IntOn:
+  case OS_IntOff:
+    return false;
   case OS_CLI:
   case OS_File:
   case OS_Args:
@@ -2664,13 +2737,22 @@ static bool swi_blocked( svc_registers *regs, uint32_t number )
   case OS_GBPB:
   case OS_Find:
   case OS_FSControl:
-    {
-#ifdef DEBUG__SHOW_LEGACY_PROTECTION
-      WriteS( "SWI " ); WriteNum( number ); WriteS( " starting" ); NewLine;
+    // These listed SWIs will need protection using a lock until they can
+    // be made multi-processor safe
+  default:
+    return true;
+  }
+}
+
+// Need to centralise the runnable pool of tasks into shared.task_slot...
+static bool swi_blocked( svc_registers *regs, uint32_t number )
+{
+  if (blockable_swi( number )) {
+#ifdef DEBUG__SHOW_LEGACY_PROTECTION_SWIS
+    WriteS( "SWI " ); WriteNum( number ); WriteS( " starting, task " ); WriteNum( workspace.task_slot.runnable ); NewLine;
 #endif
-      // One caller at a time, system wide for now.
-      return Task_kernel_in_use( regs );
-    }
+    // One caller at a time, system wide for now.
+    return Task_kernel_in_use( regs );
   }
 
   return false;
@@ -2678,22 +2760,12 @@ static bool swi_blocked( svc_registers *regs, uint32_t number )
 
 static void swi_completed( uint32_t number )
 {
-  switch (number & ~Xbit) { // FIXME
-  case OS_CLI:
-  case OS_File:
-  case OS_Args:
-  case OS_BGet:
-  case OS_BPut:
-  case OS_GBPB:
-  case OS_Find:
-  case OS_FSControl:
-    {
-      // One caller at a time, system wide for now.
-#ifdef DEBUG__SHOW_LEGACY_PROTECTION
-      WriteS( "SWI " ); WriteNum( number ); WriteS( " completed" ); NewLine;
+  if (blockable_swi( number )) {
+    // One caller at a time, system wide for now.
+#ifdef DEBUG__SHOW_LEGACY_PROTECTION_SWIS
+    WriteS( "SWI " ); WriteNum( number ); WriteS( " completed, task " ); WriteNum( workspace.task_slot.runnable ); NewLine;
 #endif
-      Task_kernel_release();
-    }
+    Task_kernel_release();
   }
 }
 
@@ -2718,7 +2790,7 @@ void __attribute__(( noinline )) execute_swi( svc_registers *regs, uint32_t numb
     error_block *e = (void*) regs->r[0];
 
     if (e == 0) {
-      WriteS( "Error indicated, but NULL error block\\n\\r" );
+      WriteS( "Error indicated, but NULL error block\\n" );
       asm ( "bkpt 15" );
     }
     else {

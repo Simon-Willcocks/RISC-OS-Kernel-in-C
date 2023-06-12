@@ -2680,7 +2680,7 @@ static uint32_t count_params( char const *params )
   uint32_t result = 0;
   char const *p = params;
 
-  while (*p == ' ' && !terminator( *p )) p++;
+  while (*p == ' ') p++;
 
   while (!terminator( *p )) {
 
@@ -2691,12 +2691,13 @@ static uint32_t count_params( char const *params )
         do {
           p ++;
         } while (!terminator( *p ) && *p != '"');
-        if (*p != '"') return -1; // Mistake
+        if (terminator( *p )) return -1; // Mistake
+        // Otherwise p points to closing quote...
       }
       p++;
     }
 
-    while (*p == ' ' && !terminator( *p )) p++;
+    while (*p == ' ') p++;
   }
 
 NewLine; WriteS( "Counted " ); WriteNum( result ); WriteS( " parameters in \"" ); Write0( params ); WriteS( "\"\n\r" );
@@ -2742,7 +2743,12 @@ static inline error_block *Send_Service_UKCommand( char const *command )
 
 typedef struct __attribute__(( packed, aligned( 4 ) )) {
   uint32_t code_offset;
-  uint32_t info_word;
+  struct {
+    uint8_t min_params;
+    uint8_t gstrans;
+    uint8_t max_params;
+    uint8_t flags;
+  } info;
   uint32_t invalid_syntax_offset;
   uint32_t help_offset;
 } module_command;
@@ -2768,7 +2774,7 @@ Write0( sep ); sep = ", "; Write0( cmd ); Space;
     if (riscoscmp( cmd, command )) {
 
 #ifdef DEBUG__SHOW_ALL_COMMANDS
-      NewLine; WriteS( "Yes! " ); WriteNum( c->code_offset ); Space; WriteNum( c->info_word ); Space; WriteNum( c->invalid_syntax_offset ); Space; WriteNum( c->help_offset ); NewLine;
+      NewLine; WriteS( "Yes! " ); WriteNum( c->code_offset ); Space; WriteNum( c->invalid_syntax_offset ); Space; WriteNum( c->help_offset ); NewLine;
       if (c->help_offset != 0) { Write0( pointer_at_offset_from( header, c->help_offset ) ); }
       if (c->invalid_syntax_offset != 0) { Write0( pointer_at_offset_from( header, c->invalid_syntax_offset ) ); }
 #endif
@@ -2804,9 +2810,19 @@ static error_block *run_module_command( const char *command )
         while (*params == ' ') params++;
         uint32_t count = count_params( params );
 
-        if (count == -1) {
+        if (count < c->info.min_params || count > c->info.max_params) {
+          static error_block error = { 666, "Invalid number of parameters" };
+          // TODO Service_SyntaxError
+          return &error;
+        }
+        else if (count == -1) {
           static error_block mistake = { 4, "Mistake" };
           return &mistake;
+        }
+
+        if (c->info.gstrans != 0 && count > 0) {
+          // Need to copy the command, running GSTrans on some parameters
+          asm ( "bkpt 1" );
         }
 
 #ifdef DEBUG__SHOW_COMMANDS
@@ -3591,9 +3607,9 @@ static void __attribute__(( naked, noreturn )) idle_thread()
     asm volatile ( "mov r0, #3 // Sleep"
                "\n  mov r1, #0 // For no time - yield"
                "\n  svc %[swi]"
-               // "\n  bcs 0f // No other tasks running (could report being bored)"
-               // "\n  wfi"     // This isn't working, TODO
-               // "\n0:"
+               "\n  bcs 0f // No other tasks running (could report being bored)"
+               "\n  wfe"     // This isn't working, TODO
+               "\n0:"
         :
         : [swi] "i" (OS_ThreadOp)
         , "r" (0x65656565) // Something to look out for in qemu output

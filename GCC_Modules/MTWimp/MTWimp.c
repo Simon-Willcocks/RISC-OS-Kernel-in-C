@@ -197,12 +197,14 @@ void c_start_wimp_task( struct workspace *workspace )
 
 void __attribute__(( naked )) start( char const *command )
 {
-  asm ( "push { "C_CLOBBERED", lr }"
+  // Ain't no stack to start with...
+  asm ( 
     "\n  ldr r12, [r12]"
     "\n  add sp, r12, %[size]"
     "\n  mov r0, r12"
     "\n  bl c_start_wimp_task"
-    "\n  pop { "C_CLOBBERED", pc }" : : [size] "i" (sizeof( struct workspace ) ) );
+    "\n0:  b 0b"
+    : : [size] "i" (sizeof( struct workspace ) ) );
 }
 
 
@@ -237,23 +239,23 @@ void __attribute__(( naked, section( ".text.init" ) )) in_text_init_section()
    "\n  .word 0" );
 }
 
-void start_wimp( uint32_t *regs, struct workspace *workspace )
+void start_wimp( uint32_t *regs, uint32_t service, struct workspace *ws )
 {
   // This is called in SVC mode
   // WriteS might not be a good idea...
 
-  switch (regs[1]) {
+  switch (service) {
   case 0x49: // Service_StartWimp
-    if (0 && workspace->wimp_handle == 0) {
-      workspace->wimp_handle = -1;
+    if (ws->wimp_handle == 0) {
+      ws->wimp_handle = -1;
       regs[0] = (uint32_t) "MTWimpStart";
       regs[1] = 0; // Claim service
-      // FIXME deal with Wimp exiting StartedWimp/Reset
+      // FIXME deal with Wimp exiting
     }
     break;
   case 0x4a: // Service_WimpStarted
-    if (workspace->wimp_handle == -1) {
-      workspace->wimp_handle = 0;
+    if (ws->wimp_handle == -1) {
+      ws->wimp_handle = 0;
     }
     break;
   }
@@ -268,7 +270,8 @@ void __attribute__(( naked )) service_call()
   asm ( 
     "\n  push { "C_CLOBBERED", lr }"
     "\n  mov r0, sp"
-    "\n  mov r1, r12 // workspace"
+    // r1 = service on entry
+    "\n  mov r2, r12 // workspace"
     "\n  bl start_wimp"
     "\n  pop { "C_CLOBBERED", pc }" );
 }

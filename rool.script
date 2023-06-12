@@ -43,6 +43,8 @@ SECTIONS
 
   /* Privileged mode stacks. The base has to be on a power-of-two boundary
      which matches the SharedCLibrary code. */
+  /* FIXME: clarify the state of the code's use of these. undef, abt, at least
+     are only core-specific, not slot-specific, as at May 2023. */
   stack_limit           = 0x00100000 ;
   svc_stack_top         = 0xffdff000 ;
   abt_stack_top         = 0xffcff000 ;
@@ -62,3 +64,30 @@ SECTIONS
 
  /DISCARD/ : { *(.*) ; }
 } ;
+
+/* Legacy systems have this memory map:
+
+// Kernel/Docs/HAL/Notes has a memory map:
+
+00000000 16K        Kernel workspace
+00004000 16K        Scratch space
+00008000 Mem-32K    Application memory
+0xxxxxxx 3840M-Mem  Dynamic areas
+F0000000 160M       I/O space (growing downwards if necessary)
+FA000000 1M         HAL workspace
+FA100000 8K         IRQ stack
+FA200000 32K        SVC stack
+FA300000 8K         ABT stack
+FA400000 8K         UND stack
+FAE00000 1M         Reserved for physical memory accesses
+FAF00000 256k       reserved for DCache cleaner address space (eg. StrongARM)
+FAF40000 64k        kernel buffers (for long command lines, size defined by KbuffsMaxSize)
+FAFE8000 32K        HAL workspace
+FAFF0000 32K        "Cursor/System/Sound" block (probably becoming just "System")
+FAFF8000 32K        "Nowhere"
+FB000000 4M         L2PT
+FB400000 16K        L1PT
+FB404000 4M-16K     System heap
+FB800000 8M         Soft CAM
+FC000000 64M        ROM
+*/

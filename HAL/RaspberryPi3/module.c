@@ -1437,11 +1437,7 @@ WriteS( "Timer interrupt task" ); NewLine;
     // interrupt_is_off( device );
     ticks += missed_ticks;
 
-    if (ticks >= tick_divider) //resume_task( tickerv_handle );
-    asm ( 
-      "\n  mov r9, #0x1c// TickerV"
-      "\n  svc %[swi]"
-      : : [swi] "i" (Xbit | OS_CallAVector) : "r9", "lr" );
+    if (ticks >= tick_divider) resume_task( tickerv_handle );
 
     while (ticks >= tick_divider) {
       ticks -= tick_divider;
@@ -1748,7 +1744,7 @@ add_num( pipe, &workspace->core_specific[this_core] );
   GPU *gpu = workspace->gpu;
   Write0( "IRQs enabled " ); WriteNum( gpu->enable_basic ); Space; WriteNum( gpu->enable_irqs1 ); Space; WriteNum( gpu->enable_irqs2 ); NewLine;
 
-  if (0) {
+  if (1) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
   }

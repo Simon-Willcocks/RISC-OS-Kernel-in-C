@@ -28,7 +28,7 @@ bool do_OS_ReadVarVal( svc_registers *regs )
     WriteS( "Reading length of " ); WriteNum( regs->r[0] ); WriteS( " " ); Write0( regs->r[0] ); Write0( " @" ); WriteNum( regs->lr ); NewLine;
   }
   else {
-    WriteS( "Reading " ); WriteNum( regs->r[0] ); WriteS( " " ); Write0( regs->r[0] ); Write0( ", buffer size " ); WriteNum( regs->r[2] ); NewLine;
+    WriteS( "Reading " ); WriteNum( regs->r[0] ); WriteS( " " ); Write0( regs->r[0] ); Write0( ", buffer size " ); WriteNum( regs->r[2] ); WriteS( " @ " ); WriteNum( regs->lr ); NewLine;
   }
 #endif
 #endif
@@ -96,6 +96,13 @@ bool do_OS_SetVarVal( svc_registers *regs )
       NewLine;
       break;
     default:
+      switch (regs->r[4]) {
+      case 0: WriteS( " (string)" ); break;
+      case 2: WriteS( " (macro)" ); break;
+      case 3: WriteS( " (expanded)" ); break;
+      case 4: WriteS( " (literal)" ); break;
+      default: asm ( "bkpt 1" );
+      }
       WriteS( " to \"" ); 
       Write0( regs->r[1] );
       WriteS( "\"" ); NewLine;

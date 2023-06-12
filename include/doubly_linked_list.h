@@ -78,7 +78,7 @@ static inline void dll_move_##T( T *i, T **l1, T **l2 ) { \
 } \
  \
 /* Replace item 1 with item 2 in whatever list it may be in. */ \
-/* It will not update the pointer to the head of the list */ \
+/* If item 1 was the head of the list, the head of the list will be item 2 */\
 static inline void dll_replace_##T( T *i1, T *i2, T **l ) { \
   dll_assert( i1 != i2 ); \
   dll_assert( i2->next == i2 ); \

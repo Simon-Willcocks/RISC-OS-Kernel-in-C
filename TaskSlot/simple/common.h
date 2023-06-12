@@ -80,6 +80,14 @@ MPSAFE_DLL_TYPE( Task );
 
 extern svc_registers svc_stack_top;
 
+static inline bool in_slot_svc_stack( void *p )
+{
+  // This will stop working if the stack top is redefined to be above
+  // the MiB of virtual memory allocated to the stack.
+  // In practice, the top page is used for underflow protection.
+  return (((uint32_t)p) >> 20) == ((uint32_t) &(svc_stack_top) >> 20);
+}
+
 static inline void *core_svc_stack_top()
 {
   return (&workspace.kernel.svc_stack + 1);
@@ -88,14 +96,21 @@ static inline void *core_svc_stack_top()
 static inline bool using_slot_svc_stack()
 {
   // Cannot use register sp asm( "sp" ), the optimiser may cache the result
-  uint32_t sp_section;
-  asm ( "mov %[sp], sp, lsr #20" : [sp] "=r" (sp_section) );
-  return sp_section == (((uint32_t) &svc_stack_top) >> 20);
+  void *sp;
+  // Using:
+  asm volatile ( "add %[sp], sp, #0" : [sp] "=r" (sp) );
+  // Instead of:
+  // asm volatile ( "mov %[sp], sp" : [sp] "=r" (sp) );
+  // so it's easy to spot in code dumps
+  // NB: Not including "volatile" means the optimiser may cache the result
+  // of the routine, even if the stack changes
+  return in_slot_svc_stack( sp );
 }
 
 static inline bool using_core_svc_stack()
 {
-  register uint32_t sp asm ( "sp" );
+  uint32_t sp;
+  asm ( "mov %[sp], sp" : [sp] "=r" (sp) );
   return (sp >= (uint32_t) &workspace.kernel.svc_stack)
       && (sp <= (uint32_t) core_svc_stack_top());
 }
