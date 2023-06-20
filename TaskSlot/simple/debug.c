@@ -26,7 +26,6 @@ static char *pipe_space( int len )
   do {
     written = workspace.kernel.debug_written;
     if (written + len > workspace.kernel.debug_space.available) {
-      //if (workspace.kernel.frame_buffer_initialised) asm ( "bkpt 2" : : "r" (workspace.kernel.debug_written), "r" (len), "r" (written) );
       return 0; // No space.
     }
   } while (written != change_word_if_equal( &workspace.kernel.debug_written, written, written+len ));
@@ -40,7 +39,7 @@ void SVCWriteN( char const *s, int len )
 {
   os_pipe *pipe = (os_pipe*) workspace.kernel.debug_pipe;
 
-  if (pipe == 0 || this_is_debug_receiver()) return; // Too early, or receiver is in a SWI
+  if (pipe == 0) return; // Too early
 
   char *location = pipe_space( len );
 
@@ -61,7 +60,7 @@ void SVCWriteNum( uint32_t n )
 {
   os_pipe *pipe = (os_pipe*) workspace.kernel.debug_pipe;
 
-  if (pipe == 0 || this_is_debug_receiver()) return; // Too early, or receiver is in a SWI
+  if (pipe == 0) return; // Too early
 
   char *location = pipe_space( 8 );
 
