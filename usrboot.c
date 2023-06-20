@@ -242,7 +242,7 @@ bool excluded( const char *name )
                                   , "ColourPicker"     // Init fails
                                   , "DrawFile"     // Init fails
 
-                                  // , "DragASprite"       // Doesn't return, afaics
+                                  , "DragASprite"       // Data abort at ffd00000
                                   , "RamFS"
                                   // , "Filer"             // Doesn't return, afaics
                                   , "VFPSupport"        // Tries to claim processor vector
@@ -955,7 +955,7 @@ void __attribute__(( noreturn )) UsrBoot()
   Send_Service_ModeChange();
   WriteS( "Mode changed done" ); NewLine;
 
-  SetApplicationMemory( 0xA8000 );
+  // SetApplicationMemory( 0xA8000 );
 
   WriteS( "About to run Resources:$.!Boot\n" );
 
