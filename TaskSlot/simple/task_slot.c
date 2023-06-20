@@ -254,7 +254,7 @@ bool do_OS_SetCallBack( svc_registers *regs )
   // Yes, if interrupts are enabled, and with the sole exception of
   // return from this SWI. PRM 1-315
   //set_transient_callback( regs->r[0], regs->r[1] );
-  WriteS( "OS_SetCallBack" ); NewLine;
+  WriteS( "OS_SetCallBack " ); WriteNum( regs->lr ); NewLine;
 
   TaskSlot_now()->callback_requested = true;
 
@@ -641,9 +641,16 @@ static void new_command_line( TaskSlot *slot, char const *command, int command_l
       command_length++;
 
     if (args == 0) args = &command[command_length];
+
+    while (*args == ' ') args++;
   }
 
-  uint32_t args_length = strlen( args );
+  uint32_t args_length = 0;
+  while (args[args_length] != '\n'
+      && args[args_length] != '\r'
+      && args[args_length] != '\t'
+      && args[args_length] != '\0')
+    args_length++;
 
   // Allocate space for a copy of the whole command line, then
   // a second copy which will be spilt into command name and
@@ -719,6 +726,8 @@ TaskSlot *TaskSlot_first()
   assert( workspace.task_slot.running == new_task );
 
   MMU_switch_to( slot );
+
+  assert( TaskSlot_Himem( slot ) == 0x8000 );
 
   return slot;
 }
@@ -970,11 +979,22 @@ uint32_t TaskSlot_Himem( TaskSlot *slot )
   // FIXME lock per slot?
   bool reclaimed = claim_lock( &shared.mmu.lock );
 
+  int i = 0;
+  while (0 != slot->blocks[i].size && 0x8000 != slot->blocks[i].virtual_base) {
+    i++;
+  }
+  if (0x8000 != slot->blocks[i].virtual_base) {
+    result = 0x8000;
+  }
+  else {
+    // FIXME: In future, there may be more than one block in the AMB
+    result = slot->blocks[i].size + 0x8000;
+  }
+
 #ifdef DEBUG__WATCH_TASK_SLOTS
-  WriteS( "TaskSlot_Himem " ); WriteNum( (uint32_t) slot ); WriteS( " " ); WriteNum( slot->blocks[0].virtual_base ); WriteS( " " ); WriteNum( slot->blocks[0].size ); NewLine;
+  WriteS( "TaskSlot_Himem " ); WriteNum( (uint32_t) slot ); Space; WriteNum( i ); Space; WriteNum( slot->blocks[i].virtual_base ); Space; WriteNum( slot->blocks[i].size ); WriteS( " = " ); WriteNum( result ); NewLine;
 #endif
 
-  result = slot->blocks[0].size + 0x8000; // slot->blocks[0].virtual_base;
   if (!reclaimed) release_lock( &shared.mmu.lock );
   return result;
 }
@@ -1855,19 +1875,6 @@ void __attribute__(( naked, noreturn )) ResumeSVC()
   asm volatile ( "pop { lr, pc }" );
 }
 
-void __attribute__(( naked, noreturn )) ResumeAfterCallBack()
-{
-  // CallBack handlers can no longer restore PC and PSR in one instruction,
-  register Task **running asm ( "lr" ) = &workspace.task_slot.running; 
-  asm volatile (
-      "\n  ldr lr, [lr]"
-      "\n  add lr, lr, %[offset]"
-      "\n  rfeia lr"
-      :
-      : "r" (running)
-      , [offset] "i" (&((Task*) 0)->regs.lr) );
-}
-
 Task *__attribute__(( noinline )) c_run_irq_tasks( Task *running );
 
 #define PROVE_OFFSET( o, t, n ) \
@@ -2534,16 +2541,18 @@ assert( swi == (number & ~Xbit) );
   if (usr32_caller( regs )
    && owner_of_slot_svc_stack( resume )) {
 
+WriteS( "Returning to USR32" ); NewLine;
+
     if (0 == (regs->spsr & 0x80) // Not if interrupts disabled
      && slot->transient_callbacks != 0) {
-asm ( ".word 0xfffffffd" );
+WriteS( "Running transient callbacks" ); NewLine;
       run_transient_callbacks();
       assert( workspace.task_slot.running == caller );
     }
 
     if (caller != workspace.task_slot.running) {
-asm ( ".word 0xfffffffc" );
-asm  ( "bkpt 4" );
+WriteS( "Changed task" ); NewLine;
+//asm  ( "bkpt 4" );
       if (owner_of_slot_svc_stack( caller )) {
         slot->svc_sp_when_unmapped = (uint32_t*) resume_sp;
       }
@@ -2567,6 +2576,9 @@ assert( caller->regs.lr != 0 );
     //
     // I will call it when the current task is the owner of the svc_stack, so the
     // CallBack can make legacy SWI calls. FIXME?
+
+if (slot->callback_requested) { WriteS( "Callback requested" ); NewLine; }
+if (resume_sp != &svc_stack_top) { WriteS( "But not at top of stack " ); WriteNum( resume_sp ); Space; WriteNum( &svc_stack_top ); NewLine; }
 
     if (slot->callback_requested && resume_sp == &svc_stack_top) {
       // Exit through the callback handler, which will
@@ -2897,14 +2909,13 @@ bool do_OS_AMBControl( svc_registers *regs )
 
   // Undocumented SWI!
   // I don't even know what AMB stands for!
-  // It's application memory blocks.
+  // (It's Application Memory Blocks.)
   // RiscOS/Sources/Kernel/Docs/AMBControl
   switch (regs->r[0] & 7) {
   case AMB_Allocate:
     {
-      WriteS( "AMB_Allocate " ); WriteNum( regs->r[0] ); Space; WriteNum( regs->r[1] ); NewLine;
-      TaskSlot *slot = TaskSlot_now();
-      assert( TaskSlot_Himem( slot ) == 0x8000 );
+      WriteS( "AMB_Allocate " ); WriteNum( regs->r[1] ); NewLine;
+      TaskSlot *slot = TaskSlot_new( "AMB Created..." );
       TaskSlot_adjust_app_memory( slot, regs->r[1] << 12 );
       regs->r[2] = (uint32_t) slot;
       WriteS( "AMB_Allocate, slot: " ); WriteNum( regs->r[2] ); NewLine;
@@ -2912,7 +2923,12 @@ bool do_OS_AMBControl( svc_registers *regs )
     }
   case AMB_Deallocate:
     {
-      WriteS( "AMB_Deallocate TODO\n\r" );
+      WriteS( "AMB_Deallocate TODO" );
+      Space; WriteNum( regs->r[1] );
+      Space; WriteNum( regs->r[2] );
+      Space; WriteNum( regs->r[3] );
+      Space; WriteNum( regs->r[4] );
+      NewLine;
       // asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
       return true;
     }
