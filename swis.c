@@ -2318,11 +2318,30 @@ bool do_OS_Heap( svc_registers *regs )
   // OS_Heap appears to call itself, even without interrupts...
   bool reclaimed = claim_lock( &shared.memory.os_heap_lock );
 
+#ifdef DEBUG__OS_HEAP
   if (reclaimed) { WriteS( "OS_Heap, recursing: " ); WriteNum( regs->lr ); NewLine; }
+#endif
   // assert( !reclaimed );
 
   bool result = run_risos_code_implementing_swi( regs, OS_Heap );
-  //Write0( "OS_Heap returns " ); WriteNum( regs->r[3] ); NewLine;
+
+#ifdef DEBUG__OS_HEAP
+  if (regs->r[0] == 2) { // Allocate
+    uint32_t *mem = (void*) regs->r[2];
+    WriteS( "OS_Heap allocated " ); WriteNum( regs->r[3] ); WriteS( " at " ); WriteNum( mem ); NewLine;
+
+    uint32_t bytes = regs->r[3];
+    uint32_t words = bytes / sizeof( uint32_t );
+
+    for (int i = 0; i < words - 1; i++) {
+      mem[i] = 0x07777770; // Uninitialised
+    }
+  }
+  else if (regs->r[0] == 3) {
+    uint32_t *mem = (void*) regs->r[2];
+    WriteS( "OS_Heap freed " ); WriteNum( mem ); NewLine;
+  }
+#endif
 
   if (!reclaimed) release_lock( &shared.memory.os_heap_lock );
   return result;
@@ -2609,6 +2628,7 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
   trace_wimp_calls_in( regs, number & 0x3f );
   switch (number & 0x3f) {
   case 0x1e:
+  return false; // FIXME FIXME FIXME FIXME FIXME FIXME
     return Wimp_StartTask( regs );
     break;
   case 0x00: // Wimp_Initialise
@@ -2618,6 +2638,7 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
       // Special poll word
       // Resume creator with handle?
 
+  return false; // FIXME FIXME FIXME FIXME FIXME FIXME
   {
     TaskSlot *slot = TaskSlot_now();
     register uint32_t handler asm ( "r0" ) = 15; // CAOPointer
@@ -2645,7 +2666,14 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
   case 0x07: // Wimp_Poll
   case 0x21: // Wimp_PollIdle
     {
-      Wimp_Polling();
+      // These SWIs can (probably will) try to change the running task
+      // without knowing anything about the C kernel.
+      // That will involve changing the CAO and possibly making AMBControl
+      // SWIs.
+
+      svc_registers safe = *regs;
+      bool result = do_module_swi( &safe, number );
+      assert( result ); // I don't think this should ever fail FIXME
     }
     break;
   case 0x1d: // Wimp_CloseDown

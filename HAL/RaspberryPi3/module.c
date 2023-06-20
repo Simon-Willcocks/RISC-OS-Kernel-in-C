@@ -1602,7 +1602,7 @@ static uint32_t start_console_task( struct core_workspace *ws, uint32_t pipe )
 
 static const int board_interrupt_sources = 64 + 12; // 64 GPU, 12 ARM peripherals (BCM2835-ARM-Peripherals.pdf, QA7)
 
-// args: debug_pipe to open for reading
+// args: debug_pipe to open for reading FIXME: OS_GetEnv?
 
 void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_cores, struct workspace **private, char const *args )
 {
