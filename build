@@ -38,13 +38,6 @@ if [ "$MMU" = "" ]; then
     exit 1
   fi
 fi
-if [ "$INTS" = "" ]; then
-  INTS=$( echo Interrupts/* )
-  if [ ! -d "$INTS" ]; then
-    echo "Please define \$INTS, probably as one of "$INTS
-    exit 1
-  fi
-fi
 if [ "$BOOT" = "" ]; then
   BOOT=$( echo boot/* )
   if [ ! -d "$BOOT" ]; then
