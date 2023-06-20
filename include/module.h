@@ -134,9 +134,9 @@ typedef struct { \
   struct workspace **private_word; \
 } SWI_regs; \
  \
-bool __attribute__(( noinline )) cfn( struct workspace *workspace, SWI_regs *regs ); \
+bool __attribute__(( noinline )) cfn( struct workspace *ws, SWI_regs *regs ); \
  \
-void __attribute__(( naked )) swi_handler() \
+void __attribute__(( naked, section( ".text.init" ) )) swi_handler() \
 { \
   SWI_regs *regs; \
   register struct workspace **private_word asm( "r12" ); \
@@ -145,7 +145,7 @@ void __attribute__(( naked )) swi_handler() \
     /* Error: Set V flag */ \
     asm ( "msr cpsr_f, #(1 << 28)" ); \
   } \
-  asm volatile ( "pop {r0-r9, r11, r12, pc}\n  mov r0, sp" ); \
+  asm volatile ( "pop {r0-r9, r11, r12, pc}" ); \
 }
 
 // memset not static, this include file should only be included once in a module;
@@ -200,6 +200,30 @@ static inline void clear_VF()
 static inline void set_VF()
 {
   asm ( "msr cpsr_f, #(1 << 28)" );
+}
+
+static inline void WaitUntilWoken()
+{
+  register uint32_t request asm ( "r0" ) = TaskOp_WaitUntilWoken;
+
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      : "lr", "memory" );
+}
+
+static inline void Wake( uint32_t task )
+{
+  register uint32_t request asm ( "r0" ) = TaskOp_Sleep;
+  register uint32_t t asm ( "r1" ) = task;
+
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OS_ThreadOp)
+      , "r" (request)
+      , "r" (t)
+      : "lr", "memory" );
 }
 
 static inline void Sleep( uint32_t centiseconds )
