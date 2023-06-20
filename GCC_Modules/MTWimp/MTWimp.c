@@ -17,8 +17,7 @@ const unsigned module_flags = 3;
 // Bit 0: 32-bit compatible
 // Bit 1: Multiprocessing
 
-// Explicitly no SWIs provided (it's the default, anyway)
-#define MODULE_CHUNK "0"
+#define MODULE_CHUNK "0x300"
 
 #include "module.h"
 
@@ -29,7 +28,7 @@ NO_finalise;
 //NO_title;
 NO_help;
 //NO_keywords;
-NO_swi_handler;
+//NO_swi_handler;
 NO_swi_names;
 NO_swi_decoder;
 NO_messages_file;
@@ -40,6 +39,7 @@ struct workspace {
   uint32_t poll_block[64];
   uint32_t wimp_handle;
   uint32_t poll_word;
+  uint32_t task;
   uint32_t stack[62]; // Stack must be at the end, or change start
 };
 
@@ -180,6 +180,17 @@ static uint32_t WimpPoll( uint32_t mask, uint32_t *block, uint32_t *poll_word )
   return code;
 }
 
+/* This Task controls access to the Window Manager.
+ * It claims idle events and holds on to the Wimp until one of the following
+ * occurs:
+ *
+ *  A program calls Wimp_StartTask (which causes this Task to do it for the
+ *  caller.
+ *  A HID event occurs
+ *  A poll word becomes non-zero (checked regularly, but not constantly)
+ *  ...?
+ *  
+ */
 void c_start_wimp_task( struct workspace *workspace )
 {
   WriteS( "MTWimp Initialising Wimp..." ); NewLine;
@@ -188,11 +199,28 @@ void c_start_wimp_task( struct workspace *workspace )
   WriteS( "MTWimp Looping..." ); NewLine;
 
   for (;;) {
-    switch (WimpPoll( 0, workspace->poll_block, &workspace->poll_word )) {
-    case 0: WriteS( "Idle" ); NewLine; Sleep( 1 ); break;
+    // claim lock
+    int event = WimpPoll( 0, workspace->poll_block, &workspace->poll_word );
+    // release lock
+    switch (event) {
+    case 0: WriteS( "Idle" ); NewLine; WaitUntilWoken(); break;
     default: asm ( "bkpt 4" ); break;
     }
   }
+}
+
+C_SWI_HANDLER( start_task );
+
+bool start_task( struct workspace *ws, SWI_regs *regs )
+{
+  // claim lock
+
+  uint32_t handle = 0; // Wimp_StartTask( ... "MTW" );
+  // Allow the  AMB code to create the new TaskSlot and the Wimp to execute the program...
+  Wake( ws->task );
+  // release lock
+  regs->r[0] = handle;
+  return true;
 }
 
 void __attribute__(( naked )) start( char const *command )
@@ -222,16 +250,18 @@ void __attribute__(( naked )) mt_wimp_start()
     : "lr", "cc", "memory" );
 }
 
-void __attribute__(( naked, section( ".text.init" ) )) in_text_init_section()
+void __attribute__(( naked, section( ".text.init" ) )) keywords()
 {
 // If this assembler is at the top level, it gets placed before file_start,
 // screwing up the module header.
   asm ( 
-   "\nkeywords:"
    "\n  .asciz \"MTWimpStart\""
    "\n  .align"
    "\n  .word mt_wimp_start - header"
-   "\n  .word 0x00000000"
+   "\n  .byte 0 // Min params"
+   "\n  .byte 0 // GSTrans map (params 1-8("
+   "\n  .byte 0 // Max params"
+   "\n  .byte 0 // Flags"
    "\n  .word 0"
    "\n  .word 0"
   
