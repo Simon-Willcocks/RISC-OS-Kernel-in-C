@@ -38,7 +38,6 @@ typedef struct shared_workspace shared_workspace;
 #include "mmu.h"
 #include "memory_manager.h"
 #include "task_slot.h"
-#include "interrupts.h"
 
 typedef struct module module;
 typedef struct callback callback;
@@ -92,6 +91,14 @@ struct Kernel_workspace {
   struct {
     uint32_t und[64];
   } undef_stack;
+
+  struct {
+    uint32_t irq[64];
+  } irq_stack;
+
+  struct {
+    uint32_t fiq[64];
+  } fiq_stack;
 };
 
 struct VDU_workspace {
@@ -170,7 +177,6 @@ extern struct core_workspace {
 
   uint32_t core_number;
   struct MMU_workspace mmu;
-  struct Interrupts_workspace interrupts;
   struct VDU_workspace vdu;
   struct Kernel_workspace kernel;
   struct Memory_manager_workspace memory;
@@ -179,7 +185,6 @@ extern struct core_workspace {
 
 extern struct shared_workspace {
   struct MMU_shared_workspace mmu;
-  struct Interrupts_shared_workspace interrupts;
   struct Kernel_shared_workspace kernel;
   struct Memory_manager_shared_workspace memory;
   struct TaskSlot_shared_workspace task_slot;

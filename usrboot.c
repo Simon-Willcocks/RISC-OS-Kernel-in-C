@@ -28,6 +28,13 @@
 #include "include/kernel_swis.h"
 #include "include/pico_clib.h"
 
+typedef struct {
+  uint32_t code;
+  char message[];
+} error_block;
+
+#include "include/taskop.h"
+
 static inline void debug_string_with_length( char const *s, int length )
 {
   register int code asm( "r0" ) = TaskOp_DebugString;
@@ -845,11 +852,6 @@ static inline void Send_Service_ModeChange()
   // Registers corrupted by readvduvars2 in Wimp01 https://www.riscosopen.org/tracker/tickets/555
   // However "other registers up to R8 may be modified if the service was claimed" PRM1-256
 }
-
-typedef struct {
-  uint32_t code;
-  char message[];
-} error_block;
 
 static inline error_block *OSCLI( const char *command )
 {

@@ -29,36 +29,21 @@
 #include "include/mpsafe_dll.h"
 
 #include "include/callbacks.h"
+#include "include/taskop.h"
 
-typedef struct handler handler;
 typedef struct os_pipe os_pipe;
 
-struct handler {
-  void (* code)();
-  uint32_t private_word;
-  uint32_t buffer;
-};
-
 struct TaskSlot {
-  // FIXME Locks the slot to a single core (at a time)?
-  // Is that so terrible?
   uint32_t *svc_sp_when_unmapped;
-  Task *svc_stack_owner;
-  Task *waiting_for_slot_stack;
-
-  transient_callback *transient_callbacks;
 
   uint32_t lock;
   physical_memory_block blocks[50];
-  handler handlers[17];
   Task *creator; // creator's slot is parent slot
   char const *command;
   char const *name;
   char const *tail;
   uint64_t start_time;
   Task *waiting;       // 0 or more tasks waiting for locks
-
-  bool callback_requested;
 
   uint32_t *wimp_poll_block;
   Task *wimp_task;
@@ -71,6 +56,7 @@ struct __attribute__(( packed, aligned( 4 ) )) Task {
   uint32_t banked_lr_usr; // Only stored when leaving usr or sys mode
   int32_t resumes;
   TaskSlot *slot;
+  Task *controller; // Task to which control has been relinquished; always 0 when running
   Task *next; // Doubly-linked list. Neither next or prev shall be zero,
   Task *prev; // Tasks not in a list will be a list of 1.
 };
@@ -80,7 +66,7 @@ MPSAFE_DLL_TYPE( Task );
 
 extern svc_registers svc_stack_top;
 
-static inline bool in_slot_svc_stack( void *p )
+static inline bool in_legacy_svc_stack( void *p )
 {
   // This will stop working if the stack top is redefined to be above
   // the MiB of virtual memory allocated to the stack.
@@ -93,7 +79,7 @@ static inline void *core_svc_stack_top()
   return (&workspace.kernel.svc_stack + 1);
 }
 
-static inline bool using_slot_svc_stack()
+static inline bool using_legacy_svc_stack()
 {
   // Cannot use register sp asm( "sp" ), the optimiser may cache the result
   void *sp;
@@ -104,7 +90,7 @@ static inline bool using_slot_svc_stack()
   // so it's easy to spot in code dumps
   // NB: Not including "volatile" means the optimiser may cache the result
   // of the routine, even if the stack changes
-  return in_slot_svc_stack( sp );
+  return in_legacy_svc_stack( sp );
 }
 
 static inline bool using_core_svc_stack()
@@ -120,9 +106,9 @@ static inline bool usr32_caller( svc_registers *regs )
   return (regs->spsr & 0xf) == 0;
 }
 
-static inline bool owner_of_slot_svc_stack( Task *task )
+static inline bool owner_of_legacy_stack( Task *task )
 {
-  return task->slot->svc_stack_owner == task;
+  return shared.task_slot.legacy_stack_owner == task;
 }
 
 static inline Task *task_from_handle( uint32_t handle )
@@ -153,7 +139,7 @@ void save_task_context( Task *task, svc_registers const *regs )
 
   task->regs = *regs;
 
-  if (owner_of_slot_svc_stack( task )) {
+  if (owner_of_legacy_stack( task )) {
     slot->svc_sp_when_unmapped = (uint32_t*) (regs+1);
   }
 

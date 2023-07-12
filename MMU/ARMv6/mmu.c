@@ -801,8 +801,11 @@ static void setup_stack_pages( uint32_t *top, uint32_t *lim )
 
 static void clear_svc_stack_area();
 
+#if 0
 void Initialise_privileged_mode_stacks()
 {
+  // Called with MMU enabled, small SVC stack
+
   extern uint32_t stack_limit; // Not really a pointer!
   extern uint32_t svc_stack_top;
   //extern uint32_t undef_stack_top;
@@ -812,7 +815,12 @@ void Initialise_privileged_mode_stacks()
 
   // These require the l2tt tables to be directly mapped locally, there's no 
   // abort stack set up yet.
-  // The SVC stack is slot-specific
+  // The SVC stack is shared, but protected so that only one Task can be
+  // running legacy code at a time.
+
+  arm32_ptr pointer = { .raw = &svc_stack_top };
+  uint32_t *lock = (void*) &Global_L1TT->entry[pointer.section];
+  if (== change_word_if_equal( lock, 
   {
     Level_two_translation_table *l2tt;
 
@@ -840,6 +848,7 @@ void Initialise_privileged_mode_stacks()
   setup_stack_pages( &irq_stack_top, &stack_limit );
   setup_stack_pages( &fiq_stack_top, &stack_limit );
 }
+#endif
 
 static void __attribute__(( noreturn, noinline )) go_kernel()
 {
@@ -1151,7 +1160,7 @@ void MMU_switch_to( TaskSlot *slot )
   // entries.
   clear_app_area();
   clear_pipes_area();
-  clear_svc_stack_area();
+  //clear_svc_stack_area();
   
 
   // Set CONTEXTIDR

@@ -172,7 +172,6 @@ arm-linux-gnueabi-gcc-8 -Wall -I . \
   $BOOT/*.c -I $BOOT \
   $TASK_SLOT/*.c -I $TASK_SLOT \
   $MMU/*.c -I $MMU \
-  $INTS/*.c -I $INTS \
   $MM/*.c -I $MM \
   Modules/*.o \
   -nostartfiles -nostdlib -fno-zero-initialized-in-bss -static \

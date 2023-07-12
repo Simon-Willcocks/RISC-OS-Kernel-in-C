@@ -23,8 +23,8 @@ void Initialise_privileged_mode_stack_pointers()
 {
   asm ( "msr sp_und, %[stack]" : : [stack] "r" ((&(workspace.kernel.undef_stack)) + 1) );
   asm ( "msr sp_abt, %[stack]" : : [stack] "r" ((&(workspace.kernel.abort_stack)) + 1) );
-  asm ( "msr sp_irq, %[stack]" : : [stack] "r" (&irq_stack_top) );
-  asm ( "msr sp_fiq, %[stack]" : : [stack] "r" (&fiq_stack_top) );
+  asm ( "msr sp_irq, %[stack]" : : [stack] "r" ((&(workspace.kernel.irq_stack)) + 1) );
+  asm ( "msr sp_fiq, %[stack]" : : [stack] "r" ((&(workspace.kernel.fiq_stack)) + 1) );
 }
 
 void Initialise_undefined_registers()

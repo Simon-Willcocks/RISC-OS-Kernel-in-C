@@ -15,6 +15,7 @@
 
 #include "inkernel.h"
 #include "include/callbacks.h"
+#include "include/taskop.h"
 
 static bool Kernel_Error_NoMoreModules( svc_registers *regs )
 {
@@ -41,29 +42,6 @@ static bool Kernel_Error_SWINameNotKnown( svc_registers *regs )
   regs->r[0] = (uint32_t) &error;
 
   return false;
-}
-
-static inline void Sleep( uint32_t centiseconds )
-{
-  register uint32_t request asm ( "r0" ) = TaskOp_Sleep;
-  register uint32_t time asm ( "r1" ) = centiseconds; // Shift down a lot for testing!
-
-  asm volatile ( "svc %[swi]"
-      :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      , "r" (time)
-      : "lr", "memory" );
-}
-
-static inline void Yield()
-{
-  asm volatile ( "mov r0, #3 // Sleep"
-             "\n  mov r1, #0 // For no time - yield"
-             "\n  svc %[swi]"
-      :
-      : [swi] "i" (OS_ThreadOp)
-      : "r0", "r1", "lr", "memory" );
 }
 
 // Linker generated:
@@ -116,6 +94,22 @@ static inline uint32_t mp_aware( module_header *header )
 {
   uint32_t flags = *(uint32_t *) (((char*) header) + header->offset_to_flags);
   return 0 != (2 & flags);
+}
+
+bool mp_friendly_module_swi( uint32_t svc )
+{
+  assert( 0 == (svc & Xbit) );
+
+  // TODO: improve search time by hashing or tree
+
+  uint32_t chunk = svc & ~0x3f;
+
+  module *m = workspace.kernel.module_list_head;
+  while (m != 0 && m->header->swi_chunk != chunk) {
+    m = m->next;
+  }
+
+  return m != 0 && mp_aware( m->header );
 }
 
 static inline bool run_initialisation_code( const char *env, module *m, uint32_t instance )
@@ -283,13 +277,17 @@ static void run_interruptable_vector( svc_registers *regs, vector *v )
   //    Returns with mov pc, lr (allowing other handlers to execute)
   // AND the final, default, action of every vector handler is pop {pc}.
 
+  // As of July 3 2023, the asm "operand has impossible constraints"
+  // Solution: use r11 explicitly
+
   register vector *vec asm( "r10" ) = v;
+  register svc_registers *r asm( "r11" ) = regs;
 
   // Code always exits via intercepted.
   asm volatile (
       "\n  adr r0, intercepted  // Interception address, to go onto stack"
-      "\n  push { r0, %[regs] } // Save location of register storage at sp+4"
-      "\n  ldm %[regs], { r0-r9 }"
+      "\n  push { r0, r11 } // Save location of register storage at sp+4"
+      "\n  ldm r11, { r0-r9 }"
       "\n0:"
       "\n  ldr r14, [%[v], %[code]]"
       "\n  ldr r12, [%[v], %[private]]"
@@ -299,17 +297,16 @@ static void run_interruptable_vector( svc_registers *regs, vector *v )
       "\n  bne 0b"
       "\n  pop {lr} // intercepted"
       "\nintercepted:"
-      "\n  pop { r14 } // regs (intercepted already popped)"
-      "\n  stm r14, { r0-r9 }"
-      "\n  ldr r1, [r14, %[spsr]] // Update spsr with cpsr flags"
+      "\n  pop { r11 } // regs (intercepted already popped)"
+      "\n  stm r11, { r0-r9 }"
+      "\n  ldr r1, [r11, %[spsr]] // Update spsr with cpsr flags"
       "\n  mrs r2, cpsr"
       "\n  bic r1, #0xf0000000"
       "\n  and r2, r2, #0xf0000000"
       "\n  orr r1, r1, r2"
-      "\n  str r1, [r14, %[spsr]]"
+      "\n  str r1, [r11, %[spsr]]"
       : "=r" (v) // Updated by code
-      , "=r" (regs) // Corrupted by DrawV, I think
-      : [regs] "r" (regs)
+      : "r" (r)
       , [v] "r" (vec)
 
       , [next] "i" ((char*) &((vector*) 0)->next)
@@ -376,7 +373,7 @@ static inline const char *module_commands( module_header *header )
 
 bool do_module_swi( svc_registers *regs, uint32_t svc )
 {
-  uint32_t chunk = svc & ~Xbit & ~0x3f;
+  uint32_t chunk = (svc & ~Xbit) & ~0x3f;
 
   module *m = workspace.kernel.module_list_head;
   while (m != 0 && m->header->swi_chunk != chunk) {
@@ -2987,7 +2984,7 @@ static bool __attribute__(( noinline )) do_CLI( uint32_t *regs )
     if (error == 0) {
       WriteS( "Alias$ variable found" ); NewLine;
       Write0( variable ); WriteS( " exists: " ); Write0( result );
-      // for (;;) { Yield(); }
+      // for (;;) { Task_Yield(); }
     }
   }
 
@@ -3068,7 +3065,7 @@ WriteS( "Looking for file " ); Write0( command ); NewLine;
     else {
       for (;;) {
         WriteS( "No file " ); Write0( command ); NewLine;
-        Yield();
+        Task_Yield();
       }
     }
   }
@@ -3725,19 +3722,12 @@ void __attribute__(( noreturn, noinline )) BootWithFullSVCStack()
 
   asm ( "mov sp, r0"
 
-    // This yield will release the slot's svc stack
-    "\n  mov r0, %[sleep]"
-    "\n  mov r1, #0"
-    "\n  svc %[swi]"
-
     "\n  cpsie aif, #0x10"
     "\n  mov sp, r12"
     "\n  b UsrBoot"
     :
     : "r" (stack_top)
     , "r" (usr_stack_top)
-    , [swi] "i" (OS_ThreadOp)
-    , [sleep] "i" (TaskOp_Sleep)
     : "sp", "lr" );
 
   __builtin_unreachable();

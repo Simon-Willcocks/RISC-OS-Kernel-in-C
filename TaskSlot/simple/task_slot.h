@@ -88,8 +88,26 @@ struct TaskSlot_workspace {
   uint32_t svc_stack_resets;
 };
 
+typedef struct callback transient_callback;
+typedef struct handler handler;
+
+struct handler {
+  void (* code)();
+  uint32_t private_word;
+  uint32_t buffer;
+};
+
 struct TaskSlot_shared_workspace {
   uint32_t lock;
+
+  Task *legacy_stack_owner; // pointer to a Task which is probably also in a running list.
+  Task *waiting_for_legacy_svc_stack; // List of Tasks that have been blocked.
+
+  bool callback_requested;
+
+  // To be called before releasing the legacy svc stack
+  // transient_callbacks are only added by legacy code
+  transient_callback *transient_callbacks;
 
   uint32_t slots_memory; // FIXME more than one page, extendible, etc.
   uint32_t tasks_memory;
@@ -97,17 +115,9 @@ struct TaskSlot_shared_workspace {
   Task *tasks_pool;
   Task *next_to_allocate; // For when the pool needs expanding
 
-  // Until filesystems learn to play along, only one task at a time can
-  // make filesystem calls.
-  // The task with access is allowed to recurse, though.
-  // The task with access can be in other lists, so legacy_caller is
-  // just a pointer to a Task which is probably in the running list.
-  // legacy_callers are the Tasks that have been blocked.
-  Task *legacy_callers;
-  Task *legacy_caller;
-  uint32_t legacy_depth;
-
   Task *runnable;       // Tasks that may run on any core
+
+  handler handlers[17];
 
   uint32_t number_of_interrupt_sources;
   Task **irq_tasks;     // Array of tasks handling interrupts, number of cores x number of sources

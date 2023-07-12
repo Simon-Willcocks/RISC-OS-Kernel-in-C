@@ -126,6 +126,9 @@ bool do_OS_SetVarVal( svc_registers *regs );
 // Find a module that provides this SWI
 bool do_module_swi( svc_registers *regs, uint32_t svc );
 
+// Returns true if the module providing the SWI is mp-aware or there isn't one
+bool mp_friendly_module_swi( uint32_t svc );
+
 bool Kernel_Error_UnknownSWI( svc_registers *regs );
 bool Kernel_Error_UnimplementedSWI( svc_registers *regs );
 

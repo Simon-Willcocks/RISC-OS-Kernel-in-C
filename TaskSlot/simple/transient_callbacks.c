@@ -27,13 +27,10 @@ static void run_handler( uint32_t code, uint32_t private )
 // which could cause problems. Rather use a mpsafe_foreach function?
 void run_transient_callbacks()
 {
-  Task *running = workspace.task_slot.running;
-  TaskSlot *slot = running->slot;
-
   transient_callback *latest;
 
   do {
-    latest = mpsafe_detach_callback_at_head( &slot->transient_callbacks );
+    latest = mpsafe_detach_callback_at_head( &shared.task_slot.transient_callbacks );
     if (latest != 0) {
 #ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
   WriteS( "Call transient callback: " ); WriteNum( latest->code ); WriteS( ", " ); WriteNum( latest->private_word ); NewLine;
@@ -52,11 +49,9 @@ static inline bool equal_callback( callback *a, callback *b )
 bool do_OS_RemoveCallBack( svc_registers *regs )
 {
     asm ( "bkpt 0x1999" ); // Untested
-  Task *running = workspace.task_slot.running;
-  TaskSlot *slot = running->slot;
 
   transient_callback cb = { .code = regs->r[0], .private_word = regs->r[1] };
-  transient_callback *found = mpsafe_find_and_remove_callback( &slot->transient_callbacks, &cb, equal_callback );
+  transient_callback *found = mpsafe_find_and_remove_callback( &shared.task_slot.transient_callbacks, &cb, equal_callback );
   if (found != 0) {
     mpsafe_insert_callback_at_tail( &shared.kernel.callbacks_pool, found );
   }
@@ -68,8 +63,6 @@ bool do_OS_RemoveCallBack( svc_registers *regs )
 
 void set_transient_callback( uint32_t code, uint32_t private )
 {
-  Task *running = workspace.task_slot.running;
-  TaskSlot *slot = running->slot;
 #ifdef DEBUG__SHOW_TRANSIENT_CALLBACKS
   WriteS( "New transient callback: " ); WriteNum( code ); WriteS( ", " ); WriteNum( private ); NewLine;
 #endif
@@ -82,7 +75,7 @@ void set_transient_callback( uint32_t code, uint32_t private )
   callback->code = code;
   callback->private_word = private;
 
-  mpsafe_insert_callback_at_head( &slot->transient_callbacks, callback );
+  mpsafe_insert_callback_at_head( &shared.task_slot.transient_callbacks, callback );
 }
 
 bool do_OS_AddCallBack( svc_registers *regs )

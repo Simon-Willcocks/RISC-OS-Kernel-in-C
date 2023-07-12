@@ -56,6 +56,14 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
     for (int i = 0; boot_data.ram_blocks[i].size != 0; i++) {
       Kernel_add_free_RAM( boot_data.ram_blocks[i].base >> 12, boot_data.ram_blocks[i].size >> 12 );
     }
+
+    extern uint32_t svc_stack_top;
+    // FIXME: probably only need a few pages
+    uint32_t legacy_svc_stack = Kernel_allocate_pages( (1 << 20), (1 << 20) );
+    uint32_t va = ((uint32_t) &svc_stack_top);
+    va = va & 0xfff00000;
+
+    MMU_map_shared_at( (void*) va, legacy_svc_stack, (1 << 20) );
   }
 
   // Allow the others to continue, now the free RAM has been registered.
@@ -82,7 +90,8 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
 
   Initialise_undefined_registers();
 
-  Initialise_privileged_mode_stacks();
+  // NEW: One legacy SVC stack, protected (how?)
+  //MMU_map_shared_at( 0xffd00000, Kernel_allocate_pages( (1 << 20), (1 << 20) ), (1 << 20) );
   Initialise_privileged_mode_stack_pointers();
 
   // We're going to stick with the tiny boot SVC stack until the first

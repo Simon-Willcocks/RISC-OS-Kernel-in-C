@@ -28,8 +28,8 @@ SECTIONS
   l1_translation_tables = 0xfff20000 ; /* Something writes near 0xfff00000 */
   l2_translation_tables = 0xfff30000 ; /* L2TT pool */
   tt_limit              = 0xfff70000 ; /* 20KiB/core, +20KiB global, extendible */
-  task_slots            = 0xfff70000 ; /* probably needs more space */
-  tasks                 = 0xfff80000 ; /* probably needs more space */
+  task_slots            = 0xfd000000 ; /* Up to 16MiB */
+  tasks                 = 0xfe000000 ;
   devices               = 0xfff90000 ;
   pipes_base            = 0xc0000000 ;
   pipes_top             = 0xd0000000 ;

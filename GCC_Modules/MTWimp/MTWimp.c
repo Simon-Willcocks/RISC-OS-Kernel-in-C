@@ -13,6 +13,19 @@
  * limitations under the License.
  */
 
+/* There can only be one task at a time that is between polls.
+   Probably.
+   From testing:
+     Wimp_StartTask may be called before any Wimp_Polls
+     Wimp_StartTask doesn't return until the child exits or calls Wimp_Poll
+  
+   OK, so my StartTask should run the CLI in a new TaskSlot, Relinquish control
+   to the new Task, which will resume it when it Polls or exits. (This
+   hopefully being equivalent to shifting the current task out of the way
+   before running the command.)
+  
+   OSCLI another program and the current Wimp Task exits.
+ */
 const unsigned module_flags = 3;
 // Bit 0: 32-bit compatible
 // Bit 1: Multiprocessing
@@ -20,6 +33,7 @@ const unsigned module_flags = 3;
 #define MODULE_CHUNK "0x300"
 
 #include "module.h"
+#include "include/taskop.h"
 
 //NO_start;
 //NO_init;
@@ -196,15 +210,15 @@ void c_start_wimp_task( struct workspace *workspace )
   WriteS( "MTWimp Initialising Wimp..." ); NewLine;
 
   workspace->wimp_handle = WimpInitialise( "Multi-Tasking Window Manager", 0 );
-  WriteS( "MTWimp Looping..." ); NewLine;
+  WriteS( "MTWimp Looping... " ); WriteNum( workspace->wimp_handle ); NewLine;
 
   for (;;) {
-    // claim lock
+    // claim lock?
     int event = WimpPoll( 0, workspace->poll_block, &workspace->poll_word );
     // release lock
     switch (event) {
-    case 0: WriteS( "Idle" ); NewLine; WaitUntilWoken(); break;
-    default: asm ( "bkpt 4" ); break;
+    case 0: WriteS( "Idle" ); NewLine; break; // Task_WaitUntilWoken(); break;
+    default: asm ( ".word 0xffffffff\n  bkpt 4" ); break;
     }
   }
 }
@@ -217,7 +231,7 @@ bool start_task( struct workspace *ws, SWI_regs *regs )
 
   uint32_t handle = 0; // Wimp_StartTask( ... "MTW" );
   // Allow the  AMB code to create the new TaskSlot and the Wimp to execute the program...
-  Wake( ws->task );
+  Task_WakeTask( ws->task );
   // release lock
   regs->r[0] = handle;
   return true;
@@ -291,10 +305,25 @@ void start_wimp( uint32_t *regs, uint32_t service, struct workspace *ws )
   }
 }
 
+void wimp_close_down( uint32_t *regs, uint32_t service, struct workspace *ws )
+{
+  if (regs[0] == 0) {
+    // Wimp_Initialise called from my domain
+  }
+  else if (regs[2] == ws->wimp_handle) {
+    // My Wimp Task being shut down (why?)
+    static const error_block error = { 0x99, "Wimp is currently active" };
+    regs[0] = (uint32_t) &error;
+    // regs[1] = 0; // Claimed
+    // PRM 3-73 "The call should not be claimed"
+  }
+}
+
 void __attribute__(( naked )) service_call()
 {
   asm ( "teq r1, #0x49" // Service_StartWimp
     "\n  teqne r1, #0x4a" // Service_StartedWimp
+    "\n  teqne r1, #0x53" // Service_WimpCloseDown
     "\n  movne pc, lr" );
 
   asm ( 
@@ -302,6 +331,11 @@ void __attribute__(( naked )) service_call()
     "\n  mov r0, sp"
     // r1 = service on entry
     "\n  mov r2, r12 // workspace"
+    "\n  cmp r1, #0x53"
+    "\n  bne 0f"
+    "\n  bl wimp_close_down"
+    "\n  pop { "C_CLOBBERED", pc }"
+    "\n0:"
     "\n  bl start_wimp"
     "\n  pop { "C_CLOBBERED", pc }" );
 }

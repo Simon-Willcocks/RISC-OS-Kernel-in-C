@@ -333,12 +333,12 @@ static bool do_OS_ReadUnsigned( svc_registers *regs )
 // of the terminator (0, 10, 13). GSTrans includes the terminator
 // in the buffer, but returns the length of the string before it.
 
-static bool gs_space_is_terminator( uint32_t flags )
+static inline bool gs_space_is_terminator( uint32_t flags )
 {
   return (0 != (flags & (1 << 29)));
 }
 
-static bool terminator( char c, uint32_t flags )
+static inline bool terminator( char c, uint32_t flags )
 {
   switch (c) {
   case   0: return true;
@@ -349,7 +349,7 @@ static bool terminator( char c, uint32_t flags )
   }
 }
 
-static int riscos_strlen( char const *s )
+static inline int riscos_strlen( char const *s )
 {
   int result = 0;
   while (!terminator( *s++, 0 )) {
@@ -954,6 +954,7 @@ Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); 
   // TODO Emulate the traditional mechanism by creating a Task that will
   // call the desired vector.
 
+#if 0
   uint32_t device = regs->r[0];
   void (*code) = (void*) regs->r[1];
   uint32_t r12 = regs->r[2];
@@ -990,6 +991,7 @@ Write0( __func__ ); Space; WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); 
     regs->r[0] = (uint32_t) err;
     return false;
   }
+#endif
 
   return true;
 }
@@ -2512,6 +2514,7 @@ static swifn os_swis[256] = {
   // ...with IFSR 0x5 IFAR 0xe3c000ce
 
   [OS_ConvertStandardDateAndTime] =  do_OS_ConvertStandardDateAndTime,
+  // Legacy version crashes
   [OS_ConvertDateAndTime] =  do_OS_ConvertDateAndTime,
 
   [OS_ConvertHex1] =  do_OS_ConvertHex1,
@@ -2734,76 +2737,11 @@ static bool special_swi( svc_registers *regs, uint32_t number )
   return false;
 }
 
-// Work in progress.
-// Currently, all legacy SWIs are blocking all others.
-
-// GSInit/GSRead will need changing first, it's still not thread safe
-// even with this blocking mechanism.
-// Run GSTrans on the input string into a buffer, copy the result into
-// RMA, make it a pipe, have GSRead read a character at a time from the
-// pipe and delete it and the memory when the last character read.
-
-// TODO: We might like to make this a level, rather than Boolean.
-// Global, Core, Slot, Safe?
-static bool blockable_swi( uint32_t number )
-{
-  switch (number & ~Xbit) { // FIXME
-  case OS_CallAVector:
-    // This SWI needs work, it can be called with interrupts disabled and what's called may call legacy SWIs
-
-  case OS_ThreadOp:
-  case OS_PipeOp:
-  case OS_FlushCache:
-  case OS_IntOn:
-  case OS_IntOff:
-    return false;
-  case OS_CLI:
-  case OS_File:
-  case OS_Args:
-  case OS_BGet:
-  case OS_BPut:
-  case OS_GBPB:
-  case OS_Find:
-  case OS_FSControl:
-    // These listed SWIs will need protection using a lock until they can
-    // be made multi-processor safe
-  default:
-    return true;
-  }
-}
-
-// Need to centralise the runnable pool of tasks into shared.task_slot...
-static bool swi_blocked( svc_registers *regs, uint32_t number )
-{
-  if (blockable_swi( number )) {
-#ifdef DEBUG__SHOW_LEGACY_PROTECTION_SWIS
-    WriteS( "SWI " ); WriteNum( number ); WriteS( " starting, task " ); WriteNum( workspace.task_slot.runnable ); NewLine;
-#endif
-    // One caller at a time, system wide for now.
-    return Task_kernel_in_use( regs );
-  }
-
-  return false;
-}
-
-static void swi_completed( uint32_t number )
-{
-  if (blockable_swi( number )) {
-    // One caller at a time, system wide for now.
-#ifdef DEBUG__SHOW_LEGACY_PROTECTION_SWIS
-    WriteS( "SWI " ); WriteNum( number ); WriteS( " completed, task " ); WriteNum( workspace.task_slot.runnable ); NewLine;
-#endif
-    Task_kernel_release();
-  }
-}
-
 void __attribute__(( noinline )) execute_swi( svc_registers *regs, uint32_t number )
 {
   regs->spsr &= ~VF;
 
   if (special_swi( regs, number )) return;
-
-  if (swi_blocked( regs, number )) return;
 
   bool read_var_val_for_length = ((number & ~Xbit) == 0x23 && regs->r[2] == -1);
 
@@ -2851,6 +2789,8 @@ if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
       }
     }
 
+    //if (0x299 == e->code) { asm ( "bkpt 1" ); }
+
     if (0x999 == e->code || 0x1e6 == e->code) {
       switch (number) {
       case 0x61500 ... 0x6153f: // MessageTrans
@@ -2885,6 +2825,4 @@ if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
     hack_wimp_out( regs, number & 0x3f );
     break;
   }
-
-  swi_completed( number );
 }

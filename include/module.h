@@ -202,48 +202,6 @@ static inline void set_VF()
   asm ( "msr cpsr_f, #(1 << 28)" );
 }
 
-static inline void WaitUntilWoken()
-{
-  register uint32_t request asm ( "r0" ) = TaskOp_WaitUntilWoken;
-
-  asm volatile ( "svc %[swi]"
-      :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      : "lr", "memory" );
-}
-
-static inline void Wake( uint32_t task )
-{
-  register uint32_t request asm ( "r0" ) = TaskOp_Sleep;
-  register uint32_t t asm ( "r1" ) = task;
-
-  asm volatile ( "svc %[swi]"
-      :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      , "r" (t)
-      : "lr", "memory" );
-}
-
-static inline void Sleep( uint32_t centiseconds )
-{
-  register uint32_t request asm ( "r0" ) = TaskOp_Sleep;
-  register uint32_t time asm ( "r1" ) = centiseconds; // Shift down a lot for testing!
-
-  asm volatile ( "svc %[swi]"
-      :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      , "r" (time)
-      : "lr", "memory" );
-}
-
-static inline void Yield()
-{
-  Sleep( 0 );
-}
-
 static inline void *rma_claim( uint32_t bytes )
 {
   // XOS_Module 6 Claim

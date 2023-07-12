@@ -72,21 +72,3 @@ enum {
 /* f8 */ OS_MSTime = 0xf8, OS_ThreadOp, OS_PipeOp, OS_VduCommand, // update the current graphics state for this task
 /* fc */ OS_LockForDMA = 0xfc, OS_ReleaseDMALock, OS_MapDevicePages, OS_FlushCache, // For screen updates, etc.
 /* 100-1ff */ OS_WriteI = 0x100 };
- 
-enum { TaskOp_Start,
-       TaskOp_Exit,
-       TaskOp_WaitUntilWoken,
-       TaskOp_Sleep,
-       TaskOp_Resume,
-       TaskOp_GetHandle,
-       TaskOp_LockClaim,
-       TaskOp_LockRelease,
-
-       TaskOp_WaitForInterrupt = 32,
-       TaskOp_InterruptIsOff,
-       TaskOp_NumberOfInterruptSources,
-
-       TaskOp_DebugString = 48,
-       TaskOp_DebugNumber,
-
-       TaskOp_CoreNumber = 64 };
