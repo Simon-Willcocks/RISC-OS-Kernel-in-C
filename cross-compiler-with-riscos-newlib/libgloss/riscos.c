@@ -19,8 +19,6 @@ typedef struct error_block {
   char desc[];
 } error_block;
 
-#include "../../../pipeop.h"
-
 /* Forward prototypes.  */
 int	_system		(const char *);
 int	_rename		(const char *, const char *);
@@ -61,7 +59,7 @@ static RISCOS_Environment OS_GetEnv()
   register char const *env asm ( "r0" );
   register uint32_t himem asm ( "r1" );
   register uint64_t *time asm ( "r2" );
-  asm volatile ( "svc 0x10" : "=r" (env), "=r" (himem), "=r" (time) );
+  asm volatile ( "svc 0x20010" : "=r" (env), "=r" (himem), "=r" (time) );
   RISCOS_Environment result = { .env = env, .himem = himem, .time = time };
   return result;
 }
@@ -72,24 +70,27 @@ static void RISCOS_SetMemoryLimit( uint32_t new_limit )
   register uint32_t himem asm ( "r1" ) = new_limit;
   register uint32_t same_code asm ( "r0" );
   register uint32_t old_limit asm ( "r1" );
-  asm volatile ( "svc 0x40" : "=r" (same_code), "=r" (old_limit) : "r" (code), "r" (himem) : "r2", "r3" );
+  asm volatile ( "svc 0x20040" : "=r" (same_code), "=r" (old_limit) : "r" (code), "r" (himem) : "r2", "r3" );
 }
 
 void * _sbrk (ptrdiff_t incr)
 {
   RISCOS_Environment env = OS_GetEnv();
+  void *old = (void*) env.himem;
 
   if (incr != 0) {
-    env.himem += ((incr + 0xfff) & ~0xfff);
-    RISCOS_SetMemoryLimit( env.himem );
+    // Don't add fewer pages than needed, don't remove more.
+    uint32_t new = env.himem + ((incr + 0xfff) & ~0xfff);
+
+    RISCOS_SetMemoryLimit( new );
   }
 
-  return (void*) env.himem;
+  return old;
 }
 
 #define true  (0 == 0)
 #define false (0 != 0)
-#define assert( b ) while (!(b)) { }
+#define assert( b ) while (!(b)) { asm ( "svc 0x17" ); }
 
 void _exit( int result )
 {
@@ -105,15 +106,6 @@ int _close(int file)
 /* pointer to array of char * strings that define the current environment variables */
 // Maybe store in the TaskSlot for access by all local threads?
 char *_environ[] = { 0 };
-
-typedef struct __pipeop_file {
-  uint32_t read;        // OS_PipeOp pipe to read from
-  PipeSpace read_space;
-  uint32_t write;       // OS_PipeOp pipe to write to
-  PipeSpace write_space;
-  uint32_t os_file;     // OS file descriptor
-} __pipeop_file;
-static __pipeop_file fds[64];
 
 int _execve (const char *__path, char * const __argv[], char * const __envp[])
 {
@@ -187,14 +179,11 @@ int _wait(int *status)
 
 ssize_t _write (int __fd, const void *__buf, size_t __nbyte)
 {
-  __pipeop_file *f = &fds[__fd];
-
-  if (f->write_space.available < __nbyte) {
-    f->write_space = PipeOp_WaitForSpace( f->write, __nbyte );
+  char *buf = __buf;
+  for (int i = 0; i < __nbyte; i++) {
+    register uint32_t c asm( "r0" ) = buf[i];
+    asm ( "svc 0" : : "r" (c) );
   }
-  assert( f->write_space.error == 0 );
-  memcpy( f->write_space.location, __buf, __nbyte );
-  f->write_space = PipeOp_SpaceFilled( f->write, __nbyte );
 }
 
 int _gettimeofday(struct timeval *__restrict p, void *__restrict z)

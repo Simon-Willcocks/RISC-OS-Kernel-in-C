@@ -1,0 +1,7 @@
+PATH=/home/simon/tools/bin/:$PATH
+
+arm-riscos-eabi-gcc hello_world.c -o hello_world.elf -lgloss &&
+# arm-riscos-eabi-objdump --disassemble-all hello_world.elf | less &&
+arm-riscos-eabi-objcopy -O binary hello_world.elf hello_world,ff8 &&
+cp hello_world,ff8 /mnt/Transfers/
+
