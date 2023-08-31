@@ -1,7 +1,12 @@
 PATH=/home/simon/tools/bin/:$PATH
 
+for i in ../CRT/* ../libgloss/* ; do if [ $i -nt hello_world.elf ]; then
+  echo Rebuilding libgloss for $i
+  pushd ../build-gcc && make && make install && popd ; break
+fi ; done
+
 arm-riscos-eabi-gcc hello_world.c -o hello_world.elf -lgloss &&
-# arm-riscos-eabi-objdump --disassemble-all hello_world.elf | less &&
-arm-riscos-eabi-objcopy -O binary hello_world.elf hello_world,ff8 &&
+arm-riscos-eabi-objdump --disassemble-all hello_world.elf > hello_world.dump &&
+arm-riscos-eabi-objcopy -O binary --set-section-flags .bss=alloc,load,contents hello_world.elf hello_world,ff8 &&
 cp hello_world,ff8 /mnt/Transfers/
 

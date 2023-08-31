@@ -205,12 +205,12 @@ void __attribute__(( noinline )) do_ChangeEnvironment( uint32_t *regs )
 
   int env = regs[0];
 
-  if (env > number_of( shared.task_slot.handlers )) {
+  if (env > number_of( slot->handlers )) {
     // FIXME Return an error instead
     asm( "bkpt %[line]" : : [line] "i" (__LINE__) );
   }
 
-  handler *h = &shared.task_slot.handlers[env];
+  handler *h = &slot->handlers[env];
 
   if (env == 0 || env == 14) {
     //  0 Memory Limit (special case)
@@ -667,9 +667,10 @@ TaskSlot *TaskSlot_first()
   TaskSlot *slot = get_task_slot();
 
   slot->command = 0; // No RMA use yet
-  slot->name = "ModuleTasksSlot";
+  slot->name = "Root";
   slot->tail = "";
 
+  slot->creator = 0;
   slot->start_time = 0; // cs since Jan 1st 1900 TODO
   slot->lock = 0;
   slot->waiting = 0;
@@ -698,7 +699,7 @@ TaskSlot *TaskSlot_first()
   assert( TaskSlot_Himem( slot ) == 0x8000 );
 
   for (int i = 0; i < number_of( default_handlers ); i++) {
-    shared.task_slot.handlers[i] = default_handlers[i];
+    slot->handlers[i] = default_handlers[i];
   }
 
   return slot;
@@ -746,6 +747,10 @@ TaskSlot *TaskSlot_new( char const *command_line )
   slot->start_time = 0; // cs since Jan 1st 1900 TODO
   slot->lock = 0;
   slot->waiting = 0;
+
+  for (int i = 0; i < number_of( default_handlers ); i++) {
+    slot->handlers[i] = default_handlers[i];
+  }
 
 #ifdef DEBUG__WATCH_TASK_SLOTS
   WriteS( "TaskSlot_new " ); WriteNum( (uint32_t) slot ); NewLine;
@@ -982,14 +987,14 @@ char const *TaskSlot_Command( TaskSlot *slot )
 // FIXME Some handlers are called in usr mode, some in svc, maybe other modes, too?
 static void CallHandler( uint32_t *regs, int number )
 {
-#ifdef DEBUG__SHOW_UPCALLS
-Write0( __func__ ); Space; WriteNum( number ); Space; WriteNum( regs[0] ); Space; WriteNum( shared.task_slot.handlers[16].code ); NewLine;
-#endif
-
   Task *running = workspace.task_slot.running;
   TaskSlot *slot = running->slot;
 
-  handler *h = &shared.task_slot.handlers[number];
+#ifdef DEBUG__SHOW_UPCALLS
+Write0( __func__ ); Space; WriteNum( number ); Space; WriteNum( regs[0] ); Space; WriteNum( slot->handlers[16].code ); NewLine;
+#endif
+
+  handler *h = &slot->handlers[number];
   register uint32_t r12 asm ( "r12" ) = h->private_word;
   register void (*code)() asm ( "lr" ) = h->code;
   asm volatile ( "ldm %[regs], { r0-r6 }\n  blx lr\n stm %[regs], { r0-r6 }"
@@ -1104,14 +1109,20 @@ void __attribute__(( naked )) default_ticker()
  */
 /* static */ error_block *TaskOpWaitUntilWoken( svc_registers *regs )
 {
-  Task *running = workspace.task_slot.running;
+  // This implementation depends on the shared.task_slot.lock being held by this core
+
+  Task volatile *running = workspace.task_slot.running;
   assert( running != 0 );
 
-  // TODO: Perhaps return the number of resumes instead of making the
-  // Task repeatedly call this?
-  // FIXME Lock, in case TaskOp_tasks are on separate cores
-  running->resumes--;
-  if (running->resumes < 0) {
+  running->regs.r[0] = running->resumes;
+
+  if (running->regs.r[0] == 0) {
+#ifdef DEBUG__WATCH_TASK_SLOTS
+    WriteS( "Task waiting until resumed: " ); WriteNum( running ); NewLine;
+#endif
+
+    running->resumes = -1;
+
     Task *resume = running->next;
     assert( running != resume );
     save_task_context( running, regs );
@@ -1124,12 +1135,17 @@ void __attribute__(( naked )) default_ticker()
     // so it can resume it.
     dll_detach_Task( running );
   }
+  else {
+    running->resumes = 0; // For incrementing, without waking the Task
+  }
 
   return 0;
 }
 
 /* static */ error_block *TaskOpWakeTask( svc_registers *regs )
 {
+  // This implementation depends on the shared.task_slot.lock being held by this core
+
   Task *running = workspace.task_slot.running;
   assert( running != 0 );
 
@@ -1138,16 +1154,24 @@ void __attribute__(( naked )) default_ticker()
   // won't execute until the caller blocks.
   // This behaviour is necessary for interrupt handling tasks prodding
   // second/third level handlers.
-  // FIXME Lock, in case TaskOp_tasks are on separate cores
-  // ... or STREX the resumes word...
 
-  Task *waiting = task_from_handle( regs->r[1] );
+  Task volatile *waiting = task_from_handle( regs->r[1] );
+
   waiting->resumes++;
-  if (waiting->resumes == 0) {
-    // Is waiting, detached from the running list
+  if (0 == waiting->resumes) {
+    // Task is waiting, detached from the running list
     // Don't replace head, place at head of tail
+    // Any other cores incrementing the number will get +ve values
+
+    // TODO shared runnable list
     Task *tail = running->next;
     assert( tail != running );
+
+    assert( waiting->next == waiting );
+    assert( waiting->prev == waiting );
+
+    waiting->regs.r[0] = 1; // One resume. This one.
+
     dll_attach_Task( waiting, &tail );
   }
 
@@ -1257,10 +1281,6 @@ asm ( "bkpt 1" );
 
   TaskLock code = { .rawp = running };
   assert ( !code.wanted );
-
-  claim_lock( &slot->lock );
-  // Despite this lock, we will still be competing for the lock word with
-  // tasks that haven't claimed the lock yet or one waiting to release it.
 
   TaskLock latest_read;
 
@@ -1408,6 +1428,18 @@ assert( (handler->regs.spsr & 0x80) != 0 || (handler == workspace.task_slot.runn
   return handler;
 }
 
+static inline error_block *TaskOp_Error_NotATask()
+{
+  static error_block error = { 0x666, "Programmer error: Not a task" };
+  return &error;
+}
+
+static inline error_block *TaskOp_Error_NotYourTask()
+{
+  static error_block error = { 0x666, "Programmer error: Not your task" };
+  return &error;
+}
+
 /* static */ error_block * __attribute__(( noinline )) TaskOpWaitForInterrupt( svc_registers *regs )
 {
   assert( (regs->spsr & 0x80) != 0 );
@@ -1518,32 +1550,59 @@ WriteS( "IRQ task " ); WriteNum( irq_task ); NewLine;
 
 /* static */ error_block *TaskOpRelinquishControl( svc_registers *regs )
 {
+  // This implementation depends on the shared.task_slot.lock being held by this core
+
   Task *running = workspace.task_slot.running;
+  error_block *result = 0;
 
   assert( running->controller == 0 );
   running->controller = task_from_handle( regs->r[1] );
   if (0 == running->controller) {
-    static error_block error = { 0x666, "Not a task" };
-    return &error;
+    return TaskOp_Error_NotATask();
+  }
+
+  Task *resume = running->next;
+
+  assert( running != resume );
+
+  if (owner_of_legacy_stack( running )) {
+    assert( using_legacy_svc_stack() );
+    save_task_context( running, regs );
   }
   else {
-    Task *resume = running->next;
-    assert( running != resume );
-
+    assert( !using_legacy_svc_stack() );
     // Save the context at the SWI from usr32 mode which caused this to
     // be called; that's the SWI we're providing the service for...
     // (The context may have been modified in that SWI.)
 
     svc_registers *top = core_svc_stack_top();
-    save_task_context( running, top-1 );
-    workspace.task_slot.running = resume;
+    save_task_context( running, top - 1 );
+  }
 
-    assert( workspace.task_slot.running != 0 );
-    assert( workspace.task_slot.running != running );
+  // It's up to the programmer to remember the handle for this Task,
+  // so it can be resumed.
+  workspace.task_slot.running = running->next;
+  dll_detach_Task( running );
 
-    // It's up to the programmer to remember the handle for this Task,
-    // so it can resume it.
-    dll_detach_Task( running );
+  // Detached, now.
+
+  Task *waiting = running->controller;
+
+  assert( waiting->controller == 0 || waiting->controller == running );
+
+  if (running == waiting->controller    // Resuming the creating task that created this one
+   || 0 == ++waiting->resumes) {        // Only increment otherwise
+    // Task is waiting, detached from the running list
+    // Place at head of this core's running list
+
+    assert( waiting->next == waiting );
+    assert( waiting->prev == waiting );
+
+    waiting->controller = 0;
+
+    waiting->regs.r[0] = 1; // One resume. This one.
+
+    dll_attach_Task( waiting, &workspace.task_slot.running );
   }
 
   return 0;
@@ -1551,23 +1610,25 @@ WriteS( "IRQ task " ); WriteNum( irq_task ); NewLine;
 
 /* static */ error_block *TaskOpReleaseTask( svc_registers *regs )
 {
+  // This implementation depends on the shared.task_slot.lock being held by this core
+
   Task *running = workspace.task_slot.running;
   Task *release = task_from_handle( regs->r[1] );
   svc_registers *context = (void*) regs->r[2];
 
   if (release == 0) {
-    static error_block error = { 0x666, "Not a task" };
-    return &error;
+    return TaskOp_Error_NotATask();
   }
 
   if (release->controller != running) {
-    static error_block error = { 0x666, "Not your task to release" };
-    return &error;
+    return TaskOp_Error_NotYourTask();
   }
 
   if (context != 0) {
     release->regs = *context;
   }
+
+  release->controller = 0;
 
   Task *tail = running->next;
   assert( tail != running );
@@ -1580,10 +1641,13 @@ WriteS( "IRQ task " ); WriteNum( irq_task ); NewLine;
 {
   Task *controlled = task_from_handle( regs->r[1] );
   svc_registers *context = (void*) regs->r[2];
+  Task *running = workspace.task_slot.running;
 
   if (controlled == 0) {
-    static error_block error = { 0x666, "Not a task" };
-    return &error;
+    return TaskOp_Error_NotATask();
+  }
+  if (controlled->controller != running) {
+    return TaskOp_Error_NotYourTask();
   }
 
   *context = controlled->regs;
@@ -1591,14 +1655,113 @@ WriteS( "IRQ task " ); WriteNum( irq_task ); NewLine;
   return 0;
 }
 
-/* static */ error_block *TaskOpCreateThread( svc_registers *regs )
+/* static */ error_block *TaskOpSetRegisters( svc_registers *regs )
 {
+  Task *controlled = task_from_handle( regs->r[1] );
+  svc_registers *context = (void*) regs->r[2];
   Task *running = workspace.task_slot.running;
 
-WriteS( "TaskOpCreateThread " ); WriteNum( regs->r[0] ); Space; WriteNum( regs->r[1] ); NewLine;
+  if (controlled == 0) {
+    return TaskOp_Error_NotATask();
+  }
+  if (controlled->controller != running) {
+    return TaskOp_Error_NotYourTask();
+  }
+
+  controlled->regs = *context;
+
+  return 0;
+}
+
+static void __attribute__(( naked, noreturn )) go_child( char *command )
+{
+  register char const *cmd asm( "r0" ) = command;
+  asm ( "svc %[swi]" : : "r" (cmd), [swi] "i" (Xbit | OS_ThreadOp) );
+  asm ( "bkpt 6" );
+}
+
+/* static */ error_block *TaskOpChildCommand( svc_registers *regs )
+{
+  Task *creator = workspace.task_slot.running;
+
+  // A RO command like Unix's system
+  // Caller resumes when child completes or explicitly releases its parent
+
+  WriteS( "ThreadOp RunFree " ); WriteNum( regs->r[1] ); Space; Write0( regs->r[1] ); NewLine;
+  WriteS( "Creator: " ); WriteNum( creator ); NewLine;
+
+  // This will copy the command line into RMA
+  TaskSlot *child = TaskSlot_new( (char const *) regs->r[1] );
+
+  Task *new_task = Task_new( child );
+
+  WriteS( "New task: " ); WriteNum( new_task ); NewLine;
+
+  assert( creator != new_task );
+
+  new_task->regs.lr = go_child;
+  new_task->regs.spsr = 0x10;
+  new_task->banked_lr_usr = (uint32_t) task_exit;
+  new_task->banked_sp_usr = regs->r[2];
+  new_task->regs.r[0] = handle_from_task( new_task );
+  new_task->regs.r[1] = handle_from_task( creator );
+
+  // Just for debugging
+  new_task->regs.r[8] = 0x55556666;
+
+  assert( creator->controller == 0 );
+  creator->controller = new_task;
+
+  dll_detach_Task( creator );
+
+  svc_registers *top = core_svc_stack_top();
+  save_task_context( creator, top-1 );
+
+  creator->regs.r[1] = handle_from_task( new_task ); // Will be replaced by zero when the command completes
+  creator->regs.r[2] = 0; // Will be replaced with result of command, if the command completed
+
+  dll_replace_Task( creator, new_task, &workspace.task_slot.running );
+
+  return 0;
+}
+
+/* static */ error_block *TaskOpResumeParent( svc_registers *regs )
+{
+  Task *running = workspace.task_slot.running;
+  Task *release = running->slot->creator;
+
+  if (release->controller != running) {
+    return TaskOp_Error_NotYourTask();
+  }
+
+  release->regs.r[1] = regs->r[1];
+  release->regs.r[2] = regs->r[2];
+  running->slot->creator = 0;
+  release->controller = 0;
+
+  Task *tail = running->next;
+  assert( tail != running );
+  dll_attach_Task( release, &tail ); // FIXME Add to shared runnable list instead.
+
+  return 0;
+}
+
+/* static */ error_block *TaskOpCreateThread( svc_registers *regs )
+{
+  WriteS( "TaskOpCreateThread " ); WriteNum( regs->r[0] ); Space; WriteNum( regs->r[1] ); NewLine;
+  bool separate = (0 != (regs->r[0] & 0x100));
+  bool delegate = (0 != (regs->r[0] & 0x200));
+  if (separate) {
+    WriteS( "TaskOpCreateThread separate" ); NewLine;
+  }
+  if (delegate) {
+    WriteS( "TaskOpCreateThread delegating control" ); NewLine;
+  }
+
+  Task *running = workspace.task_slot.running;
+
   TaskSlot *slot;
   if (0 != (regs->r[0] & 0x100)) {
-WriteS( "TaskOpCreateThread separate" ); NewLine;
     slot = TaskSlot_new( "Separate" );
   }
   else {
@@ -1618,7 +1781,7 @@ show_task_state( new_task, Yellow );
   assert( running != 0 );
 
   new_task->regs.spsr = 0x10; // Tasks always start in usr32 mode
-  new_task->regs.lr = regs->r[1] & ~3;
+  new_task->regs.lr = regs->r[1];
   new_task->banked_lr_usr = (uint32_t) task_exit;
   new_task->banked_sp_usr = regs->r[2];
   new_task->regs.r[0] = handle_from_task( new_task );
@@ -1645,6 +1808,21 @@ show_task_state( new_task, Blue );
 #ifdef DEBUG__WATCH_TASK_SLOTS
   WriteS( "Task created, may or may not start immediately " ); WriteNum( new_task ); Space; WriteNum( new_task->slot ); NewLine;
 #endif
+  if (delegate) {
+#ifdef DEBUG__WATCH_TASK_SLOTS
+  WriteS( "Blocking parent Task" ); NewLine;
+#endif
+    svc_registers *top = core_svc_stack_top();
+    save_task_context( running, top-1 );
+    workspace.task_slot.running = new_task;
+
+    assert( workspace.task_slot.running != 0 );
+    assert( workspace.task_slot.running != running );
+
+    dll_detach_Task( running );
+    running->controller = new_task;
+  }
+
   return 0;
 }
 
@@ -1665,7 +1843,12 @@ show_task_state( new_task, Blue );
     // Yield
 
 #ifdef DEBUG__SHOW_TASK_SWITCHES
+if (running != resume) {
 WriteS( "Yielding " ); WriteNum( running ); WriteS( ", waking " ); WriteNum( resume ); NewLine;
+}
+else {
+  WriteS( "Y" );
+}
 #endif
     // This thread is willing to give all the other ones a go,
     // it is already at the end of the list (by moving the head
@@ -1765,39 +1948,9 @@ WriteS( "Sleeping " ); WriteNum( running ); WriteS( ", waking " ); WriteNum( res
 bool do_OS_ThreadOp( svc_registers *regs )
 {
   uint32_t operation = regs->r[0] & 255; // Leaving 24 bits for flags
-if (operation == 255) return show_tasks_state();
-if (operation == 254) {
-  Task *creator = workspace.task_slot.running;
 
-asm ( "bkpt 99" );
-  WriteS( "ThreadOp RunFree " ); WriteNum( regs->r[1] ); NewLine;
-  WriteS( "Creator: " ); WriteNum( creator ); NewLine;
-  TaskSlot *child = TaskSlot_new( "RunFree" );
-
-  Task *new_task = Task_new( child );
-
-  WriteS( "New task: " ); WriteNum( new_task ); NewLine;
-
-  assert( creator != new_task );
-
-  new_task->regs.lr = regs->r[1];
-  new_task->regs.spsr = 0x10;
-  new_task->banked_lr_usr = (uint32_t) task_exit;
-  new_task->banked_sp_usr = regs->r[2];
-  new_task->regs.r[0] = handle_from_task( new_task );
-  new_task->regs.r[1] = regs->r[3];
-  new_task->regs.r[2] = regs->r[4];
-  new_task->regs.r[3] = regs->r[5];
-  new_task->regs.r[4] = regs->r[6];
-  new_task->regs.r[5] = regs->r[7];
-  new_task->regs.r[6] = 0x44442222;
-
-  // Task will run when the current task yields. Is this the desired effect?
-  Task *tail = workspace.task_slot.running->next;
-  dll_attach_Task( new_task, &tail );
-
-  return true;
-}
+  // FIXME Remove (scribbles all over the screen and breaks with too many Tasks)
+  if (operation == 255) return show_tasks_state();
 
   error_block *error = 0;
 
@@ -1816,6 +1969,7 @@ asm ( "bkpt 99" );
   if (!usr32_caller( regs )
    && operation != TaskOp_CreateThread                  // Start user task
    && operation != TaskOp_CoreNumber                    // Returns the current core number as a string
+   && operation != TaskOp_GetHandle
    && operation != TaskOp_DebugString
    && operation != TaskOp_DebugNumber
 
@@ -1842,7 +1996,7 @@ asm ( "bkpt 99" );
     WriteS( "No slot! " ); WriteNum( regs->r[0] ); NewLine;
   }
   assert ( slot != 0 );
-  bool reclaimed = claim_lock( &slot->lock );
+  bool reclaimed = claim_lock( &shared.task_slot.lock );
 
   // Start a new thread
   // Exit a thread (last one out turns out the lights for the slot)
@@ -1856,18 +2010,25 @@ asm ( "bkpt 99" );
 
   case TaskOp_Sleep: error = TaskOpSleep( regs ); break;
 
-  case TaskOp_WaitUntilWoken: TaskOpWaitUntilWoken( regs ); break;
-  case TaskOp_Wake: TaskOpWakeTask( regs ); break;
+  case TaskOp_WaitUntilWoken: error = TaskOpWaitUntilWoken( regs ); break;
+  case TaskOp_Wake: error = TaskOpWakeTask( regs ); break;
 
-  case TaskOp_LockClaim: TaskOpLockClaim( regs ); break;
-  case TaskOp_LockRelease: TaskOpLockRelease( regs ); break;
+  case TaskOp_GetHandle:
+    regs->r[0] = handle_from_task( workspace.task_slot.running );
+    break;
 
-  case TaskOp_WaitForInterrupt: TaskOpWaitForInterrupt( regs ); break;
-  case TaskOp_InterruptIsOff: TaskOpInterruptIsOff( regs ); break;
+  case TaskOp_LockClaim: error = TaskOpLockClaim( regs ); break;
+  case TaskOp_LockRelease: error = TaskOpLockRelease( regs ); break;
 
-  case TaskOp_RelinquishControl: TaskOpRelinquishControl( regs ); break;
-  case TaskOp_ReleaseTask: TaskOpReleaseTask( regs ); break;
-  case TaskOp_GetRegisters: TaskOpGetRegisters( regs ); break;
+  case TaskOp_WaitForInterrupt: error = TaskOpWaitForInterrupt( regs ); break;
+  case TaskOp_InterruptIsOff: error = TaskOpInterruptIsOff( regs ); break;
+
+  case TaskOp_RelinquishControl: error = TaskOpRelinquishControl( regs ); break;
+  case TaskOp_ReleaseTask: error = TaskOpReleaseTask( regs ); break;
+  case TaskOp_GetRegisters: error = TaskOpGetRegisters( regs ); break;
+  case TaskOp_SetRegisters: error = TaskOpSetRegisters( regs ); break;
+  case TaskOp_ChildCommand: error = TaskOpChildCommand( regs ); break;
+  case TaskOp_ResumeParent: error = TaskOpResumeParent( regs ); break;
 
   case TaskOp_DebugString:
     WriteN( (char const*) regs->r[1], regs->r[2] );
@@ -1895,9 +2056,9 @@ asm ( "bkpt 99" );
     }
   }
 
-  if (!reclaimed) release_lock( &slot->lock );
+  if (!reclaimed) release_lock( shared.task_slot.lock );
 
-  if (error != 0) { asm( "bkpt %[line]" : : [line] "i" (__LINE__) ); regs->r[0] = (uint32_t) error; }
+  if (error != 0) { show_tasks_state(); asm( "bkpt %[line]" : : [line] "i" (__LINE__) ); regs->r[0] = (uint32_t) error; }
 
   return error == 0;
 }
@@ -2116,9 +2277,18 @@ bool claim_legacy_stack( svc_registers *regs )
       WriteS( "L? " ); WriteNum( n ); WriteS( " : " ); WriteNum( attempt ); NewLine;
 #endif
 
+      workspace.task_slot.running = next;
+      dll_detach_Task( running );
+
+      // Put into shared queue
+      mpsafe_insert_Task_at_tail( &shared.task_slot.waiting_for_legacy_svc_stack, running );
+
       // In case the legacy_stack_owner finished before we registered our interest by
       // adding ourselves to the list, check if there is still a legacy_stack_owner
       attempt = change_word_if_equal( (uint32_t*) &shared.task_slot.legacy_stack_owner, 0, n );
+
+      assert( attempt != n );
+
       if (0 == attempt) {
         // We're the only stack owner at the moment after all, so remove ourselves from
         // the waiting queue and continue as if we'd got permission immediately.
@@ -2219,7 +2389,7 @@ Write0( __func__ ); NewLine;
   Task *running = workspace.task_slot.running;
   TaskSlot *slot = running->slot;
 
-  handler *h = &shared.task_slot.handlers[11];
+  handler *h = &slot->handlers[11];
 
   register uint32_t r12 asm ( "r12" ) = h->private_word;
   register void (*code)() asm ( "r1" ) = h->code;
@@ -2342,12 +2512,26 @@ Each independent TaskSlot has:
 
 static bool interrupt_safe_system_swi( int number )
 {
-  if (number == OS_IntOn) return true;
-  if (number == OS_IntOff) return true;
+  switch (number) {
+  case OS_IntOn:
+  case OS_IntOff:
 
-  return (number == OS_ThreadOp
-       || number == OS_PipeOp
-       || number == OS_FlushCache);
+  case OS_SWINumberToString:
+  case OS_SWINumberFromString:
+
+  case OS_ChangeEnvironment:
+
+  case OS_ThreadOp:
+  case OS_PipeOp:
+  case OS_FlushCache:
+
+  case OS_ValidateAddress:
+
+  case OS_Heap: // C Kernel friendly because it claims a lock (in swis.c)
+    return true;
+  }
+
+  return false;
 }
 
 static bool __attribute__(( noinline )) interrupt_safe_swi( int number )
@@ -2355,8 +2539,56 @@ static bool __attribute__(( noinline )) interrupt_safe_swi( int number )
   number = number & ~Xbit;
   switch (number) {
   case 0 ... 0x1ff: return interrupt_safe_system_swi( number );
+
+  // The following is dubious, are they really interrupt safe, or...
+  // The should probably all only be called from usr32 mode, no?
+  case 0x400c0: return true; // Wimp_Initialise
+  case 0x400e7: return true; // Wimp_SendMessage
+  case 0x400e1: return true; // Wimp_PollIdle
+  case 0x400c1: return true; // Wimp_Poll
+  case 0x400de: return true; // Wimp_StartTask
+  case 0x400f2: return true; // Wimp_ReadSysInfo
   default: return mp_friendly_module_swi( number );
   }
+}
+
+static inline void __attribute__(( noreturn )) exit_through_callback( Task *resume )
+{
+  // Exit through the callback handler, which will
+  // update the usr sp and lr for us...
+  shared.task_slot.callback_requested = false;
+
+  assert( owner_of_legacy_stack( resume ) );
+
+  TaskSlot *slot = resume->slot;
+
+  handler *h = &slot->handlers[7];
+
+  WriteS( "Running callback UpCall " ); WriteNum( h->code ); Space; WriteNum( h->private_word ); Space; WriteNum( h->buffer ); NewLine;
+
+  // Note: Since ARM7, the buffer is 17 words
+  uint32_t *buffer = (void*) h->buffer;
+  for (int i = 0; i < 13; i++) {
+    buffer[i] = regs->r[i];
+  }
+  buffer[13] = resume->banked_sp_usr;
+  buffer[14] = resume->banked_lr_usr;
+  buffer[15] = regs->lr;
+  buffer[16] = regs->spsr;
+
+  release_task_waiting_for_stack( resume );
+
+  assert( !owner_of_legacy_stack( resume ) );
+
+  register void (*handler)() asm( "lr" ) = h->code;
+  register uint32_t r12 asm( "r12" ) = h->private_word;
+  // Note: it appears the called handler is expected to know 
+  // where it wanted the registers stored, buffer is not passed
+  // to the handler.
+  asm ( "mov sp, %[top]"
+    "\n  bx lr" : : "r" (handler), "r" (r12), [top] "r" (core_svc_stack_top()) );
+
+  __builtin_unreachable();
 }
 
 /* SWIs are only called by the running task
@@ -2404,6 +2636,8 @@ static bool __attribute__(( noinline )) interrupt_safe_swi( int number )
 void __attribute__(( noinline, noreturn )) c_execute_swi( svc_registers *regs )
 {
   Task *caller = workspace.task_slot.running;
+
+  char const *reason = "Unchanged"; // Reason for change of running Task
 
   uint32_t number = get_swi_number( regs->lr );
   uint32_t swi = (number & ~Xbit);
@@ -2487,10 +2721,14 @@ WriteS( "SWI " ); WriteNum( number ); WriteS( " in Task " ); WriteNum( caller );
 #ifdef DEBUG__TASK_SWITCHES
       WriteS( "Blocked for legacy stack " ); WriteNum( caller ); NewLine;
 #endif
-asm( "bkpt 6" );
+asm ( "  .word 0xffffffff" );
       if (0 != (regs->spsr & 0x80)) {
         WriteS( "Blocked waiting for legacy call with interrupts disabled" ); NewLine;
+        assert( false );
       }
+      assert( workspace.task_slot.running != caller );
+
+      reason = "Blocked for legacy stack";
     }
   }
 
@@ -2504,13 +2742,9 @@ asm( "bkpt 6" );
     execute_swi( regs, number );
 
     resume = workspace.task_slot.running;
-  }
 
-#ifdef DEBUG__TASK_SWITCHES
-  if (resume != caller) {
-    WriteS( "New running: " ); WriteNum( resume ); WriteS( " from " ); WriteNum( caller ); NewLine;
+    if (resume != caller) reason = "SWI";
   }
-#endif
 
   if (resume == caller && 0 == (regs->spsr & 0x8f)) {
     // Only if interrupts enabled in caller and caller not in SVC mode
@@ -2518,127 +2752,85 @@ asm( "bkpt 6" );
       kick_debug_handler_thread( regs );
 
       resume = workspace.task_slot.running;
+
+      if (resume != caller) reason = "Debug queued";
     }
     // resume, if it's not caller, will be the debug pipe receiver
+  }
+
+  if (resume == caller) {
+    assert( owner_of_legacy_stack( resume ) == in_legacy_svc_stack( resume_sp ) );
+
+    if (usr32_caller( regs )
+     && owner_of_legacy_stack( resume )) {
+#ifdef DEBUG__TASK_SWITCHES
+  WriteS( "Returning to USR32" ); NewLine;
+  if (0 != (regs->spsr & 0x80)) asm ( "bkpt 55" ); // When does this happen? Is it good/OK?
+#endif
+
+      if (0 == (regs->spsr & 0x80) // Not if interrupts disabled
+       && shared.task_slot.transient_callbacks != 0) {
+WriteS( "Running transient callbacks" ); NewLine;
+        run_transient_callbacks();
+        assert( workspace.task_slot.running == caller );
+        resume = workspace.task_slot.running;
+      }
+
+      if (caller == resume) {
+        // PRM1-299: "In RISC OS 3 (version 3.10) or later, the supervisor stack must also
+        // be empty when the CallBack handler is called. This ensures that certain module
+        // SWIs that temporarily enter User mode (so that transient CallBacks are called)
+        // do not cause the CallBack handler to be called."
+        //
+        // I think that means the CallBack handler will only be called if the stack is
+        // already empty, not that the stack can be assumed to be empty by the CallBack
+        // code.
+        //
+        // I will call it when the current task is the owner of the svc_stack, so the
+        // CallBack can make legacy SWI calls. FIXME?
+
+    if (shared.task_slot.callback_requested) { WriteS( "Callback requested" ); NewLine; }
+    if (resume_sp != &svc_stack_top) { WriteS( "Not at top of stack " ); WriteNum( resume_sp ); Space; WriteNum( &svc_stack_top ); NewLine; }
+
+        if (shared.task_slot.callback_requested && resume_sp == &svc_stack_top) {
+          exit_through_callback( caller );
+        }
+        else {
+          asm (
+            "\n  msr sp_usr, %[usrsp]"
+            "\n  msr lr_usr, %[usrlr]"
+            :
+            : [usrsp] "r" (caller->banked_sp_usr)
+            , [usrlr] "r" (caller->banked_lr_usr)
+          );
+        }
+      }
+
+      if (resume_sp == &svc_stack_top) {
+        // Done with legacy svc_stack
+
+        release_task_waiting_for_stack( caller );
+
+        resume_sp = core_svc_stack_top();
+      }
+    }
   }
 
   if (resume != caller) {
     assert( slot == caller->slot );
 
-assert( caller->regs.lr != 0 );
-assert( swi == (number & ~Xbit) );
-//assert( (regs->spsr & 0x80) == 0 // Mustn't change tasks while interrupts are disabled
-//      || (swi == OS_ThreadOp && regs->r[0] == TaskOp_WaitForInterrupt) ); // unless, of course, that's the point...
+    if (owner_of_legacy_stack( caller )) {
+      slot->svc_sp_when_unmapped = (uint32_t*) resume_sp;
+    }
+
+#ifdef DEBUG__TASK_SWITCHES
+#define WriteTask( n ) do { WriteNum( n ); if (owner_of_legacy_stack( n )) WriteS( "*" ); } while (0)
+  WriteS( "Switch from " ); WriteTask( caller ); WriteS( " to " ); WriteTask( resume ); WriteS( " - " ); Write0( reason ); NewLine;
+#endif
 
     resume_task( resume, slot );
 
     __builtin_unreachable();
-  }
-
-  assert( resume == caller );
-
-  assert( owner_of_legacy_stack( resume ) == in_legacy_svc_stack( resume_sp ) );
-
-  if (usr32_caller( regs )
-   && owner_of_legacy_stack( resume )) {
-
-#ifdef DEBUG__TASK_SWITCHES
-WriteS( "Returning to USR32" ); NewLine;
-if (0 != (regs->spsr & 0x80)) asm ( "bkpt 55" ); // When does this happen? Is it good/OK?
-#endif
-
-    if (0 == (regs->spsr & 0x80) // Not if interrupts disabled
-     && shared.task_slot.transient_callbacks != 0) {
-WriteS( "Running transient callbacks" ); NewLine;
-      run_transient_callbacks();
-      assert( workspace.task_slot.running == caller );
-      resume = workspace.task_slot.running;
-    }
-
-    if (caller != resume) {
-WriteS( "Changed task" ); NewLine;
-//asm  ( "bkpt 4" );
-      if (owner_of_legacy_stack( caller )) {
-        slot->svc_sp_when_unmapped = (uint32_t*) resume_sp;
-      }
-
-      assert( slot == caller->slot );
-
-assert( caller->regs.lr != 0 );
-      resume_task( resume, slot );
-
-      __builtin_unreachable();
-    }
-
-    // PRM1-299: "In RISC OS 3 (version 3.10) or later, the supervisor stack must also
-    // be empty when the CallBack handler is called. This ensures that certain module
-    // SWIs that temporarily enter User mode (so that transient CallBacks are called)
-    // do not cause the CallBack handler to be called."
-    //
-    // I think that means the CallBack handler will only be called if the stack is
-    // already empty, not that the stack can be assumed to be empty by the CallBack
-    // code.
-    //
-    // I will call it when the current task is the owner of the svc_stack, so the
-    // CallBack can make legacy SWI calls. FIXME?
-
-    assert( caller == resume );
-
-if (shared.task_slot.callback_requested) { WriteS( "Callback requested" ); NewLine; }
-if (resume_sp != &svc_stack_top) { WriteS( "But not at top of stack " ); WriteNum( resume_sp ); Space; WriteNum( &svc_stack_top ); NewLine; }
-
-    if (shared.task_slot.callback_requested && resume_sp == &svc_stack_top) {
-      // Exit through the callback handler, which will
-      // update the usr sp and lr for us...
-      shared.task_slot.callback_requested = false;
-
-      assert( owner_of_legacy_stack( resume ) );
-
-      handler *h = &shared.task_slot.handlers[7];
-
-      WriteS( "Running callback UpCall " ); WriteNum( h->code ); Space; WriteNum( h->private_word ); Space; WriteNum( h->buffer ); NewLine;
-
-      // Note: Since ARM7, the buffer is 17 words
-      uint32_t *buffer = (void*) h->buffer;
-      for (int i = 0; i < 13; i++) {
-        buffer[i] = regs->r[i];
-      }
-      buffer[13] = resume->banked_sp_usr;
-      buffer[14] = resume->banked_lr_usr;
-      buffer[15] = regs->lr;
-      buffer[16] = regs->spsr;
-
-      release_task_waiting_for_stack( caller );
-
-      assert( !owner_of_legacy_stack( resume ) );
-
-      register void (*handler)() asm( "lr" ) = h->code;
-      register uint32_t r12 asm( "r12" ) = h->private_word;
-      // Note: it appears the called handler is expected to know 
-      // where it wanted the registers stored, buffer is not passed
-      // to the handler.
-      asm ( "mov sp, %[top]"
-        "\n  bx lr" : : "r" (handler), "r" (r12), [top] "r" (core_svc_stack_top()) );
-
-      __builtin_unreachable();
-    }
-    else {
-      asm (
-        "\n  msr sp_usr, %[usrsp]"
-        "\n  msr lr_usr, %[usrlr]"
-        :
-        : [usrsp] "r" (resume->banked_sp_usr)
-        , [usrlr] "r" (resume->banked_lr_usr)
-      );
-    }
-  }
-
-  if (resume_sp == &svc_stack_top) {
-    // Done with legacy svc_stack
-
-    release_task_waiting_for_stack( resume );
-
-    resume_sp = core_svc_stack_top();
   }
 
   assert( owner_of_legacy_stack( resume ) == in_legacy_svc_stack( resume_sp ) );

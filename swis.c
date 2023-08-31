@@ -2631,9 +2631,9 @@ static bool hack_wimp_in( svc_registers *regs, uint32_t number )
   trace_wimp_calls_in( regs, number & 0x3f );
   switch (number & 0x3f) {
   case 0x1e:
-  return false; // FIXME FIXME FIXME FIXME FIXME FIXME
     return Wimp_StartTask( regs );
     break;
+  case 0x2f: return true; // FIXME in a window?
   case 0x00: // Wimp_Initialise
     {
       // Call legacy SWI code
@@ -2703,7 +2703,7 @@ static bool hack_wimp_out( svc_registers *regs, uint32_t number )
   switch (number & 0x3f) {
   case 0x00: // Wimp_Initialise
     {
-      Wimp_Initialised( regs->r[1] );
+      //Wimp_Initialised( regs->r[1] );
     }
     break;
   }

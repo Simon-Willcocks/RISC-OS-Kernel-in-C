@@ -67,7 +67,7 @@ void Initialise_system_DAs()
 
   // Create a Relocatable Module Area, and initialise a heap in it.
 
-  uint32_t initial_rma_size = 2 * natural_alignment;
+  uint32_t initial_rma_size = 4 * natural_alignment;
 
   bool reclaimed = claim_lock( &shared.memory.dynamic_areas_setup_lock ); 
   assert( !reclaimed ); // No question, only entered once
@@ -786,6 +786,24 @@ Write0( "OS_Memory operation " ); WriteNum( regs->r[0] ); Write0( " VA " ); Writ
       Write0( "Unsupported OS_Memory operation" ); NewLine;
       for (;;) { asm ( "wfi" ); }
     }
+    return true;
+    }
+    break;
+  case 8:
+    {
+    // Read the amount of a specified sort of memory available
+    // Bits 8..11 Type 
+    enum {
+      DRAM = 1, VRAM, ROM, IO, SoftROM
+    };
+    uint32_t pages = 0;
+    uint32_t page_size = 4096;
+    switch (regs->r[0] >> 8) {
+    case SoftROM: pages = 0; break;
+    default: assert( false );
+    }
+    regs->r[1] = pages;
+    regs->r[2] = page_size;
     return true;
     }
     break;

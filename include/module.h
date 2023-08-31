@@ -99,6 +99,22 @@ typedef unsigned        bool;
 
 #define C_CLOBBERED "r0-r3,r12"
 
+#define assert( c ) while (!(c)) { asm( "bkpt 65535" ); }
+
+#define number_of( arr ) (sizeof( arr ) / sizeof( arr[0] ))
+
+typedef struct {
+  uint32_t code;
+  char desc[];
+} error_block;
+
+void *adr( void *fn )
+{
+  uint32_t result;
+  asm volatile ( "adr %[result], adr" : [result] "=r" (result) );
+  return (void*) (result - (uint32_t) adr + (uint32_t) fn);
+}
+
 /* How to declare commands. FIXME: needs a few macros.
 
 asm ( "keywords:"
@@ -117,15 +133,6 @@ asm ( "keywords:"
 <repeat the above for each command>
  "\n  .word 0"
 */
-
-#define assert( c ) while (!(c)) { asm( "bkpt 65535" ); }
-
-#define number_of( arr ) (sizeof( arr ) / sizeof( arr[0] ))
-
-typedef struct {
-  uint32_t code;
-  char desc[];
-} error_block;
 
 #define C_SWI_HANDLER( cfn ) \
 typedef struct { \

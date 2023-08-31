@@ -206,7 +206,7 @@ bool excluded( const char *name )
                                   , "SoundScheduler"    // Sound_Tuning
                                   // , "TaskManager"       // Initialisation returns an error
                                   , "BCMVideo"          // Tries to use OS_MMUControl
-                                  // , "FilterManager"     // Uses Wimp_ReadSysInfo 
+                                  , "FilterManager"     // Uses Wimp_ReadSysInfo in init
                                   , "WaveSynth"         // throws exception
                                   , "StringLib"         // ?
                                   , "Percussion"         // ?
@@ -908,7 +908,9 @@ void __attribute__(( noreturn )) UsrBoot()
 
   Sleep( 0 ); // Run HAL callbacks and/or tasks
 
-  asm volatile ( "svc 0x13" ); // OS_IntOn
+  asm volatile ( "svc %[swi]" : : [swi] "i" (Xbit | OS_IntOn) );
+
+  static const int Wimp_ReadSysInfo = 0x400f2;
 
   {
     extern uint32_t _binary_Modules_MTWimp_start;
@@ -925,11 +927,24 @@ void __attribute__(( noreturn )) UsrBoot()
   }
 
   if (core_number == 0) {
+    extern uint32_t _binary_Modules_Commands_start;
+    register uint32_t code asm( "r0" ) = 10;
+    register uint32_t module asm( "r1" ) = 4 + (uint32_t) &_binary_Modules_Commands_start;
+
+    asm volatile ( "svc %[os_module]"
+       :
+       : "r" (code)
+       , "r" (module)
+       , [os_module] "i" (OS_Module)
+       : "lr", "cc", "memory" );
+
     init_modules();
 
+  asm volatile ( "mov r0, #0\n  svc %[swi]" : : [swi] "i" (Xbit | Wimp_ReadSysInfo) );
     //init_module( "UtilityModule" );
     //init_module( "FileSwitch" ); // needed by...
 
+/*
     extern uint32_t _binary_Modules_DumbFS_start;
     register uint32_t code asm( "r0" ) = 10;
     register uint32_t module asm( "r1" ) = 4 + (uint32_t) &_binary_Modules_DumbFS_start;
@@ -942,7 +957,8 @@ void __attribute__(( noreturn )) UsrBoot()
        : "lr", "cc", "memory" );
 
     // OSCLI( "Fat32FS" );
-    OSCLI( "info DumbFS:603b10000_40000000" );
+    // OSCLI( "info DumbFS:603b10000_40000000" );
+*/
   }
   else {
     init_module( "UtilityModule" );

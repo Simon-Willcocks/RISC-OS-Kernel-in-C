@@ -1184,7 +1184,7 @@ static int __attribute__(( noinline )) C_IrqV_handler( struct core_workspace *wo
   bool last_possibility = false;
 
   // Write0( "IRQ " ); WriteNum( source ); Space; WriteNum( gpu->pending1 ); Space; WriteNum( gpu->pending1 ); NewLine;
-  if (1) {
+  if (0) {
     register uint32_t r0 asm( "r5" ) = source;
     register uint32_t r1 asm( "r6" ) = gpu->pending1;
     register uint32_t r2 asm( "r7" ) = gpu->pending2;

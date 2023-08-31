@@ -941,7 +941,6 @@ if (ws->core_number > 3) {  // Max cores for HD display
     l1tt->entry[(physical + i) >> 20].raw = rom_sections.raw | ((physical + i) & 0xfff00000);
     test++;
   }
-  assert ( test == 5 );
 
   // Our core-specific work areas, in our core-specific L2TT
   map_work_area( l2tt, ws );

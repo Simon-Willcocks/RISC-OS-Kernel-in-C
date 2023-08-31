@@ -841,6 +841,9 @@ static inline void Send_Service_ModulePostInit( uint32_t *memory, char const *po
 
 static bool initialise_module( svc_registers *regs, uint32_t *memory, char const* parameters )
 {
+  // THIS IS MORE OR LESS WRONG: initialise each module only once, on one core.
+  // When fixing, bear in mind that Draw, etc. use "zero page", currently (Jul 23) not shared
+
   // regs are only used to return errors. TODO
 
   // uint32_t size_plus_four = *memory;
@@ -2110,17 +2113,6 @@ bool do_OS_CLI( svc_registers *regs )
 {
   return run_vector( regs, 5 );
 }
-/*
-WriteFunc;
-WriteS( "OS_CLI: " ); WriteNum( regs->r[0] ); Space; Write0( (void*) regs->r[0] ); NewLine;
-WriteS( "Caller: " ); WriteNum( regs->lr ); NewLine;
-  // Check stack space TODO
-  // Check command length TODO (still 256?)
-  // /SetECF
-
-  return run_vector( regs, 5 );
-}
-*/
 
 bool do_OS_Byte( svc_registers *regs )
 {
@@ -2819,7 +2811,8 @@ static error_block *run_module_command( const char *command )
 
         if (c->info.gstrans != 0 && count > 0) {
           // Need to copy the command, running GSTrans on some parameters
-          asm ( "bkpt 1" );
+          //asm ( "bkpt 1" );
+          WriteS( "RUNNING WITHOUT GSTrans" );
         }
 
 #ifdef DEBUG__SHOW_COMMANDS
@@ -3591,7 +3584,7 @@ static void setup_OS_vectors()
 
 static void __attribute__(( naked, noreturn )) idle_thread()
 {
-  const int reset = 10000;
+  const int reset = 10;
   uint32_t count = reset;
 
   // This thread currently needs no stack!
@@ -3700,12 +3693,19 @@ static uint32_t start_idle_task()
   return handle;
 }
 
-// Not static, only called from inline assembler
-void __attribute__(( noreturn, noinline )) BootWithFullSVCStack()
+void Boot()
 {
+  TaskSlot *slot = TaskSlot_first();
+
+  assert( slot != 0 );
+  assert( Task_now() != 0 );
+  assert( TaskSlot_now() == slot );
+
   start_idle_task(); // The one that's always there
 
   PreUsrBoot();
+
+  WriteS( "&shared.task_slot.legacy_stack_owner = " ); WriteNum( &shared.task_slot.legacy_stack_owner ); NewLine;
 
   // No App memory initially
 
@@ -3729,20 +3729,6 @@ void __attribute__(( noreturn, noinline )) BootWithFullSVCStack()
     : "r" (stack_top)
     , "r" (usr_stack_top)
     : "sp", "lr" );
-
-  __builtin_unreachable();
-}
-
-
-void Boot()
-{
-  TaskSlot *slot = TaskSlot_first();
-
-  assert( slot != 0 );
-  assert( Task_now() != 0 );
-  assert( TaskSlot_now() == slot );
-
-  BootWithFullSVCStack();
 
   __builtin_unreachable();
 }

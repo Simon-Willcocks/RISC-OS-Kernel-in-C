@@ -68,6 +68,14 @@ void __attribute__(( noinline )) do_UpCall( uint32_t *regs );
 bool Task_kernel_in_use( svc_registers *regs );
 void Task_kernel_release();
 
+typedef struct callback transient_callback;
+typedef struct handler handler;
+
+struct handler {
+  void (* code)();
+  uint32_t private_word;
+  uint32_t buffer;
+};
 
 struct TaskSlot_workspace {
   Task *running;        // The task that is running on this core
@@ -86,15 +94,6 @@ struct TaskSlot_workspace {
   uint32_t svc_stack_claims;
   uint32_t svc_stack_releases;
   uint32_t svc_stack_resets;
-};
-
-typedef struct callback transient_callback;
-typedef struct handler handler;
-
-struct handler {
-  void (* code)();
-  uint32_t private_word;
-  uint32_t buffer;
 };
 
 struct TaskSlot_shared_workspace {
@@ -116,8 +115,6 @@ struct TaskSlot_shared_workspace {
   Task *next_to_allocate; // For when the pool needs expanding
 
   Task *runnable;       // Tasks that may run on any core
-
-  handler handlers[17];
 
   uint32_t number_of_interrupt_sources;
   Task **irq_tasks;     // Array of tasks handling interrupts, number of cores x number of sources

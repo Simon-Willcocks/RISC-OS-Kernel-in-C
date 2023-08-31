@@ -45,6 +45,8 @@ struct TaskSlot {
   uint64_t start_time;
   Task *waiting;       // 0 or more tasks waiting for locks
 
+  handler handlers[17];
+
   uint32_t *wimp_poll_block;
   Task *wimp_task;
   uint32_t wimp_task_handle;
@@ -54,7 +56,7 @@ struct __attribute__(( packed, aligned( 4 ) )) Task {
   svc_registers regs;
   uint32_t banked_sp_usr; // Only stored when leaving usr or sys mode
   uint32_t banked_lr_usr; // Only stored when leaving usr or sys mode
-  int32_t resumes;
+  int32_t resumes; // Signed: -1 => blocked
   TaskSlot *slot;
   Task *controller; // Task to which control has been relinquished; always 0 when running
   Task *next; // Doubly-linked list. Neither next or prev shall be zero,

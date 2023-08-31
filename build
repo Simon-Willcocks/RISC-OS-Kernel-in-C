@@ -150,7 +150,7 @@ build_gcc_module VFPSupport &&
 build_gcc_module Portable &&
 build_gcc_module FPEmulator &&
 build_gcc_module MTWimp &&
-build_gcc_module DumbFS &&
+build_gcc_module Commands &&
 build_gcc_module Test &&
 
 if [ -f RiscOS/Sources/Kernel/bin/Kernel_gpa ]; then
