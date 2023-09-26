@@ -201,6 +201,7 @@ struct workspace {
 
   struct core_workspace {
     struct workspace *shared;
+    uint32_t pipe;
     uint8_t core;
     int8_t first_reported_irq;
     int8_t last_reported_irq;
@@ -562,7 +563,6 @@ static inline void add_to_display( char c, struct core_workspace *workspace )
     else
       workspace->shared->uart->data = c;
   }
-  return; // So singlestep doesn't take so long!
 
   if (workspace->x == 58 || c == '\n') {
     new_line( workspace );
@@ -617,7 +617,7 @@ static void update_display( struct core_workspace *workspace )
   }
 
   if (0 != workspace->shared->frame_buffer) {
-    asm ( "svc 0xff" : : : "lr", "cc" );
+    Task_DebugShowTasks();
   }
 }
 
@@ -1282,8 +1282,10 @@ static void disable_interrupts()
 // Decouple the TickerV from the actual interrupt that causes it.
 // Unlike the documentation, PRM 1-99, enabling interrupts during
 // the vector call will not allow another call.
-static void tickerv_task( uint32_t handle, struct core_workspace *ws )
+static void tickerv_task( uint32_t handle, uint32_t _ws )
 {
+  struct core_workspace *ws = (void*) _ws;
+
   //QA7 volatile *qa7 = ws->shared->qa7;
   int this_core = core( ws );
   int ticks = 0;
@@ -1292,33 +1294,29 @@ static void tickerv_task( uint32_t handle, struct core_workspace *ws )
 
     ticks++;
     if (ticks % 10 == 0) show_word( this_core * 1920/4, 60, ticks, Green, ws->shared ); 
-/*
-{
-  register uint32_t request asm ( "r0" ) = 255;
 
-  asm volatile ( "svc %[swi]"
-      :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      : "lr", "cc" );
-}
-    for (int i = 0; i < 4; i++) {
-      Space; WriteNum( qa7->Core_write_clear[i].Mailbox[3-i] );
-    }
-    NewLine;
-*/
-    // Vector is called with interrupts disabled
-    asm ( "svc %[swi]" : : [swi] "i" (OS_IntOff) );
+    // Vector is called with interrupts disabled, but it needs
+    // the legacy SVC stack, so call this with interrupts enabled.
+    // HOWEVER!!! This might mean that the tick won't happen until
+    // after a SWI has returned, which may take a long time.
+    // FIXME: Implement a mechanism to "interrupt" the task owning
+    // the legacy SVC stack. If it's on this core, we already have,
+    // otherwise we need to actually interrupt the other core.
+    // It may also be in the shared runnable queue or blocked waiting
+    // for a driver, filesystem, or similar to respond.
+    // NOTE! This should not be the mechanism used to wake sleeping
+    // C Kernel Tasks.
     asm ( 
       "\n  mov r9, #0x1c// TickerV"
       "\n  svc %[swi]"
       : : [swi] "i" (Xbit | OS_CallAVector) : "r9", "lr" );
-    asm ( "svc %[swi]" : : [swi] "i" (OS_IntOn) );
   }
 }
 
-static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, int device )
+static void timer_interrupt_task( uint32_t handle, uint32_t _ws, uint32_t device )
 {
+  struct core_workspace *ws = (void*) _ws;
+
   int this_core = core( ws );
 
   struct workspace *shared = ws->shared;
@@ -1327,28 +1325,11 @@ static void timer_interrupt_task( uint32_t handle, struct core_workspace *ws, in
 
   uint32_t tickerv_handle;
 
-WriteS( "Timer interrupt task" ); NewLine;
-  {
-    uint64_t *stack = (void*) ((&ws->tickerv_stack)+1);
+  WriteS( "Timer interrupt task" ); NewLine;
 
-    register uint32_t request asm ( "r0" ) = TaskOp_CreateThread;
-    register void *code asm ( "r1" ) = tickerv_task;
-    register void *stack_top asm ( "r2" ) = stack;
-    register struct core_workspace *cws asm( "r3" ) = ws;
-
-    register uint32_t handle asm ( "r0" );
-
-    asm volatile ( "svc %[swi]"
-        : "=r" (handle) 
-        : [swi] "i" (OS_ThreadOp)
-        , "r" (request)
-        , "r" (code)
-        , "r" (stack_top)
-        , "r" (cws)
-        : "lr" );
-
-    tickerv_handle = handle;
-  }
+  uint64_t *stack = (void*) ((&ws->tickerv_stack)+1);
+  struct core_workspace *cws = ws;
+  tickerv_handle = Task_CreateTask1( tickerv_task, stack, (uint32_t) cws ).handle;
 
   WriteS( "Timer task claiming interrupt and entering loop " ); WriteNum( handle ); NewLine;
 
@@ -1388,11 +1369,8 @@ WriteS( "Timer interrupt task" ); NewLine;
       WriteS( "IRQ still outstanding!" ); NewLine;
     }
     else {
-      WriteS( "." );
-      asm ( 
-        "\n  mov r0, #0xff"
-        "\n  svc %[swi]"
-        : : [swi] "i" (Xbit | OS_ThreadOp) : "r0", "lr" );
+      // WriteS( "." );
+      Task_DebugShowTasks();
     }
     }
 
@@ -1413,32 +1391,16 @@ static uint32_t start_timer_interrupt_task( struct core_workspace *ws, int devic
 {
   uint64_t *stack = (void*) ((&ws->ticker_stack)+1);
 
-  register uint32_t request asm ( "r0" ) = TaskOp_CreateThread + 0x100; // In separate slot
-  register void *code asm ( "r1" ) = timer_interrupt_task;
-  register void *stack_top asm ( "r2" ) = stack;
-  register struct core_workspace *workspace asm( "r3" ) = ws;
-  register uint32_t dev asm( "r4" ) = device;
-
-  register uint32_t handle asm ( "r0" );
-
-  asm volatile ( "svc %[swi]"
-      : "=r" (handle) 
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      , "r" (code)
-      , "r" (stack_top)
-      , "r" (workspace)
-      , "r" (dev)
-      : "lr" );
-
-  return handle;
+  return Task_CreateTask2( timer_interrupt_task, stack, (uint32_t) ws, device ).handle;
 }
 
 // TODO This will be the interrupt from the GPU, ths HAL should report a
 // larger number of interrupts, including one for each of the GPU interrupt
 // sources.
-static void uart_interrupt_task( uint32_t handle, struct core_workspace *ws, int device )
+static void uart_interrupt_task( uint32_t handle, uint32_t _ws, uint32_t device )
 {
+  struct core_workspace *ws = (void*) _ws;
+
   int this_core = core( ws );
 
   QA7 volatile *qa7 = ws->shared->qa7;
@@ -1484,25 +1446,9 @@ static void uart_interrupt_task( uint32_t handle, struct core_workspace *ws, int
 
 static uint32_t start_uart_interrupt_task( struct core_workspace *ws, int device )
 {
-  register uint32_t request asm ( "r0" ) = TaskOp_CreateThread;
-  register void *code asm ( "r1" ) = uart_interrupt_task;
-  register void *stack_top asm ( "r2" ) = (&ws->shared->uart_task_stack+1);
-  register struct core_workspace *workspace asm( "r3" ) = ws;
-  register uint32_t dev asm( "r4" ) = device;
+  register void *stack = (&ws->shared->uart_task_stack+1);
 
-  register uint32_t handle asm ( "r0" );
-
-  asm volatile ( "svc %[swi]"
-      : "=r" (handle) 
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      , "r" (code)
-      , "r" (stack_top)
-      , "r" (workspace)
-      , "r" (dev)
-      : "lr" );
-
-  return handle;
+  return Task_CreateTask2( uart_interrupt_task, stack, (uint32_t) ws, device ).handle;
 }
 
 #include "include/pipeop.h"
@@ -1543,33 +1489,42 @@ static uint32_t start_console_task( struct core_workspace *ws, uint32_t pipe )
 {
   uint64_t *stack = (void*) ((&ws->console_stack)+1);
 
-  register uint32_t request asm ( "r0" ) = TaskOp_CreateThread;
-  register void *code asm ( "r1" ) = console_task;
-  register void *stack_top asm ( "r2" ) = stack;
-  register struct core_workspace *workspace asm( "r3" ) = ws;
-  register uint32_t read_pipe asm( "r4" ) = pipe;
-
-  register uint32_t handle asm ( "r0" );
-
-  asm volatile ( "svc %[swi]"
-      : "=r" (handle) 
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      , "r" (code)
-      , "r" (stack_top)
-      , "r" (workspace)
-      , "r" (read_pipe)
-      : "lr" );
-
-  return handle;
+  return Task_CreateTask2( console_task, stack, (uint32_t) ws, pipe ).handle;
 }
 
 static const int board_interrupt_sources = 64 + 12; // 64 GPU, 12 ARM peripherals (BCM2835-ARM-Peripherals.pdf, QA7)
 
-// args: debug_pipe to open for reading FIXME: OS_GetEnv?
-
-void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_cores, struct workspace **private, char const *args )
+uint32_t GetDebugPipe()
 {
+  register uint32_t pipe asm( "r0" );
+
+  asm ( "svc %[swi]"
+      : "=r" (pipe)
+      : [swi] "i" (OSTask_GetDebugPipe)
+      : "lr", "cc" );
+
+  return pipe;
+}
+
+uint32_t NumberOfCores() // Returns 0 if legacy kernel
+{
+  register uint32_t count asm( "r0" );
+
+  asm ( "svc %[swi]" 
+    "\n  movvs r0, #0"
+      : "=r" (count)
+      : [swi] "i" (OSTask_NumberOfCores)
+      : "lr", "cc" );
+
+  return count;
+}
+
+void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t noc, struct workspace **private )
+{
+  uint32_t number_of_cores = NumberOfCores();
+
+  assert( noc == number_of_cores );
+
   bool first_entry = (*private == 0);
 
   struct workspace *workspace;
@@ -1579,6 +1534,8 @@ void __attribute__(( noinline )) c_init( uint32_t this_core, uint32_t number_of_
   }
 
   workspace = *private;
+
+  workspace->core_specific[this_core].pipe = GetDebugPipe();
 
   // Map this addresses into all cores
   workspace->gpu = map_device_page( 0x3f00b000 );
@@ -1647,19 +1604,7 @@ show_word( this_core * (1920/4), 48, (uint32_t) &qa7->Core_write_clear[this_core
   }
 
   {
-    uint32_t pipe = 0;
-    char const *p = args;
-    // Skip filename
-    while (*p > ' ') p++;
-    while (*p == ' ') p++;
-    for (int i = 0; i < 8; i++) {
-      char c = p[i];
-      if (c >= 'a' && c <= 'f') c = c - 'a' + 10;
-      else if (c >= 'A' && c <= 'F') c = c - 'A' + 10;
-      else if (c >= '0' && c <= '9') c = c - '0';
-      else asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); // FIXME
-      pipe = (pipe << 4) | c;
-    }
+    uint32_t pipe = workspace->core_specific[this_core].pipe;
 
     if (pipe != 0) {
 add_string( "starting console task ", &workspace->core_specific[this_core] );
@@ -1669,7 +1614,6 @@ add_num( pipe, &workspace->core_specific[this_core] );
     }
   }
 
-#define QEMU
   workspace->qa7->timer_prescaler = 0x06AAAAAB;
 
   // Enable timer, no interrupts yet. (It is shared between all cores.)
@@ -1708,7 +1652,7 @@ add_num( pipe, &workspace->core_specific[this_core] );
   GPU *gpu = workspace->gpu;
   Write0( "IRQs enabled " ); WriteNum( gpu->enable_basic ); Space; WriteNum( gpu->enable_irqs1 ); Space; WriteNum( gpu->enable_irqs2 ); NewLine;
 
-  if (0) {
+  if (1) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
   }
@@ -1741,15 +1685,13 @@ show_word( this_core * (1920/4), 96, 0x11111111, first_entry ? Red : Green, work
 void __attribute__(( naked )) init( uint32_t this_core, uint32_t number_of_cores )
 {
   struct workspace **private;
-  char const *args;
 
-  // Move r12, r10 into argument registers
+  // Move r12 into argument register
   asm volatile (
           "push { lr }"
-      "\n  mov %[private_word], r12"
-      "\n  mov %[args_ptr], r10" : [private_word] "=r" (private), [args_ptr] "=r" (args) );
+      "\n  mov %[private_word], r12" : [private_word] "=r" (private) );
 
-  c_init( this_core, number_of_cores, private, args );
+  c_init( this_core, number_of_cores, private );
   asm ( "pop { pc }" );
 }
 

@@ -278,11 +278,25 @@ void *memset(void *s, int c, uint32_t n)
 
 void *memcpy(void *dest, const void *src, unsigned len)
 {
-  uint8_t const *s = src;
-  uint8_t *d = dest;
-  while (*s != '\0' && len-- > 0) {
-    *d++ = *s++;
+  if (0 != (3 & (uint32_t) dest)
+   || 0 != (3 & (uint32_t) src)
+   || 0 != (3 & (uint32_t) len))
+  {
+    uint8_t const *s = src;
+    uint8_t *d = dest;
+    while (*s != '\0' && len-- > 0) {
+      *d++ = *s++;
+    }
   }
+  else {
+    uint32_t const *s = src;
+    uint32_t *d = dest;
+    len = len / sizeof( uint32_t );
+    while (*s != '\0' && len-- > 0) {
+      *d++ = *s++;
+    }
+  }
+
   return dest;
 }
 

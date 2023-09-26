@@ -4,5 +4,6 @@ Set Alias$Pointer echo Pointer command ignored
 echo <CPU$Core>
 if "<CPU$Core>"="" Then Echo CPU$Core not found
 echo Running Desktop or Balls
+<Boot$Dir>.Balls2022
 if "<CPU$Core>"="0" Then Desktop Else <Boot$Dir>.Balls2022
 echo End of Obey file

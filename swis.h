@@ -79,7 +79,7 @@ void __attribute__(( naked )) default_irq();
 bool do_OS_GetEnv( svc_registers *regs );
 bool do_OS_Exit( svc_registers *regs );
 bool do_OS_ExitAndDie( svc_registers *regs );
-bool do_OS_ThreadOp( svc_registers *regs );
+bool do_OSTask( svc_registers *regs, uint32_t operation );
 bool do_OS_PipeOp( svc_registers *regs ); // because it blocks tasks
 bool do_OS_ReadDefaultHandler( svc_registers *regs );
 bool do_OS_AMBControl( svc_registers *regs );

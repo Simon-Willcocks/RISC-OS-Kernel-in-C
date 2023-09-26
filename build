@@ -68,6 +68,11 @@ fi
 # Take the most recent image
 ROM=RiscOS/Images/$( ls -rt RiscOS/Images | tail -n 1 )
 
+# My WiFi or Moonfish is occasionally a bit flakey; this
+# way we use the most recent build as a cache for the ROM
+if [ latest.bin -nt latest.old ] ; then cp latest.bin latest.old ; fi
+if [ latest.old -nt $ROM ] ; then ROM=latest.old ; fi
+
 echo Building with RiscOS build $ROM
 
 function paddedstring { echo -ne $1\\x00 | dd bs=4 conv=sync 2>/dev/null ; }
@@ -143,15 +148,18 @@ function build_gcc_module {
   rm /tmp/module$$.elf || exit 1
 }
 
-# Linking in a HAL module. I don't know if that's what I want to see in future, or a block of modules in a list like in the ROM
-build_gcc_module $HAL &&
+rm Modules/*
+
+# Linking in a HAL module. I don't know if that's what I want to 
+# see in future, or a block of modules in a list like in the ROM
+build_gcc_module $HAL $HALFLAGS &&
 
 build_gcc_module VFPSupport &&
 build_gcc_module Portable &&
 build_gcc_module FPEmulator &&
-build_gcc_module MTWimp &&
+# build_gcc_module MTWimp &&
 build_gcc_module Commands &&
-build_gcc_module Test &&
+# build_gcc_module Test &&
 
 if [ -f RiscOS/Sources/Kernel/bin/Kernel_gpa ]; then
   echo Making ROM-specific script >&2 &&
@@ -186,7 +194,9 @@ arm-linux-gnueabi-objdump -x --disassemble-all hal.elf > hal.dump &&
 ls -l *.bin &&
 
 cp hal.bin latest.bin &&
-dd if=$ROM $( stat -c 'bs=%B skip=%b' hal.bin ) >> latest.bin &&
+( dd if=$ROM $( stat -c 'bs=%B skip=%b' hal.bin ) >> latest.bin || ( rm latest.bin ; false ) ) &&
 arm-linux-gnueabi-objcopy -I binary -O elf32-littlearm -B armv7 latest.bin --rename-section .data=.text latest.elf &&
 arm-linux-gnueabi-objdump -x --disassemble-all latest.elf > latest.dump &&
 ls -l latest.*
+
+grep -i 'udf.*#' hal.dump # Any found indicates the optimiser detected undefined behaviour, check for warnings etc.

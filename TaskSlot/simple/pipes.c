@@ -60,21 +60,28 @@ static bool in_range( uint32_t value, uint32_t base, uint32_t size )
   return (value >= base && value < (base + size));
 }
 
-static uint32_t debug_pipe_sender_va()
+uint32_t debug_pipe_sender_va()
 {
   extern uint32_t debug_pipe; // Ensure the size and the linker script match
   os_pipe *pipe = (void*) workspace.kernel.debug_pipe;
-  uint32_t va = 2 * pipe->max_block_size + (uint32_t) &debug_pipe;
+  uint32_t va = (uint32_t) &debug_pipe;
+  if (pipe->sender_va != 0) {
+    assert( pipe->sender_va == va );
+    return pipe->sender_va;
+  }
+  pipe->sender_va = va;
+asm ( "udf #2" );
   MMU_map_at( (void*) va, pipe->physical, pipe->max_block_size );
   MMU_map_at( (void*) (va + pipe->max_block_size), pipe->physical, pipe->max_block_size );
   return va;
 }
 
+// TODO: Get rid of this, the receiver isn't really a special case
 static uint32_t debug_pipe_receiver_va()
 {
   extern uint32_t debug_pipe; // Ensure the size and the linker script match
-  uint32_t va = (uint32_t) &debug_pipe;
   os_pipe *pipe = (void*) workspace.kernel.debug_pipe;
+  uint32_t va = 2 * pipe->max_block_size + (uint32_t) &debug_pipe;
   // FIXME: map read-only
   MMU_map_at( (void*) va, pipe->physical, pipe->max_block_size );
   MMU_map_at( (void*) (va + pipe->max_block_size), pipe->physical, pipe->max_block_size );
@@ -175,14 +182,7 @@ static bool PipeOp_NotYourPipe( svc_registers *regs )
 
 static bool PipeOp_InvalidPipe( svc_registers *regs )
 {
-  static error_block error = { 0x888, "Invalid Pipe" };
-  regs->r[0] = (uint32_t) &error;
-  return false;
-}
-
-static bool PipeOp_InvalidCode( svc_registers *regs )
-{
-  static error_block error = { 0x888, "Invalid Pipe code" };
+  static error_block error = { 0x888, "Invalid Pipe handle" };
   regs->r[0] = (uint32_t) &error;
   return false;
 }
@@ -203,9 +203,9 @@ static bool PipeOp_CreationProblem( svc_registers *regs )
 
 static bool PipeCreate( svc_registers *regs )
 {
-  uint32_t max_block_size = regs->r[2];
-  uint32_t max_data = regs->r[3];
-  uint32_t allocated_mem = regs->r[4];
+  uint32_t max_block_size = regs->r[1];
+  uint32_t max_data = regs->r[2];
+  uint32_t allocated_mem = regs->r[3];
 
   if (max_data != 0) {
     if (max_block_size > max_data) {
@@ -252,7 +252,7 @@ static bool PipeCreate( svc_registers *regs )
 
   if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
 
-  regs->r[1] = handle_from_pipe( pipe );
+  regs->r[0] = handle_from_pipe( pipe );
 
   return true;
 }
@@ -312,7 +312,7 @@ static inline
 #endif
 bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
 {
-  uint32_t amount = regs->r[2];
+  uint32_t amount = regs->r[1];
   // TODO validation
 
   Task *running = workspace.task_slot.running;
@@ -333,7 +333,7 @@ bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
 
   if (pipe->sender_va == 0) {
     if ((uint32_t) pipe == workspace.kernel.debug_pipe)
-      pipe->sender_va = debug_pipe_sender_va( slot, pipe );
+      pipe->sender_va = debug_pipe_sender_va();
     else
       pipe->sender_va = allocate_virtual_address( slot, pipe );
   }
@@ -341,8 +341,8 @@ bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
   uint32_t available = space_in_pipe( pipe );
 
   if (available >= amount) {
-    regs->r[2] = available;
-    regs->r[3] = write_location( pipe, slot );
+    regs->r[1] = available;
+    regs->r[2] = write_location( pipe, slot );
 
 #ifdef DEBUG__PIPEOP
     // WriteS( "Space immediately available: " ); WriteNum( amount ); WriteS( ", total: " ); WriteNum( space_in_pipe( pipe ) ); WriteS( ", at " ); WriteNum( write_location( pipe, slot ) ); NewLine;
@@ -355,7 +355,7 @@ bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
 
     save_task_context( running, regs );
     workspace.task_slot.running = next;
-    regs->r[2] = 0xb00b00b0;
+    regs->r[1] = 0xb00b00b0;
 
     // Blocked, waiting for data.
     dll_detach_Task( running );
@@ -373,7 +373,7 @@ bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
 {
   error_block *error = 0;
 
-  uint32_t amount = regs->r[2];
+  uint32_t amount = regs->r[1];
   // TODO validation
 
   Task *running = workspace.task_slot.running;
@@ -405,11 +405,11 @@ bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
     pipe->write_index += amount;
 
     // Update the caller's idea of the state of the pipe
-    regs->r[2] = available - amount;
-    regs->r[3] = write_location( pipe, slot );
+    regs->r[1] = available - amount;
+    regs->r[2] = write_location( pipe, slot );
 
 #ifdef DEBUG__PIPEOP
-    // WriteS( "Filled " ); WriteNum( amount ); WriteS( ", remaining: " ); WriteNum( regs->r[2] ); WriteS( ", at " ); WriteNum( regs->r[3] ); NewLine;
+    // WriteS( "Filled " ); WriteNum( amount ); WriteS( ", remaining: " ); WriteNum( regs->r[1] ); WriteS( ", at " ); WriteNum( regs->r[2] ); NewLine;
 #endif
 
     Task *receiver = pipe->receiver;
@@ -430,8 +430,8 @@ bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
 
       pipe->receiver_waiting_for = 0;
 
-      receiver->regs.r[2] = data_in_pipe( pipe );
-      receiver->regs.r[3] = read_location( pipe, slot );
+      receiver->regs.r[1] = data_in_pipe( pipe );
+      receiver->regs.r[2] = read_location( pipe, slot );
 
       // Make the receiver ready to run when the sender blocks (likely when
       // the pipe is full).
@@ -457,7 +457,7 @@ static inline
 #endif
 bool PipePassingOver( svc_registers *regs, os_pipe *pipe )
 {
-  pipe->sender = task_from_handle( regs->r[2] );
+  pipe->sender = task_from_handle( regs->r[1] );
   pipe->sender_va = 0; // FIXME unmap and free the virtual area for re-use
 
   return true;
@@ -468,7 +468,7 @@ static inline
 #endif
 bool PipeUnreadData( svc_registers *regs, os_pipe *pipe )
 {
-  regs->r[2] = data_in_pipe( pipe );
+  regs->r[1] = data_in_pipe( pipe );
 
   return true;
 }
@@ -487,7 +487,7 @@ static inline
 #endif
 bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
 {
-  uint32_t amount = regs->r[2];
+  uint32_t amount = regs->r[1];
   // TODO validation
 
   Task *running = workspace.task_slot.running;
@@ -518,8 +518,8 @@ bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
   uint32_t available = data_in_pipe( pipe );
 
   if (available >= amount) {
-    regs->r[2] = available;
-    regs->r[3] = read_location( pipe, slot );
+    regs->r[1] = available;
+    regs->r[2] = read_location( pipe, slot );
 
     asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME flush less (by ASID of the sender?)
     assert( (regs->spsr & VF) == 0 );
@@ -538,8 +538,8 @@ bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
     // Blocked, waiting for data.
     dll_detach_Task( running );
 
-    regs->r[2] = 0x22002200; // FIXME remove; just something to look for in the qemu log
-    regs->r[3] = 0x33003300; // FIXME remove; just something to look for in the qemu log
+    regs->r[1] = 0x22002200; // FIXME remove; just something to look for in the qemu log
+    regs->r[2] = 0x33003300; // FIXME remove; just something to look for in the qemu log
   }
 
   if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
@@ -552,7 +552,7 @@ static inline
 #endif
 bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
 {
-  uint32_t amount = regs->r[2];
+  uint32_t amount = regs->r[1];
   // TODO validation
 
   Task *running = workspace.task_slot.running;
@@ -572,11 +572,11 @@ bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
   if (available >= amount) {
     pipe->read_index += amount;
 
-    regs->r[2] = available - amount;
-    regs->r[3] = read_location( pipe, slot );
+    regs->r[1] = available - amount;
+    regs->r[2] = read_location( pipe, slot );
 
 #ifdef DEBUG__PIPEOP
-    // WriteS( "Consumed " ); WriteNum( amount ); WriteS( ", remaining: " ); WriteNum( regs->r[2] ); WriteS( ", at " ); WriteNum( regs->r[3] ); NewLine;
+    // WriteS( "Consumed " ); WriteNum( amount ); WriteS( ", remaining: " ); WriteNum( regs->r[1] ); WriteS( ", at " ); WriteNum( regs->r[2] ); NewLine;
 #endif
 
     if (pipe->sender_waiting_for > 0
@@ -590,8 +590,8 @@ bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
       asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME Invalidate cache for updated area, only if sender on a different core
       pipe->sender_waiting_for = 0;
 
-      sender->regs.r[2] = space_in_pipe( pipe );
-      sender->regs.r[3] = write_location( pipe, slot );
+      sender->regs.r[1] = space_in_pipe( pipe );
+      sender->regs.r[2] = write_location( pipe, slot );
 
       // "Returns" from SWI next time scheduled
       if (sender != running) {
@@ -606,7 +606,7 @@ bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
 
   if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
 
-assert( 0x2a2a2a2a != regs->r[3] );
+assert( 0x2a2a2a2a != regs->r[2] );
   return true;
 }
 
@@ -615,7 +615,7 @@ static inline
 #endif
 bool PipePassingOff( svc_registers *regs, os_pipe *pipe )
 {
-  pipe->receiver = task_from_handle( regs->r[2] );
+  pipe->receiver = task_from_handle( regs->r[1] );
   pipe->receiver_va = 0; // FIXME unmap and free the virtual area for re-use
 
   // TODO Unmap from virtual memory (if new receiver not in same slot)
@@ -633,24 +633,12 @@ bool PipeNotListening( svc_registers *regs, os_pipe *pipe )
 }
 
 
-bool do_OS_PipeOp( svc_registers *regs )
+bool do_PipeOp( svc_registers *regs, uint32_t op )
 {
 #ifdef DEBUG__PIPEOP
-  // Write0( __func__ ); WriteS( " " ); WriteNum( regs->r[0] ); NewLine;
+  // Write0( __func__ ); WriteS( " " ); WriteNum( op ); NewLine;
 #endif
-  enum { Create,
-         WaitForSpace,  // Block task until N bytes may be written
-         SpaceFilled,   // I've filled this many bytes
-         PassingOver,   // Another task is going to take over filling this pipe
-         UnreadData,    // Useful, in case data can be dropped or consolidated (e.g. mouse movements)
-         NoMoreData,    // I'm done filling the pipe
-         WaitForData,   // Block task until N bytes may be read
-         DataConsumed,  // I don't need the first N bytes written any more
-         PassingOff,    // Another task is going to take over listening at this pipe
-         NotListening,  // I don't want any more data, thanks
-         WaitUntilEmpty // Block task until all bytes have been consumed TODO?
-         }; // FIXME: This is duplicated in include/pipeop.h
-  /*
+  /* FIXME!
     OS_PipeOp
     (SWI &fa)
     Entry 	
@@ -767,27 +755,27 @@ bool do_OS_PipeOp( svc_registers *regs )
 */
   os_pipe *pipe;
 
-  if (regs->r[0] != Create) {
-    pipe = pipe_from_handle( regs->r[1] );
+  if (op != OP( OSTask_PipeCreate )) {
+    pipe = pipe_from_handle( regs->r[0] );
     if (pipe == 0) {
       return PipeOp_InvalidPipe( regs );
     }
   }
 
-  switch (regs->r[0]) {
-  case Create: return PipeCreate( regs );
-  case WaitForSpace: return PipeWaitForSpace( regs, pipe );
-  case SpaceFilled: return PipeSpaceFilled( regs, pipe );
-  case PassingOver: return PipePassingOver( regs, pipe );
-  case UnreadData: return PipeUnreadData( regs, pipe );
-  case NoMoreData: return PipeNoMoreData( regs, pipe );
-  case WaitForData: return PipeWaitForData( regs, pipe );
-  case DataConsumed: return PipeDataConsumed( regs, pipe );
-  case PassingOff: return PipePassingOff( regs, pipe );
-  case NotListening: return PipeNotListening( regs, pipe );
-  case WaitUntilEmpty: return PipeOp_InvalidCode( regs ); // TODO
+  switch (op) {
+  case OP( OSTask_PipeCreate ): return PipeCreate( regs );
+  case OP( OSTask_PipeWaitForSpace ): return PipeWaitForSpace( regs, pipe );
+  case OP( OSTask_PipeSpaceFilled ): return PipeSpaceFilled( regs, pipe );
+  case OP( OSTask_PipePassingOver ): return PipePassingOver( regs, pipe );
+  case OP( OSTask_PipeUnreadData ): return PipeUnreadData( regs, pipe );
+  case OP( OSTask_PipeNoMoreData ): return PipeNoMoreData( regs, pipe );
+  case OP( OSTask_PipeWaitForData ): return PipeWaitForData( regs, pipe );
+  case OP( OSTask_PipeDataConsumed ): return PipeDataConsumed( regs, pipe );
+  case OP( OSTask_PipePassingOff ): return PipePassingOff( regs, pipe );
+  case OP( OSTask_PipeNotListening ): return PipeNotListening( regs, pipe );
+  case OP( OSTask_PipeWaitUntilEmpty ): return Kernel_Error_UnknownSWI( regs ); // TODO
   }
-  return PipeOp_InvalidCode( regs );
+  return Kernel_Error_UnknownSWI( regs );
 }
 
 // The debug handler pipe is the special case, where every task

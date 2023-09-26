@@ -18,6 +18,9 @@
 typedef struct Task Task;
 typedef struct svc_registers svc_registers;
 
+// For use by modules.c ???
+error_block *queue_Task( uint32_t queue, Task *task, uint32_t SWI );
+
 // Root slot, does not require RMA or regs. Call once only per core.
 TaskSlot *TaskSlot_first();
 
@@ -81,6 +84,7 @@ struct TaskSlot_workspace {
   Task *running;        // The task that is running on this core
   bool memory_mapped;   // Have the shared.task_slot.tasks_memory and shared.task_slot.slots_memory been mapped into this core's MMU?
   Task *sleeping;       // 0 or more sleeping tasks
+  uint32_t sleep_lock;  // Claim while inserting or waking tasks from queue
 
   Task **irq_tasks;     // Array of tasks handling interrupts 
   char core_number_string[4]; // For OS_TaskSlot, 64 (CoreNumber)
@@ -103,6 +107,10 @@ struct TaskSlot_shared_workspace {
   Task *waiting_for_legacy_svc_stack; // List of Tasks that have been blocked.
 
   bool callback_requested;
+
+  uint32_t queues_lock;
+  // TODO move from kernel?
+  // uint32_t pipes_lock;
 
   // To be called before releasing the legacy svc stack
   // transient_callbacks are only added by legacy code

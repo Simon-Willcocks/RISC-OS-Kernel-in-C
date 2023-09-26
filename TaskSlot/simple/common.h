@@ -31,7 +31,11 @@
 #include "include/callbacks.h"
 #include "include/taskop.h"
 
+#define OP( c ) (0x3f & (c))
+#define OPBIT( c ) (1ull << OP( c ))
+
 typedef struct os_pipe os_pipe;
+typedef struct os_queue os_queue;
 
 struct TaskSlot {
   uint32_t *svc_sp_when_unmapped;
@@ -58,9 +62,28 @@ struct __attribute__(( packed, aligned( 4 ) )) Task {
   uint32_t banked_lr_usr; // Only stored when leaving usr or sys mode
   int32_t resumes; // Signed: -1 => blocked
   TaskSlot *slot;
-  Task *controller; // Task to which control has been relinquished; always 0 when running
+  union {
+    Task *controller; // Task to which control has been relinquished
+    struct __attribute__(( packed )) {
+      uint32_t offset:6;
+      uint32_t core:8;
+      uint32_t res:18;
+    } swi;
+    struct __attribute__(( packed )) {
+      uint32_t swi_offset:6;
+      uint32_t core:8;
+      uint32_t res:18;
+      uint32_t match_swi:1;
+      uint32_t match_core:1;
+    } handler;
+  };
   Task *next; // Doubly-linked list. Neither next or prev shall be zero,
   Task *prev; // Tasks not in a list will be a list of 1.
+};
+
+struct __attribute__(( packed, aligned( 8 ) )) os_queue {
+  Task *queue;
+  Task *handlers;
 };
 
 // Declare functions like dll_attach_Task and mpsafe_detach_Task_head
@@ -162,3 +185,7 @@ static inline bool is_a_task( Task *t )
   return (((uint32_t) t) >> 16) == (((uint32_t) &tasks) >> 16);
 }
 
+bool do_PipeOp( svc_registers *regs, uint32_t op );
+bool do_QueueOp( svc_registers *regs, uint32_t op );
+
+uint32_t debug_pipe_sender_va();

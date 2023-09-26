@@ -37,13 +37,11 @@ typedef struct {
 
 static inline void debug_string_with_length( char const *s, int length )
 {
-  register int code asm( "r0" ) = TaskOp_DebugString;
-  register char const *string asm( "r1" ) = s;
-  register int len asm( "r2" ) = length;
+  register char const *string asm( "r0" ) = s;
+  register int len asm( "r1" ) = length;
   asm ( "svc %[swi]"
       :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (code)
+      : [swi] "i" (OSTask_DebugString)
       , "r" (len)
       , "r" (string)
       : "memory" );
@@ -56,12 +54,10 @@ static inline void debug_string( char const *s )
 
 static inline void debug_number( uint32_t num )
 {
-  register int code asm( "r0" ) = TaskOp_DebugNumber;
-  register uint32_t number asm( "r1" ) = num;
+  register uint32_t number asm( "r0" ) = num;
   asm ( "svc %[swi]"
       :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (code)
+      : [swi] "i" (OSTask_DebugNumber)
       , "r" (number)
       : "memory" );
 }
@@ -74,19 +70,6 @@ static inline void debug_number( uint32_t num )
 #define WriteNum( n ) debug_number( (uint32_t) (n) )
 
 bool module_name_match( char const *left, char const *right );
-
-static void Sleep( uint32_t centiseconds )
-{
-  register uint32_t request asm ( "r0" ) = TaskOp_Sleep;
-  register uint32_t time asm ( "r1" ) = centiseconds; // Shift down a lot for testing!
-
-  asm volatile ( "svc %[swi]"
-      :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      , "r" (time)
-      : "lr", "memory" );
-}
 
 extern uint32_t _binary_AllMods_start;
 
@@ -269,6 +252,8 @@ bool excluded( const char *name )
                                   , "BootFX"                    // Calls CallASWIR12 with 0x78440
                                   , "SystemDevices"             // No return
                                   , "TaskWindow"             // 0xfc3428ac Using SvcTable, which doesn't exist any more. Needs replacement.
+
+                                  , "WindowManager" // until new SWIs used
 /**/
   };
 
@@ -292,7 +277,7 @@ void init_modules()
 
   while (0 != *rom_module) {
     asm ( "svc 0x20013" : : : "lr" );
-    Sleep( 0 );
+    Task_Sleep( 0 );
 
     module_header *header = (void*) (rom_module+1);
 
@@ -404,13 +389,12 @@ static inline void set_core_var()
   asm ( "b 0f // Skip variable code"
     "\ncore_var: mov pc, lr   // Write entry point, no effect"
     "\n  push { lr } // Read entry point"
-    "\n  mov r0, %[op]"
     "\n  svc %[swi]"
+    "\n  addvs r0, r0, #4 // Point to error description"
     "\n  pop { pc }"
     "\n0: adr %[code], core_var"
     : [code] "=r" (core_var_code)
-    : [swi] "i" (OS_ThreadOp | 0x20000)
-    , [op] "i" (TaskOp_CoreNumber)
+    : [swi] "i" (Xbit | OSTask_CoreNumberString)
     : "memory" );
 
   register char const *n asm ( "r0" ) = "CPU$Core";
@@ -889,34 +873,37 @@ static inline void SetApplicationMemory( uint32_t limit )
       : "lr", "cc", "memory" );
 }
 
+static uint32_t get_core_number()
+{
+  register uint32_t core_number asm ( "r0" );
+
+  asm ( 
+    "\n  svc %[swi]"
+    : "=r" (core_number)
+    : [swi] "i" (Xbit | OSTask_CoreNumber)
+    : "memory", "cc" );
+
+  return core_number;
+}
+
 void __attribute__(( noreturn )) UsrBoot()
 {
   set_core_var(); // <CPU$Core>, read-only code variable.
 
-  uint32_t core_number;
+  uint32_t core_number = get_core_number();
 
-  asm ( 
-    "\n  mov r0, %[op]"
-    "\n  svc %[swi]"
-    "\n  mov %[core], r0"
-    : [core] "=r" (core_number)
-    : [swi] "i" (OS_ThreadOp | 0x20000)
-    , [op] "i" (TaskOp_CoreNumber)
-    : "memory" );
+  // Start the HAL, a multiprocessing-aware module that initialises 
+  // essential features before the boot sequence can start.
+  // It should register Resource:$.!Boot, which should perform the
+  // post-ROM module boot.
 
-  core_number = 0; // FIXME
+  WriteS( "Starting HAL, core " ); WriteNum( core_number ); NewLine;
 
-  Sleep( 0 ); // Run HAL callbacks and/or tasks
-
-  asm volatile ( "svc %[swi]" : : [swi] "i" (Xbit | OS_IntOn) );
-
-  static const int Wimp_ReadSysInfo = 0x400f2;
+  extern void _binary_Modules_HAL_start();
 
   {
-    extern uint32_t _binary_Modules_MTWimp_start;
-    //module_header *header = find_rom_module( "MultiTaskingWindowManager" );
     register uint32_t code asm( "r0" ) = 10;
-    register uint32_t module asm( "r1" ) = 4 + (uint32_t) &_binary_Modules_MTWimp_start;
+    register uint32_t module asm( "r1" ) = 4 + (uint32_t) &_binary_Modules_HAL_start;
 
     asm volatile ( "svc %[os_module]"
        :
@@ -925,6 +912,14 @@ void __attribute__(( noreturn )) UsrBoot()
        , [os_module] "i" (OS_Module)
        : "lr", "cc", "memory" );
   }
+
+#ifdef DEBUG__SHOW_MODULE_INIT
+  WriteS( "HAL initialised" ); NewLine;
+#endif
+
+  asm volatile ( "svc %[swi]" : : [swi] "i" (Xbit | OS_IntOn) );
+
+  static const int Wimp_ReadSysInfo = 0x400f2;
 
   if (core_number == 0) {
     extern uint32_t _binary_Modules_Commands_start;
@@ -938,11 +933,18 @@ void __attribute__(( noreturn )) UsrBoot()
        , [os_module] "i" (OS_Module)
        : "lr", "cc", "memory" );
 
-    init_modules();
+    // init_modules();
 
-  asm volatile ( "mov r0, #0\n  svc %[swi]" : : [swi] "i" (Xbit | Wimp_ReadSysInfo) );
-    //init_module( "UtilityModule" );
-    //init_module( "FileSwitch" ); // needed by...
+  //asm volatile ( "mov r0, #0\n  svc %[swi]" : : [swi] "i" (Xbit | Wimp_ReadSysInfo) );
+    init_module( "UtilityModule" );
+    init_module( "FileSwitch" ); // needed by...
+    init_module( "ResourceFS" ); // needed by HAL and...
+    init_module( "BASIC" );
+    init_module( "Obey" );
+    OSCLI( "Echo Info..." );
+    OSCLI( "info Resources:$.!Boot" );
+    OSCLI( "Echo Info." );
+    OSCLI( "Echo basic..." );
 
 /*
     extern uint32_t _binary_Modules_DumbFS_start;
@@ -967,24 +969,28 @@ void __attribute__(( noreturn )) UsrBoot()
     init_module( "BASIC" );
   }
   WriteS( "Modules initialised" ); NewLine;
+  OSCLI( "Modules initialised..." );
 
   Send_Service_PostInit();
   WriteS( "Post-init done" ); NewLine;
   Send_Service_ModeChange();
   WriteS( "Mode changed done" ); NewLine;
 
-  // SetApplicationMemory( 0xA8000 );
+  SetApplicationMemory( 0xA8000 );
 
   WriteS( "About to run Resources:$.!Boot\n" );
 
-  error_block *err = OSCLI( "Resources:$.!Boot.!Run" ); // FIXME Take out the .!Run when do_CLI fixed
+  OSCLI( "Modules initialised..." );
+  error_block *err = OSCLI( "BASIC -quit Resources:$.!Boot.HelloWorld" );
+  err = OSCLI( "BASIC -quit Resources:$.!Boot.!Balls2022" );
+  //error_block *err = OSCLI( "Resources:$.!Boot.!Run" ); // FIXME Take out the .!Run when do_CLI fixed
   //error_block *err = OSCLI( "Desktop" );
 
   WriteS( "Failed to run Resources:$.!Boot, or it returned" );
-for (;;) { asm volatile ( "mov r0, #255\n  svc 0xf9" : : : "r0" ); Sleep( 10 ); WriteS( "." ); }
+for (;;) { Task_Sleep( 10 ); WriteS( "x" ); }
 
   if (err != 0) for (;;) asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
-  if (err != 0) { for (;;) { Sleep( 0 ); } for (;;) asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); }
+  if (err != 0) { for (;;) { Task_Sleep( 0 ); } for (;;) asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); }
 
   __builtin_unreachable();
 }

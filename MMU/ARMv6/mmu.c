@@ -663,12 +663,15 @@ void setup_global_translation_tables( volatile startup *startup )
 
   Level_two_translation_table *high_table = l2tt; // Take the first entry as the global kernel l2tt
 
+  // Mark initial tables as unused, apart from the first (used) and last (sentinel)
   for (int i = 1; i < initial_tables-1; i++) {
     l2tt[i].entry[0].handler = free_l2tt_table;
     //l2tt[i].entry[1].handler = &l2tt[i << 10]; // Physical address of free table
     // The rest of the table is left uninitialised, it will be cleared before use.
   }
 
+  // Mark the last free table, so that the allocator doesn't run off into
+  // unallocated memory
   l2tt[initial_tables - 1].entry[0].handler = last_free_l2tt_table;
 
   for (int i = 0; i < number_of( l1tt->entry ); i++) {
@@ -892,6 +895,7 @@ if (ws->core_number > 3) {  // Max cores for HD display
   shared_workspace *shared_memory = (void*) startup->shared_memory;
   struct MMU_shared_workspace *shared = &shared_memory->mmu;
 
+  // One level one translation table per core
   Level_one_translation_table *l1tt = (void*) pre_mmu_allocate_physical_memory( 16384, 16384, startup );
 
   Level_two_translation_table *l2tt;
@@ -913,12 +917,11 @@ if (ws->core_number > 3) {  // Max cores for HD display
 
     Level_two_translation_table *global_l2 = shared->global_l2tt;
 
-    *l2tt = *global_l2; // Copy whole table
+    *l2tt = *global_l2; // Copy whole table, needs modifying for this core
   }
 
   // OK, got all the resources we need, let the next core roll...
   BOOT_finished_allocating( ws->core_number, startup );
-
 
   // The global L1TT refers to the global L2TT for the top MiB, we need our own, instead.
   l1tt_entry MiB = { .table.type1 = 1, .table.NS = 0, .table.Domain = 0 };
@@ -927,19 +930,23 @@ if (ws->core_number > 3) {  // Max cores for HD display
 
   l1tt->entry[0xfff] = MiB;
 
+  // Map ROM both at virtual address and where it currently is
+  // (physical address), until the MMU is enabled.
   uint32_t start = (uint32_t) &va_base;
   uint32_t physical = code_physical_start();
+  uint32_t size = (uint32_t) &rom_size;
+
+  // Can't continue if the two memory areas overlap.
+  if (physical >= start && physical < start + size) for (;;) asm( "wfi" );
 
   // FIXME: permissions, caches, etc.
   l1tt_entry rom_sections = { .section = l1_rom_section };
 
-  int test = 0;
-  for (int i = 0; i < (uint32_t) &rom_size; i+= (1 << 20)) {
+  for (int i = 0; i < size; i+= (1 << 20)) {
     l1tt->entry[(start + i) >> 20].raw = rom_sections.raw | ((physical + i) & 0xfff00000);
 
     // Also where the code currently is...
     l1tt->entry[(physical + i) >> 20].raw = rom_sections.raw | ((physical + i) & 0xfff00000);
-    test++;
   }
 
   // Our core-specific work areas, in our core-specific L2TT

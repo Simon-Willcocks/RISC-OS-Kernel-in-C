@@ -16,10 +16,22 @@
 /* Handling the kernel debug pipes. */
 
 #include "common.h"
+#include "include/pipeop.h"
 
 static char *pipe_space( int len )
 {
   uint32_t written;
+
+  os_pipe *pipe = (void*) workspace.kernel.debug_pipe;
+
+  assert( pipe != 0 );
+
+  if (0 == workspace.kernel.debug_space.location) {
+    workspace.kernel.debug_space.location = debug_pipe_sender_va();
+    workspace.kernel.debug_space.available = 4096;
+  }
+
+if (workspace.kernel.debug_space.location < 0xfffe0000) asm ( "bkpt 45" );
 
   // Allocate space in the pipe for our string, allowing for being interrupted
   // This can still get screwed up, if the receiver gets scheduled. Can that happen?
@@ -31,6 +43,8 @@ static char *pipe_space( int len )
   } while (written != change_word_if_equal( &workspace.kernel.debug_written, written, written+len ));
 
   assert( written < 0x2000 );
+
+if (workspace.kernel.debug_space.location < 0xfffe0000) asm ( "bkpt 46" );
 
   return workspace.kernel.debug_space.location + written;
 }

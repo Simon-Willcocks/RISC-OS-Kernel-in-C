@@ -127,7 +127,7 @@ struct Kernel_shared_workspace {
   fs *filesystems;
   uint32_t fscontrol_lock;
 
-  uint32_t sysvars_lock;
+  uint32_t commands_queue;
 
   // Only one multiprocessing module can be initialised at at time (so the 
   // first has a chance to initialise their shared workspace).
@@ -142,6 +142,7 @@ struct Kernel_shared_workspace {
   callback *callbacks_pool;
   ticker_event *ticker_event_pool;
 
+  // TODO move to task_slot?
   uint32_t pipes_lock;
   os_pipe *pipes;
 
@@ -191,5 +192,21 @@ extern struct shared_workspace {
 } shared;
 
 void __attribute__(( noreturn )) Boot();
+
+// Spin lock for a core to initialise a word (to anything but 0 or 1!)
+static inline bool mpsafe_initialise( uint32_t volatile *word, uint32_t (*fn)() )
+{
+  uint32_t attempt = change_word_if_equal( word, 0, 1 );
+  if (attempt == 0) {
+    *word = fn();
+    asm ( "sev" );
+  }
+  else {
+    while (1 == *word) {
+      asm( "wfe" );
+    }
+  }
+  return attempt == 0; // This was the core that initialised it
+}
 
 #endif

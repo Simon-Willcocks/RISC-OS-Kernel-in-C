@@ -52,12 +52,14 @@ function vi_cmd {
 
 if [ ! -e /tmp/GPAs ]; then
   echo Finding GPAs
-  find RiscOS/Sources -name *_gpa > /tmp/GPAs || ( rm /tmp/GPAs ;  echo Failed >&2 ; exit 1 )
+  find RiscOS/Sources -name *_gpa > /tmp/GPAs || ( rm /tmp/GPAs ;  echo Failed >&2 ; exit 1 ) &&
   echo Found GPAs
-fi
+fi &&
 
+(
 MOD=$( rocode $VA )
 echo $MOD
 target $MOD
 vi_cmd $MOD $1
 $( vi_cmd $MOD $1 )
+)

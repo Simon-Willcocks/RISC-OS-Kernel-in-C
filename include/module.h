@@ -222,15 +222,13 @@ static inline void *rma_claim( uint32_t bytes )
 
 static inline void debug_string_with_length( char const *s, int length )
 {
-  register int code asm( "r0" ) = 48;
-  register char const *string asm( "r1" ) = s;
-  register int len asm( "r2" ) = length;
+  register char const *string asm( "r0" ) = s;
+  register int len asm( "r1" ) = length;
   asm ( "svc %[swi]"
       :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (code)
-      , "r" (len)
+      : [swi] "i" (OSTask_DebugString)
       , "r" (string)
+      , "r" (len)
       : "lr", "memory" );
 }
 
@@ -244,12 +242,10 @@ static inline void debug_string( char const *s )
 
 static inline void debug_number( uint32_t num )
 {
-  register int code asm( "r0" ) = 49;
-  register uint32_t number asm( "r1" ) = num;
+  register uint32_t number asm( "r0" ) = num;
   asm ( "svc %[swi]"
       :
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (code)
+      : [swi] "i" (OSTask_DebugNumber)
       , "r" (number)
       : "lr", "memory" );
 }

@@ -173,6 +173,18 @@ void release_lock( uint32_t volatile *lock );
 // Returns the original content of word (= from if changed successfully)
 uint32_t change_word_if_equal( uint32_t volatile *word, uint32_t from, uint32_t to );
 
+static inline uint32_t mpsafe_increment( uint32_t *p )
+{
+  uint32_t result = *p;
+  uint32_t old;
+  do {
+    old = result;
+    result = change_word_if_equal( p, old, old + 1 );
+  } while (result != old);
+  // Note: You can't assume/assert that *p == old + 1; it might already have been changed by another core
+  return old + 1;
+}
+
 static inline void flush_location( void *va )
 {
   // DCCMVAC

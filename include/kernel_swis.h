@@ -13,6 +13,9 @@
  * limitations under the License.
  */
 
+#ifndef __RISCOS_KERNEL_SWIS
+#define __RISCOS_KERNEL_SWIS
+
 static const uint32_t NF = (1 << 31);
 static const uint32_t ZF = (1 << 30);
 static const uint32_t CF = (1 << 29);
@@ -69,6 +72,53 @@ enum {
 /* ec */ OS_ConvertFileSize,
 
 // New SWIs for C kernel, if they duplicate another solution, one or the other approach may be discarded.
-/* f8 */ OS_MSTime = 0xf8, OS_ThreadOp, OS_PipeOp, OS_VduCommand, // update the current graphics state for this task
+/* f8 */ OS_MSTime = 0xf8, OS_VduCommand = 0xfb, // update the current graphics state for this task (not really, fixme)
 /* fc */ OS_LockForDMA = 0xfc, OS_ReleaseDMALock, OS_MapDevicePages, OS_FlushCache, // For screen updates, etc.
-/* 100-1ff */ OS_WriteI = 0x100 };
+
+/* 100-1ff */ OS_WriteI = 0x100,
+
+         OSTask_NumberOfCores = 0x300, // Fails (no such...) if no support for multi-tasking
+         // FIXME: have a block of function pointers that can be used by user code
+         OSTask_RegisterSWITargets,
+
+         OSTask_CreateTask, OSTask_CreateTaskSeparate, OSTask_Exit,
+         OSTask_WaitUntilWoken, OSTask_Sleep,
+         OSTask_Wake, OSTask_GetHandle, OSTask_LockClaim, OSTask_LockRelease,
+
+         OSTask_RelinquishControl,
+         OSTask_ReleaseTask,
+         OSTask_GetRegisters,
+         OSTask_SetRegisters,
+         OSTask_ChildCommand,
+         OSTask_ResumeParent,
+
+         OSTask_WaitForInterrupt,
+         OSTask_InterruptIsOff,
+         OSTask_NumberOfInterruptSources,
+  
+         OSTask_DebugString, OSTask_DebugNumber, OSTask_DebugShowTasks,
+         OSTask_GetDebugPipe,
+  
+         OSTask_CoreNumber, OSTask_CoreNumberString,
+
+         OSTask_QueueCreate = OSTask_NumberOfCores + 32,
+         OSTask_QueueWait,
+         OSTask_QueueWaitCore,
+         OSTask_QueueWaitSWI,
+         OSTask_QueueWaitCoreAndSWI,
+  
+         OSTask_PipeCreate = OSTask_NumberOfCores + 48,
+         OSTask_PipeWaitForSpace,  // Block task until N bytes may be written
+         OSTask_PipeSpaceFilled,   // I've filled this many bytes
+         OSTask_PipePassingOver,   // Another task is going to take over filling this pipe
+         OSTask_PipeUnreadData,    // Useful, in case data can be dropped or consolidated (e.g. mouse movements)
+         OSTask_PipeNoMoreData,    // I'm done filling the pipe
+         OSTask_PipeWaitForData,   // Block task until N bytes may be read (or WaitUntilEmpty, NoMoreData called)
+         OSTask_PipeDataConsumed,  // I don't need the first N bytes that were written any more
+         OSTask_PipePassingOff,    // Another task is going to take over listening at this pipe
+         OSTask_PipeNotListening,  // I don't want any more data, thanks
+         OSTask_PipeWaitUntilEmpty,// Block task until all bytes have been consumed TODO?
+};
+
+#endif
+

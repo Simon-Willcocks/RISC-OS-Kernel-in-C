@@ -790,7 +790,7 @@ static void pre_init_service( uint32_t *size_ptr )
   module_header *m = (void*) (size_ptr+1);
   uint32_t size = *size_ptr;
 
-  // Service_MemoryMoved
+  // Service_ModulePreInit
   register module_header* header asm( "r0" ) = m;
   register uint32_t code asm( "r1" ) = 0xb9;
   register uint32_t length_plus_four asm( "r2" ) = size;
@@ -1527,10 +1527,16 @@ bool do_OS_Module( svc_registers *regs )
 
 bool do_OS_CallAVector( svc_registers *regs )
 {
-  if (regs->r[9] > number_of( workspace.kernel.vectors )) {
+  uint32_t vec = regs->r[9];
+  if (vec > number_of( workspace.kernel.vectors )) {
     asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   }
-  return run_vector( regs, regs->r[9] );
+  uint32_t spsr = regs->spsr;
+  if (vec == 0x1c) // TickerV (called with interrupts disabled)
+    regs->spsr |= 0x80;
+  bool result = run_vector( regs, vec );
+  regs->spsr = spsr;
+  return result;
 }
 
 static bool error_InvalidVector( svc_registers *regs )
@@ -3167,12 +3173,11 @@ static void show_sprite()
   // Reversed y, because printing top line first
   uint32_t const *pixels = start;
   for (int y = 0; y <= workspace.vectors.zp.vdu_drivers.ws.YWindLimit; y++) {
-    asm volatile ( "mov r0, #3 // Sleep"
-               "\n  mov r1, #0 // For no time - yield"
+    asm volatile ( "mov r0, #0 // For no time - yield"
                "\n  svc %[swi]"
         :
-        : [swi] "i" (OS_ThreadOp)
-        : "r0", "r1", "lr", "memory" );
+        : [swi] "i" (OSTask_Sleep)
+        : "r0", "lr", "memory" );
     WriteNum( pixels ); Space; WriteS( "|" );
     int word_shifted = 32;
     uint32_t word;
@@ -3594,24 +3599,29 @@ static void __attribute__(( naked, noreturn )) idle_thread()
     // Transfer control to the boot task.
     // Don't make a function call, there's no stack.
     // (In practice it wouldn't be needed, but why take the chance?)
-    asm volatile ( "mov r0, #3 // Sleep"
-               "\n  mov r1, #0 // For no time - yield"
+    asm volatile ( "mov r0, #0 // For no time - yield"
                "\n  svc %[swi]"
                "\n  bcs 0f // No other tasks running (could report being bored)"
                "\n  wfe"     // This isn't working, TODO
                "\n0:"
         :
-        : [swi] "i" (OS_ThreadOp)
+        : [swi] "i" (OSTask_Sleep)
         , "r" (0x65656565) // Something to look out for in qemu output
-        : "r0", "r1", "lr", "memory" );
+        : "r0", "lr", "memory" );
     // TODO: Pootle around, tidying up memory, etc.
     // Better: wake a task that does that in an interruptable way
     // Don't do any I/O!
     // Don't forget to give it some stack!
     //asm volatile ( "wfi" );
     if (--count == 0) {
-      asm volatile ( "mov r0, #255\n  svc 0xf9" : : : "r0" ); // Display status of threads
       count = reset;
+      // No stack
+  asm volatile ( "svc %[swi]"
+      :
+      : [swi] "i" (OSTask_DebugShowTasks)
+      : "lr", "memory", "cc" );
+
+      //Task_DebugShowTasks();
     }
   }
 
@@ -3634,63 +3644,20 @@ void PreUsrBoot()
 
   set_up_legacy_zero_page();
 
-  // Start the HAL, a multiprocessing-aware module that initialises 
-  // essential features before the boot sequence can start.
-  // It should register Resource:$.!Boot, which should perform the
-  // post-ROM module boot.
-
   {
 #ifndef NO_DEBUG_OUTPUT
     workspace.kernel.debug_pipe = PipeOp_CreateForTransfer( 4096 );
-    // Guaranteed to work:
-    workspace.kernel.debug_space = PipeOp_WaitForSpace( workspace.kernel.debug_pipe, 2048 );
-    PipeOp_PassingOff( workspace.kernel.debug_pipe, 0 ); // The task doesn't exist yet
-#endif
-    WriteS( "Kernel starting HAL" ); NewLine;
-
-    char args[] = "HAL ########";
-    uint32_t tmp = workspace.kernel.debug_pipe;
-    for (int i = 11; i >= 4; i--) {
-      args[i] = hex[tmp & 0xf]; tmp = tmp >> 4;
-    }
-    Write0( args ); NewLine; NewLine;
-
-    extern void _binary_Modules_HAL_start();
-    // Can't use OS_Module because it doesn't pass arguments to init
-    // I think they're supposed to use OS_ReadArgs
-    svc_registers regs = { 0 };
-#ifdef DEBUG__SHOW_MODULE_INIT
-  NewLine;
-  WriteS( "INIT HAL: " );
-  Write0( title_string( (void*) (1 + (uint32_t*) &_binary_Modules_HAL_start ) ) ); NewLine;
-#endif
-
-    initialise_module( &regs, (void*) &_binary_Modules_HAL_start, args );
-#ifdef DEBUG__SHOW_MODULE_INIT
-  WriteS( "HAL initialised" ); NewLine;
+    // Guaranteed to work: except it's a blocking call and this is in svc mode
+    // workspace.kernel.debug_space = PipeOp_WaitForSpace( workspace.kernel.debug_pipe, 2048 );
+    PipeOp_PassingOff( workspace.kernel.debug_pipe, 0 ); // The receiver task doesn't exist yet
+    assert( workspace.kernel.debug_pipe != 0 );
 #endif
   }
 }
 
 static uint32_t start_idle_task()
 {
-  register uint32_t request asm ( "r0" ) = 0; // Create Thread
-  register void *code asm ( "r1" ) = idle_thread;
-  register void *stack_top asm ( "r2" ) = 0;
-  register uint32_t core_number asm( "r3" ) = workspace.core_number;
-
-  register uint32_t handle asm ( "r0" );
-
-  asm volatile ( "svc %[swi]"
-      : "=r" (handle)
-      : [swi] "i" (OS_ThreadOp)
-      , "r" (request)
-      , "r" (code)
-      , "r" (stack_top)
-      , "r" (core_number)
-      : "lr" );
-
-  return handle;
+  return Task_CreateTask1( idle_thread, 0, workspace.core_number ).handle;
 }
 
 void Boot()
@@ -3711,18 +3678,19 @@ void Boot()
 
   // The HAL will have ensured that no extraneous interrupts are occuring,
   // so we can reset the SVC stack, enable interrupts and drop to USR mode.
+
+  // Allocate small stack for UsrBoot to use.
   static uint32_t const root_stack_size = 1024;
   uint32_t *stack = rma_allocate( root_stack_size * sizeof( uint32_t ) );
-  extern uint32_t svc_stack_top;
 
   // Named registers so that no banked register is used (we're changing
   // processor mode)
-  register uint32_t *stack_top asm ( "r0" ) = &svc_stack_top;
+  register void *stack_top asm ( "r0" ) = (&workspace.kernel.svc_stack + 1);
   register uint32_t *usr_stack_top asm ( "r12" ) = &stack[root_stack_size];
 
   asm ( "mov sp, r0"
 
-    "\n  cpsie aif, #0x10"
+    "\n  cpsid aif, #0x10"      // Interrupts disabled to start with
     "\n  mov sp, r12"
     "\n  b UsrBoot"
     :

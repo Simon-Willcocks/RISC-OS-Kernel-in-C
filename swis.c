@@ -18,7 +18,6 @@
 
 bool Kernel_Error_UnknownSWI( svc_registers *regs )
 {
-  asm ( ".word 0xffffffff" );
   static error_block error = { 0x1e6, "Unknown SWI" }; // Could be "SWI name not known", or "SWI &3333 not known"
   regs->r[0] = (uint32_t) &error;
   return false;
@@ -2554,8 +2553,6 @@ static swifn os_swis[256] = {
 */
   [OS_ConvertFixedFileSize] =  do_OS_ConvertFixedFileSize,
   [OS_MSTime] = do_OS_MSTime,
-  [OS_ThreadOp] = do_OS_ThreadOp,
-  [OS_PipeOp] = do_OS_PipeOp,
 
   [OS_VduCommand] = do_OS_VduCommand,
   [OS_LockForDMA] = do_OS_LockForDMA,
@@ -2586,6 +2583,11 @@ static bool __attribute__(( noinline )) Kernel_go_svc( svc_registers *regs, uint
         regs->r[0] = r0;
       }
       return result;
+    }
+  case OSTask_NumberOfCores ... OSTask_NumberOfCores + 63:
+    {
+      // Includes Pipes and TaskQueues
+      return do_OSTask( regs, svc & 0x3f );
     }
   };
 
@@ -2725,6 +2727,7 @@ static bool special_swi( svc_registers *regs, uint32_t number )
     return hack_wimp_in( regs, number );
     break;
   case 0x80146: regs->r[0] = 0; return true; // PDriver_CurrentJob (called from Desktop?!)
+  case 0x41501: return true;
   case 0x41506: {
 #ifdef DEBUG__SHOW_ERRORS
     WriteS( "Translating error " ); Write0( regs->r[0] + 4 ); Space; WriteNum( regs->lr ); NewLine; 
@@ -2813,11 +2816,12 @@ if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
     WriteNum( *(uint32_t*) regs->r[0] ); Space;
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
     WriteNum( regs->lr );
-    {
-    regs->r[0] = 3;
-    regs->r[1] = 10000;
-    do_OS_ThreadOp( regs );
-    }
+    asm volatile ( "mov r0, #0"
+               "\n  svc %[swi]"
+               "\n0:"
+        :
+        : [swi] "i" (OSTask_Sleep)
+        : "r0", "lr", "memory" );
   }
 
   switch (number & ~Xbit) {
