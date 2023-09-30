@@ -81,12 +81,23 @@ enum {
          // FIXME: have a block of function pointers that can be used by user code
          OSTask_RegisterSWITargets,
 
-         OSTask_CreateTask, OSTask_CreateTaskSeparate, OSTask_Exit,
-         OSTask_WaitUntilWoken, OSTask_Sleep,
-         OSTask_Wake, OSTask_GetHandle, OSTask_LockClaim, OSTask_LockRelease,
+         OSTask_CreateTask,
+         OSTask_CreateTaskSeparate,
+         OSTask_Exit,
+
+         OSTask_Sleep,
+         OSTask_WaitUntilWoken,
+         OSTask_Wake,
+
+         OSTask_GetHandle,
+         OSTask_LockClaim,      // UNTESTED! (Maybe unwritten?)
+         OSTask_LockRelease,    // UNTESTED! (Maybe unwritten?)
+
+         OSTask_AppMemoryTop,   // r0 = new top (>= 0x8000), or 0 to read
 
          OSTask_RelinquishControl,
-         OSTask_ReleaseTask,
+         OSTask_RunThisForMe,   // Get the Task to run code in its context, return when it relinquishes control back to this Task
+         OSTask_ReleaseTask,    // Resume the controlled Task with a new context
          OSTask_GetRegisters,
          OSTask_SetRegisters,
          OSTask_ChildCommand,
@@ -101,12 +112,14 @@ enum {
   
          OSTask_CoreNumber, OSTask_CoreNumberString,
 
+         OSTask_CallLegacySWI,     // For internal use only
+  
          OSTask_QueueCreate = OSTask_NumberOfCores + 32,
          OSTask_QueueWait,
          OSTask_QueueWaitCore,
          OSTask_QueueWaitSWI,
          OSTask_QueueWaitCoreAndSWI,
-  
+
          OSTask_PipeCreate = OSTask_NumberOfCores + 48,
          OSTask_PipeWaitForSpace,  // Block task until N bytes may be written
          OSTask_PipeSpaceFilled,   // I've filled this many bytes

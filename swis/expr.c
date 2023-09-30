@@ -13,6 +13,11 @@
  * limitations under the License.
  */
 
+#if 0
+
+This is a working implementation, but I've put it aside for the new structure
+of delegated SWIs.
+
 #include "inkernel.h"
 
 typedef struct expression_result expression_result;
@@ -990,3 +995,4 @@ bool do_OS_GSTrans( svc_registers *regs )
 }
 #endif
 
+#endif

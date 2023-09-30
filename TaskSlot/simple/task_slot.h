@@ -18,8 +18,8 @@
 typedef struct Task Task;
 typedef struct svc_registers svc_registers;
 
-// For use by modules.c ???
-error_block *queue_Task( uint32_t queue, Task *task, uint32_t SWI );
+// For use in swis/varvals.c & modules.c for new modules
+error_block *queue_Task( svc_registers *regs, uint32_t handle, Task *task, uint32_t SWI );
 
 // Root slot, does not require RMA or regs. Call once only per core.
 TaskSlot *TaskSlot_first();
@@ -127,3 +127,6 @@ struct TaskSlot_shared_workspace {
   uint32_t number_of_interrupt_sources;
   Task **irq_tasks;     // Array of tasks handling interrupts, number of cores x number of sources
 };
+
+extern uint32_t new_queue();
+

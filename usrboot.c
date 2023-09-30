@@ -981,7 +981,8 @@ void __attribute__(( noreturn )) UsrBoot()
   WriteS( "About to run Resources:$.!Boot\n" );
 
   OSCLI( "Modules initialised..." );
-  error_block *err = OSCLI( "BASIC -quit Resources:$.!Boot.HelloWorld" );
+  error_block *err = 0;
+  //err = OSCLI( "BASIC -quit Resources:$.!Boot.HelloWorld" );
   err = OSCLI( "BASIC -quit Resources:$.!Boot.!Balls2022" );
   //error_block *err = OSCLI( "Resources:$.!Boot.!Run" ); // FIXME Take out the .!Run when do_CLI fixed
   //error_block *err = OSCLI( "Desktop" );

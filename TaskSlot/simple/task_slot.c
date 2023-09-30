@@ -93,7 +93,6 @@ static bool is_waiting_for_stack( Task *task )
 
 bool show_tasks_state()
 {
-return true;
   for (int i = 0; i < 20; i++) {
     Task *t = &tasks[i];
     if (0 == (t->regs.lr & 1)) {
@@ -908,9 +907,11 @@ void TaskSlot_adjust_app_memory( TaskSlot *slot, uint32_t new_limit )
     for (int j = first_unused_block; j > above; j--) {
       slot->blocks[j] = slot->blocks[j-1];
     }
-    slot->blocks[above].size = new_limit - top;
+    uint32_t const align = 4096;
+    uint32_t size = new_limit - top;
+    slot->blocks[above].size = size;
     slot->blocks[above].virtual_base = top;
-    slot->blocks[above].physical_base = Kernel_allocate_pages( new_limit - top, 4096 );
+    slot->blocks[above].physical_base = Kernel_allocate_pages( size, align );
 
     assert( slot->blocks[above].physical_base != 0xffffffff ); // FIXME
   }
@@ -1574,6 +1575,8 @@ WriteS( "IRQ task " ); WriteNum( irq_task ); NewLine;
     // be called; that's the SWI we're providing the service for...
     // (The context may have been modified in that SWI.)
 
+    // THIS NEEDS REVIEWING FIXME
+
     svc_registers *top = core_svc_stack_top();
     save_task_context( running, top - 1 );
   }
@@ -1607,7 +1610,7 @@ WriteS( "IRQ task " ); WriteNum( irq_task ); NewLine;
   return 0;
 }
 
-/* static */ error_block *TaskOpReleaseTask( svc_registers *regs )
+static error_block *RunInControlledTask( svc_registers *regs, bool wait )
 {
   // This implementation depends on the shared.task_slot.lock being held by this core
 
@@ -1629,11 +1632,30 @@ WriteS( "IRQ task " ); WriteNum( irq_task ); NewLine;
 
   release->controller = 0;
 
-  Task *tail = running->next;
-  assert( tail != running );
+  // This must be done before the release Task is known to be runnable
+  if (wait) {
+    save_task_context( running, regs );
+    workspace.task_slot.running = running->next;
+    assert( running != workspace.task_slot.running );
+    dll_detach_Task( running );
+    running->controller = release;
+  }
+
+  Task *tail = workspace.task_slot.running->next;
+
   dll_attach_Task( release, &tail ); // FIXME Add to shared runnable list instead.
 
   return 0;
+}
+
+/* static */ error_block *TaskOpRunThisForMe( svc_registers *regs )
+{
+  return RunInControlledTask( regs, true );
+}
+
+/* static */ error_block *TaskOpReleaseTask( svc_registers *regs )
+{
+  return RunInControlledTask( regs, false );
 }
 
 /* static */ error_block *TaskOpGetRegisters( svc_registers *regs )
@@ -1745,14 +1767,8 @@ static void __attribute__(( naked, noreturn )) go_child( char *command )
   return 0;
 }
 
-/* static */ error_block *TaskOpCreateTask( svc_registers *regs )
+static error_block *CreateTaskInSlot( svc_registers *regs, TaskSlot *slot )
 {
-  WriteS( "TaskOpCreateTask " ); WriteNum( regs->r[0] ); NewLine;
-
-  Task *running = workspace.task_slot.running;
-
-  TaskSlot *slot = running->slot;
-
   Task *new_task = Task_new( slot );
 
 show_task_state( new_task, Yellow );
@@ -1763,6 +1779,8 @@ show_task_state( new_task, Yellow );
   // If this is a requirement, create a lock, claim it, create the
   // task, then have the task try to claim it on startup. When the
   // lock is released, the child will continue.
+  Task *running = workspace.task_slot.running;
+
   assert( running != 0 );
 
   new_task->regs.spsr = 0x10; // Tasks always start in usr32 mode
@@ -1797,56 +1815,24 @@ show_task_state( new_task, Blue );
   return 0;
 }
 
+/* static */ error_block *TaskOpCreateTask( svc_registers *regs )
+{
+  WriteS( "TaskOpCreateTask " ); WriteNum( regs->r[0] ); NewLine;
+
+  Task *running = workspace.task_slot.running;
+
+  TaskSlot *slot = running->slot;
+
+  return CreateTaskInSlot( regs, slot );
+}
+
 /* static */ error_block *TaskOpCreateTaskSeparate( svc_registers *regs )
 {
   WriteS( "TaskOpCreateTaskSeparate " ); WriteNum( regs->r[0] ); NewLine;
 
-  Task *running = workspace.task_slot.running;
-
   TaskSlot *slot = TaskSlot_new( "Separate" );
 
-  Task *new_task = Task_new( slot );
-
-show_task_state( new_task, Yellow );
-  assert( new_task->slot == slot );
-
-  // The creating task gets to continue, although its code should
-  // not assume that the new task will wait for it to yield.
-  // If this is a requirement, create a lock, claim it, create the
-  // task, then have the task try to claim it on startup. When the
-  // lock is released, the child will continue.
-  assert( running != 0 );
-
-  new_task->regs.spsr = 0x10; // Tasks always start in usr32 mode
-  new_task->regs.lr = regs->r[1];
-  new_task->banked_lr_usr = (uint32_t) task_exit;
-  new_task->banked_sp_usr = regs->r[2];
-  new_task->regs.r[0] = handle_from_task( new_task );
-  new_task->regs.r[1] = regs->r[3];
-  new_task->regs.r[2] = regs->r[4];
-  new_task->regs.r[3] = regs->r[5];
-  new_task->regs.r[4] = regs->r[6];
-  new_task->regs.r[5] = regs->r[7];
-  new_task->regs.r[6] = regs->r[8];
-
-WriteS( "New Task " ); WriteNum( new_task ); Space; WriteNum( new_task->regs.lr ); NewLine;
-show_task_state( new_task, Blue );
-
-  regs->r[0] = handle_from_task( new_task );
-
-  // Add new task...
-  dll_attach_Task( new_task, &workspace.task_slot.running );
-
-  // ... at the end of the list
-  workspace.task_slot.running = workspace.task_slot.running->next;
-
-  assert( workspace.task_slot.running == running ); // No context save needed
-
-#ifdef DEBUG__WATCH_TASK_SLOTS
-  WriteS( "Task created, may or may not start immediately " ); WriteNum( new_task ); Space; WriteNum( new_task->slot ); NewLine;
-#endif
-
-  return 0;
+  return CreateTaskInSlot( regs, slot );
 }
 
 /* static */ error_block *TaskOpSleep( svc_registers *regs )
@@ -2061,6 +2047,13 @@ bool do_OSTask( svc_registers *regs, uint32_t operation )
     regs->r[0] = handle_from_task( workspace.task_slot.running );
     break;
 
+  case OP( OSTask_AppMemoryTop ):
+    if (regs->r[0] != 0) {
+      TaskSlot_adjust_app_memory( slot, regs->r[0] );
+    }
+    regs->r[0] = TaskSlot_Himem( slot );
+    break;
+
   case OP( OSTask_LockClaim ): error = TaskOpLockClaim( regs ); break;
   case OP( OSTask_LockRelease ): error = TaskOpLockRelease( regs ); break;
 
@@ -2068,6 +2061,7 @@ bool do_OSTask( svc_registers *regs, uint32_t operation )
   case OP( OSTask_InterruptIsOff ): error = TaskOpInterruptIsOff( regs ); break;
 
   case OP( OSTask_RelinquishControl ): error = TaskOpRelinquishControl( regs ); break;
+  case OP( OSTask_RunThisForMe ): error = TaskOpRunThisForMe( regs ); break;
   case OP( OSTask_ReleaseTask ): error = TaskOpReleaseTask( regs ); break;
   case OP( OSTask_GetRegisters ): error = TaskOpGetRegisters( regs ); break;
   case OP( OSTask_SetRegisters ): error = TaskOpSetRegisters( regs ); break;
@@ -2106,6 +2100,9 @@ bool do_OSTask( svc_registers *regs, uint32_t operation )
 
   case OP( OSTask_PipeCreate ) ... OP( OSTask_PipeCreate ) + 15:
     return do_PipeOp( regs, operation );
+
+  case OP( OSTask_CallLegacySWI ):
+    return run_risos_code_implementing_swi( regs, ~Xbit & regs->r[12] );
 
   default:
     {
@@ -2458,27 +2455,12 @@ Write0( __func__ ); NewLine;
   assert( regs + 1 == core_svc_stack_top() || regs + 1 == &svc_stack_top );
 
   return true;
-
-  asm ( "mrs r0, cpsr"
-    "\n  bic r0, #0xcf"
-    "\n  msr cpsr, r0"
-    "\n  svc %[enter]"
-    "\n  blx r1"
-    :
-    : [enter] "i" (OS_EnterOS)
-    , "r" (r12)
-    , "r" (code)
-    : "lr" );
-
-#ifdef DEBUG__SHOW_UPCALLS
-Write0( __func__ ); WriteS( "What do I do now?" ); NewLine;
-#endif
-  for (;;) asm ( "bkpt 10" );
 }
 
 bool __attribute__(( noreturn )) do_OS_ExitAndDie( svc_registers *regs )
 {
   Write0( __func__ ); NewLine;
+  // Same as above, plus RMKill, afaics
   asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
   __builtin_unreachable();
 }

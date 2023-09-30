@@ -888,6 +888,7 @@ static bool do_OS_ReadMonotonicTime( svc_registers *regs )
   return true;
 }
 
+#if 0
 static bool do_OS_SubstituteArgs( svc_registers *regs )
 {
   // The implementation in the RISC OS source doesn't pass on the flag
@@ -902,6 +903,9 @@ static bool do_OS_SubstituteArgs( svc_registers *regs )
   regs->r[5] = r5;
   return result;
 }
+#else
+bool do_OS_SubstituteArgs( svc_registers *regs );
+#endif
 
 static bool do_OS_PrettyPrint( svc_registers *regs )
 {
@@ -1445,6 +1449,7 @@ static bool do_OS_Hardware( svc_registers *regs )
 static bool do_OS_IICOp( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 static bool do_OS_ReadLine32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
+#if 0
 bool do_OS_SubstituteArgs32( svc_registers *regs )
 {
   // Re-write in C of RISC OS code, simply commenting out the following line results in "SWI &7e not known"
@@ -1553,6 +1558,9 @@ bool do_OS_SubstituteArgs32( svc_registers *regs )
 
   return true;
 }
+#else
+bool do_OS_SubstituteArgs32( svc_registers *regs );
+#endif
 
 // static bool do_OS_HeapSort32( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
 
@@ -2816,12 +2824,6 @@ if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
     WriteNum( *(uint32_t*) regs->r[0] ); Space;
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
     WriteNum( regs->lr );
-    asm volatile ( "mov r0, #0"
-               "\n  svc %[swi]"
-               "\n0:"
-        :
-        : [swi] "i" (OSTask_Sleep)
-        : "r0", "lr", "memory" );
   }
 
   switch (number & ~Xbit) {
