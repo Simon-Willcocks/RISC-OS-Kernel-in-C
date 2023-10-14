@@ -409,7 +409,7 @@ static void map_block( physical_memory_block block )
   // All lazily mapped memory is shared (task slots, and the associated storage in the kernel)
   l2tt_entry entry = { .XN = 0, .small_page = 1, .TEX = 0b101, .C = 0, .B = 1, .unprivileged_access = 1, .AF = 1, .S = 1, .nG = 1 };
 
-  arm32_ptr pointer = { .raw = block.virtual_base };
+  arm32_ptr pointer = { .raw = memory_block_virtual_base( block ) };
 
   l1tt_entry section = Local_L1TT->entry[pointer.section];
 
@@ -420,12 +420,13 @@ static void map_block( physical_memory_block block )
   about_to_remap_memory();
 
   // WriteS( "Mapping" ); NewLine;
-  uint32_t base = (block.virtual_base >> 12) & 0xff;
-  entry.page_base = block.physical_base >> 12;
+  uint32_t base = (memory_block_virtual_base( block ) >> 12) & 0xff;
+  entry.page_base = memory_block_physical_base( block ) >> 12;
 
   // FIXME: What if block overruns the end of the table?
 
-  for (uint32_t b = 0; b < block.size >> 12; b++) {
+  uint32_t size = memory_block_size( block );
+  for (uint32_t b = 0; b < size >> 12; b++) {
     // WriteS( "Page " ); WriteNum( (b+base) << 12 ); WriteS( " > " ); WriteNum( entry.page_base << 12 ); NewLine;
     l2tt->entry[base + b] = entry;
     entry.page_base++;
@@ -434,10 +435,51 @@ static void map_block( physical_memory_block block )
   memory_remapped();
 }
 
+static bool check_task_slot_l2( uint32_t address, uint32_t type );
+
+static bool needs_l2tt( uint32_t address, uint32_t type )
+{
+  arm32_ptr pointer = { .raw = address };
+
+  Level_two_translation_table *l2tt = find_free_table();
+
+  for (int i = 0; i < number_of( l2tt->entry ); i++) {
+    l2tt->entry[i].handler = check_task_slot_l2;
+  }
+
+  map_l2tt_at_section_local( l2tt, pointer.section );
+
+  return true;
+}
+
 static bool check_task_slot_l1( uint32_t address, uint32_t type )
 {
+  bool reclaimed = claim_lock( &shared.mmu.lock );
+  assert( !reclaimed ); // IDK, seems sus.
+
+  physical_memory_block block = Kernel_physical_address( address );
+
+  uint32_t size = memory_block_size( block );
+  uint32_t virtual = memory_block_virtual_base( block );
+  uint32_t physical = memory_block_physical_base( block );
+  if (size != 0) {
+    if (naturally_aligned( size ) && naturally_aligned( virtual ) && naturally_aligned( physical )) {
+      // Map as MiB blocks
+      asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
+    }
+    else {
+      needs_l2tt( address, type );
+    }
+  }
+
+  if (!reclaimed) release_lock( &shared.mmu.lock );
+
+#ifdef DEBUG__MMU
   WriteS( "Check task slot L1: " ); WriteNum( address ); NewLine;
-  asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
+#endif
+
+  if (size == 0) asm ( "bkpt %[line]" : : [line] "i" (__LINE__) );
+
   return true;
 }
 
@@ -487,7 +529,7 @@ static bool check_task_slot_l2( uint32_t address, uint32_t type )
   physical_memory_block block = Kernel_physical_address( address );
   if (!reclaimed) release_lock( &shared.mmu.lock );
 
-  if (block.size != 0) {
+  if (memory_block_size( block ) != 0) {
     map_block( block );
     return true;
   }
@@ -597,9 +639,16 @@ static bool check_global_l2tt( uint32_t address, uint32_t type )
   return true;
 }
 
+extern char pipes_base;
+extern char pipes_top;
+
 static l1tt_entry default_l1tt_entry( int section )
 {
+  uint32_t const base = ((uint32_t) &pipes_base) >> 12;
+  uint32_t const top = ((uint32_t) &pipes_top) >> 12;
+
   l1tt_entry result;
+
   if (section == 0)
     result.handler = allocate_core_specific_zero_section;
   else if (section < (((uint32_t)&app_memory_limit) >> 20))
@@ -607,6 +656,8 @@ static l1tt_entry default_l1tt_entry( int section )
   else if (section == 0xfa6)
     result.handler = random_legacy_kernel_workspace_l1;
     // 0xfa600000 is used by the IF command. =GeneralMOSBuffer
+  else if (section >= base && section <= top)
+    result.handler = needs_l2tt;
   else if (section == 0xfff)
     result.handler = never_happens; // Overwritten almost immediately.
   else
@@ -1103,14 +1154,13 @@ static void clear_app_area()
 
 static void clear_pipes_area()
 {
-  extern char pipes_base;
-  extern char pipes_top;
   uint32_t base = (uint32_t) &pipes_base;
   uint32_t top = (uint32_t) &pipes_top;
 
   for (int i = base >> 20; i < top >> 20; i++) {
     if (Local_L1TT->entry[i].type == 1) {
-      asm ( "bkpt %[line]" : : [line] "i" (__LINE__) ); // Free the l2tt.
+      Level_two_translation_table *l2tt = find_table_from_l1tt_entry( Local_L1TT->entry[i] );
+      l2tt->entry[0].handler = free_l2tt_table; // Free the l2tt.
     }
 
     Local_L1TT->entry[i].handler = check_task_slot_l1;

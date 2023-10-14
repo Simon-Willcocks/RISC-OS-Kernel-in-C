@@ -1329,7 +1329,7 @@ static void timer_interrupt_task( uint32_t handle, uint32_t _ws, uint32_t device
 
   uint64_t *stack = (void*) ((&ws->tickerv_stack)+1);
   struct core_workspace *cws = ws;
-  tickerv_handle = Task_CreateTask1( tickerv_task, stack, (uint32_t) cws ).handle;
+  tickerv_handle = Task_CreateTask1( (taskfn) tickerv_task, stack, (uint32_t) cws ).handle;
 
   WriteS( "Timer task claiming interrupt and entering loop " ); WriteNum( handle ); NewLine;
 
@@ -1391,7 +1391,7 @@ static uint32_t start_timer_interrupt_task( struct core_workspace *ws, int devic
 {
   uint64_t *stack = (void*) ((&ws->ticker_stack)+1);
 
-  return Task_CreateTask2( timer_interrupt_task, stack, (uint32_t) ws, device ).handle;
+  return Task_CreateTask2( (taskfn) timer_interrupt_task, stack, (uint32_t) ws, device ).handle;
 }
 
 // TODO This will be the interrupt from the GPU, ths HAL should report a
@@ -1448,7 +1448,7 @@ static uint32_t start_uart_interrupt_task( struct core_workspace *ws, int device
 {
   register void *stack = (&ws->shared->uart_task_stack+1);
 
-  return Task_CreateTask2( uart_interrupt_task, stack, (uint32_t) ws, device ).handle;
+  return Task_CreateTask2( (taskfn) uart_interrupt_task, stack, (uint32_t) ws, device ).handle;
 }
 
 #include "include/pipeop.h"
@@ -1489,7 +1489,7 @@ static uint32_t start_console_task( struct core_workspace *ws, uint32_t pipe )
 {
   uint64_t *stack = (void*) ((&ws->console_stack)+1);
 
-  return Task_CreateTask2( console_task, stack, (uint32_t) ws, pipe ).handle;
+  return Task_CreateTask2( (taskfn) console_task, stack, (uint32_t) ws, pipe ).handle;
 }
 
 static const int board_interrupt_sources = 64 + 12; // 64 GPU, 12 ARM peripherals (BCM2835-ARM-Peripherals.pdf, QA7)
@@ -1590,7 +1590,7 @@ show_word( this_core * (1920/4), 48, (uint32_t) &qa7->Core_write_clear[this_core
     register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
     asm ( "svc %[swi]" : : [swi] "i" (OS_Claim | Xbit), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
 
-    add_string( "HAL obtained WrchV\n\r", &workspace->core_specific[this_core] );
+    add_string( "HAL obtained WrchV\n", &workspace->core_specific[this_core] );
   }
 
   {
@@ -1600,7 +1600,7 @@ show_word( this_core * (1920/4), 48, (uint32_t) &qa7->Core_write_clear[this_core
     register struct core_workspace *handler_workspace asm( "r2" ) = &workspace->core_specific[this_core];
     asm ( "svc %[swi]" : : [swi] "i" (OS_Claim | Xbit), "r" (vector), "r" (routine), "r" (handler_workspace) : "lr" );
 
-    add_string( "HAL obtained MouseV\n\r", &workspace->core_specific[this_core] );
+    add_string( "HAL obtained MouseV\n", &workspace->core_specific[this_core] );
   }
 
   {
@@ -1652,7 +1652,11 @@ add_num( pipe, &workspace->core_specific[this_core] );
   GPU *gpu = workspace->gpu;
   Write0( "IRQs enabled " ); WriteNum( gpu->enable_basic ); Space; WriteNum( gpu->enable_irqs1 ); Space; WriteNum( gpu->enable_irqs2 ); NewLine;
 
-  if (0) {
+#ifndef HAL_NO_TIMER
+#define HAL_NO_TIMER 0
+#endif
+
+  if (!HAL_NO_TIMER) {
     uint32_t handle = start_timer_interrupt_task( &workspace->core_specific[this_core], 64 );
     Write0( "Timer task: " ); WriteNum( handle ); NewLine;
   }

@@ -289,7 +289,7 @@ static inline bool is_in_task_slots( uint32_t va )
   return va >= (uint32_t) task_slots && va < 4096 + (uint32_t) task_slots;
 }
 
-physical_memory_block Pipe_physical_address( TaskSlot *slot, uint32_t va );
+physical_memory_block Pipe_physical_address( Task *running, uint32_t va );
 
 physical_memory_block Kernel_physical_address( uint32_t va )
 {
@@ -299,27 +299,40 @@ physical_memory_block Kernel_physical_address( uint32_t va )
 
   assert( running->next != 0 && running->prev != 0 );
 
-  physical_memory_block result = { 0, 0, 0 }; // Fail
+  physical_memory_block result = make_physical_memory_block( 0, 0, 0 );
 
   TaskSlot *slot = running->slot;
+
+  assert( slot != 0 ); // Major kernel error, if zero
 
   claim_lock( &slot->lock );
 
 //WriteS( "Searching slot " ); WriteNum( (uint32_t) slot ); WriteS( " for address " ); WriteNum( va ); NewLine;
-  if (slot != 0) {
-    for (int i = 0; i < number_of( slot->blocks ) && slot->blocks[i].size != 0 && slot->blocks[i].virtual_base <= va; i++) {
-//WriteS( "Block: " ); WriteNum( slot->blocks[i].virtual_base ); WriteS( ", " ); WriteNum( slot->blocks[i].size ); Space; WriteNum( slot->blocks[i].physical_base ); NewLine;
-      if (slot->blocks[i].virtual_base <= va && slot->blocks[i].virtual_base + slot->blocks[i].size > va) {
-        result = slot->blocks[i];
-        goto found;
+  {
+    physical_memory_block *block = slot->blocks;
+    physical_memory_block *end = &slot->blocks[number_of( slot->blocks )];
+    do {
+      if (memory_block_virtual_base( *block ) <= va
+       && memory_block_virtual_base( *block ) 
+          + memory_block_size( *block ) > va) {
+        result = *block;
       }
-    }
+      block++;
+    } while (memory_block_size( result ) == 0
+          && memory_block_size( *block ) != 0           // No more meaningful blocks
+          && block < end                                // No more blocks at all
+          && memory_block_virtual_base( *block ) < va); // Missed our chance (blocks are sorted by va)
 //WriteS( "Virtual address " ); WriteNum( va ); WriteS( " not found in slot " ); WriteNum( slot ); NewLine;
   }
-  else
-    WriteS( "No current slot" );
 
-  result = Pipe_physical_address( slot, va );
+  if (memory_block_size( result ) == 0)
+    result = Pipe_physical_address( running, va );
+
+  if (memory_block_size( result ) == 0) {
+    if (va >= 0xffd00000 && va <= 0xffdff000) { // FIXME URGENTLY!
+      result = make_physical_memory_block( 0xffd00000, shared.kernel.legacy_svc_stack, 1024 * 1024 );
+    }
+  }
 
 found:
   release_lock( &slot->lock );
@@ -510,25 +523,25 @@ bool do_OS_ReadDefaultHandler( svc_registers *regs )
   return true;
 }
 
+/*
 void add_memory_to_slot( TaskSlot *slot, uint32_t physical_base, uint32_t virtual_base, uint32_t size )
 {
   // FIXME check for filling array or use different data structure
   for (int i = 0; i < number_of( slot->blocks ); i++) {
-    if (slot->blocks[i].size == 0
-     || slot->blocks[i].virtual_base > virtual_base) {
+    if (memory_block_size( slot->blocks[i] ) == 0
+     || memory_block_virtual_base( slot->blocks[i] ) > virtual_base) {
       for (int j = number_of( slot->blocks )-1; j > i; j--) {
         slot->blocks[j] = slot->blocks[j-1];
       }
-      assert( slot->blocks[i].size == slot->blocks[i+1].size );
-      assert( slot->blocks[i].virtual_base == slot->blocks[i+1].virtual_base );
-      assert( slot->blocks[i].physical_base == slot->blocks[i+1].physical_base );
-      slot->blocks[i].size = size;
-      slot->blocks[i].virtual_base = virtual_base;
-      slot->blocks[i].physical_base = physical_base;
+      assert( memory_block_size( slot->blocks[i] ) == memory_block_size( slot->blocks[i+1] ) );
+      assert( memory_block_virtual_base( slot->blocks[i] ) == memory_block_virtual_base( slot->blocks[i+1] ) );
+      assert( memory_block_physical_base( slot->blocks[i] ) == memory_block_physical_base( slot->blocks[i+1] ) );
+      make_physical_memory_block( virtual_base, physical_base, size );
       break;
     }
   }
 }
+*/
 
 // Which comes first, the slot or the task? Privileged tasks share a slot.
 
@@ -870,51 +883,62 @@ Task *Task_new( TaskSlot *slot )
 
 void TaskSlot_adjust_app_memory( TaskSlot *slot, uint32_t new_limit )
 {
-  extern int app_memory_base;
+  // Note: when I was writing this, I was thinking of there
+  // being blocks for pipe memory, but I now use the list of
+  // pipes to maintain their memory, if they're allocated by
+  // the kernel.
+  // So now, all the blocks should be in application memory.
+
+  // Dynamic link libraries may require some changes, but they
+  // may also belong to themselves in a higher memory block...?
+
+  // Oh, and forget
+  // extern int app_memory_base; 
+  // it's 0x8000, it's always been 0x8000, it will always be 0x8000.
+  // 64-bit kernels may well differ.
+
   extern int app_memory_limit;
+  uint32_t const app_max = (uint32_t) &app_memory_limit;
 
   assert( (new_limit & 0xfff) == 0 );
   assert( new_limit <= (uint32_t) &app_memory_limit );
 
   bool reclaimed = claim_lock( &shared.mmu.lock );
 
-  int i = 0;
-  while (slot->blocks[i].size != 0
-      && slot->blocks[i].virtual_base < (uint32_t) &app_memory_base) {
-    i++;
+  physical_memory_block *block = slot->blocks;
+  physical_memory_block *end = &slot->blocks[number_of( slot->blocks )];
+
+  while (block < end
+      && 0 != memory_block_size( *block )
+      && app_max > memory_block_virtual_base( *block )) {
+    block++;
   }
-  // slots->blocks[i] is the first block after any low page blocks.
-  int above = i; // Will be the entry above the last app block
-  uint32_t top = (uint32_t) &app_memory_base; // Whether or not there's an app block
 
-  while (slot->blocks[i].size != 0) {
-    uint32_t block_top = slot->blocks[i].virtual_base + slot->blocks[i].size;
-    if (block_top <= (uint32_t) &app_memory_limit) {
-      top = block_top;
-      above = i+1;
-    }
-    i++;
+  assert( memory_block_virtual_base( *block ) < app_max );
+
+  if (block + 1 >= end) {
+    assert( !"Too many blocks" ); // FIXME
   }
-  int first_unused_block = i;
 
-  // slots->blocks[i] is the first empty block in the array
-  assert( first_unused_block < number_of( slot->blocks ) ); // FIXME get rid of hard limit
+  uint32_t old_top = 0x8000;
 
-  if (top > new_limit) {
+  if (0 != memory_block_size( *block )) {
+    old_top = memory_block_virtual_base( *block ) + memory_block_size( *block );
+    block++;
+  }
+  assert( 0 == memory_block_size( *block ) );
+
+  if (old_top > new_limit) {
     // Ignore shrinking, for now FIXME
+    assert( !"Shrinking" );
   }
-  else if (top < new_limit) {
-    for (int j = first_unused_block; j > above; j--) {
-      slot->blocks[j] = slot->blocks[j-1];
-    }
+  else if (old_top < new_limit) {
     uint32_t const align = 4096;
-    uint32_t size = new_limit - top;
-    slot->blocks[above].size = size;
-    slot->blocks[above].virtual_base = top;
-    slot->blocks[above].physical_base = Kernel_allocate_pages( size, align );
-
-    assert( slot->blocks[above].physical_base != 0xffffffff ); // FIXME
+    uint32_t size = new_limit - old_top;
+    *block = make_physical_memory_block(
+        old_top, Kernel_allocate_pages( size, align ), size );
   }
+  // else no change...
 
   if (!reclaimed) release_lock( &shared.mmu.lock );
 }
@@ -936,20 +960,25 @@ uint32_t TaskSlot_Himem( TaskSlot *slot )
   // FIXME lock per slot?
   bool reclaimed = claim_lock( &shared.mmu.lock );
 
-  int i = 0;
-  while (0 != slot->blocks[i].size && 0x8000 != slot->blocks[i].virtual_base) {
-    i++;
+  physical_memory_block *block = slot->blocks;
+  physical_memory_block *end = &slot->blocks[number_of( slot->blocks )];
+
+  while (block < end
+      && 0 != memory_block_size( *block )
+      && 0x8000 != memory_block_virtual_base( *block )) {
+    block++;
   }
-  if (0x8000 != slot->blocks[i].virtual_base) {
+
+  if (0x8000 != memory_block_virtual_base( *block )) {
     result = 0x8000;
   }
   else {
     // FIXME: In future, there may be more than one block in the AMB
-    result = slot->blocks[i].size + 0x8000;
+    result = memory_block_size( *block ) + 0x8000;
   }
 
 #ifdef DEBUG__WATCH_TASK_SLOTS
-  WriteS( "TaskSlot_Himem " ); WriteNum( (uint32_t) slot ); Space; WriteNum( i ); Space; WriteNum( slot->blocks[i].virtual_base ); Space; WriteNum( slot->blocks[i].size ); WriteS( " = " ); WriteNum( result ); NewLine;
+  WriteS( "TaskSlot_Himem " ); WriteNum( (uint32_t) slot ); Space; WriteNum( block - slot->blocks ); Space; WriteNum( memory_block_virtual_base( *block ) ); Space; WriteNum( memory_block_size( *block ) ); WriteS( " = " ); WriteNum( result ); NewLine;
 #endif
 
   if (!reclaimed) release_lock( &shared.mmu.lock );
@@ -1553,7 +1582,6 @@ WriteS( "IRQ task " ); WriteNum( irq_task ); NewLine;
   // This implementation depends on the shared.task_slot.lock being held by this core
 
   Task *running = workspace.task_slot.running;
-  error_block *result = 0;
 
   assert( running->controller == 0 );
   running->controller = task_from_handle( regs->r[0] );
@@ -1987,15 +2015,10 @@ bool do_OSTask( svc_registers *regs, uint32_t operation )
   }
 
   // TODO: only list the blocking SWIs? Make it a switch? Bits in a const uint64_t?
-  uint64_t const bits = OPBIT( OSTask_PipeWaitForSpace ) |
-                        OPBIT( OSTask_PipeWaitForData ) |
-                        OPBIT( OSTask_PipeWaitUntilEmpty ) |
-                        OPBIT( OSTask_WaitUntilWoken ) |
-                        OPBIT( OSTask_LockClaim );
 
-  bool blocking_swi =  (bits & (1 << operation) != 0) ||
-         operation == OP( OSTask_PipeWaitForSpace )
-      || operation == OP( OSTask_PipeWaitForData )
+  bool blocking_swi =
+         (operation == OP( OSTask_PipeWaitForSpace ) && regs->r[1] != 0)
+      || (operation == OP( OSTask_PipeWaitForData ) && regs->r[1] != 0)
       || operation == OP( OSTask_PipeWaitUntilEmpty )
       || operation == OP( OSTask_WaitUntilWoken )
       || operation == OP( OSTask_LockClaim )
@@ -2844,7 +2867,7 @@ WriteS( "Running transient callbacks" ); NewLine;
         // CallBack can make legacy SWI calls. FIXME?
 
     if (shared.task_slot.callback_requested) { WriteS( "Callback requested" ); NewLine; }
-    if (resume_sp != &svc_stack_top) { WriteS( "Not at top of stack " ); WriteNum( resume_sp ); Space; WriteNum( &svc_stack_top ); NewLine; }
+    //if (resume_sp != &svc_stack_top) { WriteS( "Not at top of stack " ); WriteNum( resume_sp ); Space; WriteNum( &svc_stack_top ); NewLine; }
 
         if (shared.task_slot.callback_requested && resume_sp == &svc_stack_top) {
           exit_through_callback( caller );
@@ -2997,6 +3020,9 @@ static void __attribute__(( noinline, noreturn )) resume_task( Task *resume, Tas
   register svc_registers *lr asm ( "lr" ) = &resume->regs;
   asm (
       "\n  ldm lr!, {r0-r12}"
+
+      "\n  udf #1"      // FIXME
+
       "\n  rfeia lr // Restore execution and SPSR"
       :
       : "r" (lr) );

@@ -19,7 +19,7 @@ typedef struct Task Task;
 typedef struct svc_registers svc_registers;
 
 // For use in swis/varvals.c & modules.c for new modules
-error_block *queue_Task( svc_registers *regs, uint32_t handle, Task *task, uint32_t SWI );
+error_block *queue_running_Task( svc_registers *regs, uint32_t queue_handle, uint32_t SWI );
 
 // Root slot, does not require RMA or regs. Call once only per core.
 TaskSlot *TaskSlot_first();

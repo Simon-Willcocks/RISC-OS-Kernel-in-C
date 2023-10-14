@@ -56,3 +56,10 @@ uint32_t Kernel_allocate_pages( uint32_t size, uint32_t alignment );
 
 void __attribute__(( naked, noreturn )) Kernel_default_prefetch();
 void __attribute__(( naked, noreturn )) Kernel_default_data_abort();
+
+// General routine, works for all memory areas.
+physical_memory_block Physical_memory( uint32_t va, TaskSlot *slot );
+
+physical_memory_block Application_memory( uint32_t va, TaskSlot *slot );
+physical_memory_block Legacy_stack_memory( uint32_t va, TaskSlot *slot );
+physical_memory_block Pipes_memory( uint32_t va, TaskSlot *slot );

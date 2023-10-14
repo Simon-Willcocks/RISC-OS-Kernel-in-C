@@ -23,6 +23,22 @@ static const uint32_t VF = (1 << 28);
 
 static const uint32_t Xbit = (1 << 17);
 
+// Copy of the registers stored for an SVC instruction; doesn't include
+// the user stack pointer, or link registers.
+typedef struct __attribute__(( packed )) svc_registers {
+  uint32_t r[13];
+  uint32_t lr;
+  uint32_t spsr;
+} svc_registers;
+
+enum VarTypes { VarType_String = 0,
+                VarType_Number,
+                VarType_Macro,
+                VarType_Expanded,
+                VarType_LiteralString,
+                VarType_Code = 16,
+                VarType_None = 31 }; // internal use only
+
 enum {
 /* 00 */ OS_WriteC, OS_WriteS, OS_Write0, OS_NewLine,
 /* 04 */ OS_ReadC, OS_CLI, OS_Byte, OS_Word,
@@ -123,12 +139,12 @@ enum {
          OSTask_PipeCreate = OSTask_NumberOfCores + 48,
          OSTask_PipeWaitForSpace,  // Block task until N bytes may be written
          OSTask_PipeSpaceFilled,   // I've filled this many bytes
-         OSTask_PipePassingOver,   // Another task is going to take over filling this pipe
+         OSTask_PipeSetSender,     // Another task is going to take over filling this pipe
          OSTask_PipeUnreadData,    // Useful, in case data can be dropped or consolidated (e.g. mouse movements)
          OSTask_PipeNoMoreData,    // I'm done filling the pipe
          OSTask_PipeWaitForData,   // Block task until N bytes may be read (or WaitUntilEmpty, NoMoreData called)
          OSTask_PipeDataConsumed,  // I don't need the first N bytes that were written any more
-         OSTask_PipePassingOff,    // Another task is going to take over listening at this pipe
+         OSTask_PipeSetReceiver,   // Another task is going to take over listening at this pipe
          OSTask_PipeNotListening,  // I don't want any more data, thanks
          OSTask_PipeWaitUntilEmpty,// Block task until all bytes have been consumed TODO?
 };

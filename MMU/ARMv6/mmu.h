@@ -39,6 +39,29 @@ typedef struct physical_memory_block { // All 4k pages
   uint32_t res:12;
 } physical_memory_block;
 
+static inline __attribute__(( always_inline ))
+physical_memory_block make_physical_memory_block( uint64_t virtual, uint64_t physical, uint64_t size )
+{
+  physical_memory_block result = { .virtual_base = virtual >> 12, .physical_base = physical >> 12, .size = size >> 12 };
+  return result;
+}
+
+// We're entirely talking about a 32-bit virtual memory area at the moment.
+static inline uint32_t memory_block_virtual_base( physical_memory_block block )
+{
+  return block.virtual_base << 12;
+}
+
+static inline uint64_t memory_block_physical_base( physical_memory_block block )
+{
+  return block.physical_base << 12;
+}
+
+static inline uint64_t memory_block_size( physical_memory_block block )
+{
+  return block.size << 12;
+}
+
 uint32_t pre_mmu_allocate_physical_memory( uint32_t size, uint32_t alignment, volatile startup *startup );
 
 uint32_t Kernel_allocate_physical_memory( uint32_t size, uint32_t alignment );

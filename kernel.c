@@ -59,11 +59,11 @@ void __attribute__(( noreturn, noinline )) Kernel_start()
 
     extern uint32_t svc_stack_top;
     // FIXME: probably only need a few pages
-    uint32_t legacy_svc_stack = Kernel_allocate_pages( (1 << 20), (1 << 20) );
+    shared.kernel.legacy_svc_stack = Kernel_allocate_pages( (1 << 20), (1 << 20) );
     uint32_t va = ((uint32_t) &svc_stack_top);
     va = va & 0xfff00000;
 
-    MMU_map_shared_at( (void*) va, legacy_svc_stack, (1 << 20) );
+    MMU_map_shared_at( (void*) va, shared.kernel.legacy_svc_stack, (1 << 20) );
   }
 
   // Allow the others to continue, now the free RAM has been registered.

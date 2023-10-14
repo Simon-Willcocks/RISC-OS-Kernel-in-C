@@ -129,6 +129,8 @@ struct Kernel_shared_workspace {
 
   uint32_t commands_queue;
 
+  uint32_t legacy_svc_stack;
+
   // Only one multiprocessing module can be initialised at at time (so the 
   // first has a chance to initialise their shared workspace).
   uint32_t mp_module_init_lock;

@@ -922,20 +922,9 @@ void __attribute__(( noreturn )) UsrBoot()
   static const int Wimp_ReadSysInfo = 0x400f2;
 
   if (core_number == 0) {
-    extern uint32_t _binary_Modules_Commands_start;
-    register uint32_t code asm( "r0" ) = 10;
-    register uint32_t module asm( "r1" ) = 4 + (uint32_t) &_binary_Modules_Commands_start;
-
-    asm volatile ( "svc %[os_module]"
-       :
-       : "r" (code)
-       , "r" (module)
-       , [os_module] "i" (OS_Module)
-       : "lr", "cc", "memory" );
-
     // init_modules();
 
-  //asm volatile ( "mov r0, #0\n  svc %[swi]" : : [swi] "i" (Xbit | Wimp_ReadSysInfo) );
+    asm volatile ( "mov r0, #0\n  svc %[swi]" : : [swi] "i" (Xbit | Wimp_ReadSysInfo) );
     init_module( "UtilityModule" );
     init_module( "FileSwitch" ); // needed by...
     init_module( "ResourceFS" ); // needed by HAL and...

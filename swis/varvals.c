@@ -13,171 +13,36 @@
  * limitations under the License.
  */
 
+#include "varvals.h"
 #include "inkernel.h"
-#include "include/taskop.h"
 
-// FIXME Move these debug functions to a header file
-static inline void debug_string_with_length( char const *s, int length )
+static void __attribute__(( naked, noreturn )) environment_vars_task( uint32_t handle, uint32_t queue )
 {
-  register char const *string asm( "r0" ) = s;
-  register int len asm( "r1" ) = length;
-  asm ( "svc %[swi]"
-      :
-      : [swi] "i" (OSTask_DebugString)
-      , "r" (string)
-      , "r" (len)
-      : "lr", "memory" );
-}
+  register uint32_t memory_top asm( "r0" ) = top;
+  asm volatile ( "svc %[swi]" : "=r" (memory_top) : [swi] "i" (OSTask_AppMemoryTop), "r" (memory_top) );
+  asm volatile ( "mov sp, %[sp]" : : [sp] "ir" (stack_top) );
 
-static inline void debug_string( char const *s )
-{
-  int len = 0;
-  char const *p = s;
-  while (*p != '\0') { p++; len++; }
-  debug_string_with_length( s, len );
-}
-
-static inline void debug_number( uint32_t num )
-{
-  register uint32_t number asm( "r0" ) = num;
-  asm ( "svc %[swi]"
-      :
-      : [swi] "i" (OSTask_DebugNumber)
-      , "r" (number)
-      : "lr", "memory" );
-}
-
-#define WriteN( s, n ) debug_string_with_length( s, n )
-#define Write0( s ) debug_string( s )
-#define WriteS( s ) debug_string_with_length( s, sizeof( s ) - 1 )
-#define NewLine WriteS( "\n" );
-#define Space WriteS( " " );
-#define WriteNum( n ) debug_number( n )
-
-#define OP( c ) (0x3f & (c))
-
-struct results {
-  uint32_t regs[6];             // Match with vvv
-  uint32_t psr;
-  uint32_t caller;
-};
-
-// In the client Task's slot, run the legacy SWI, passed in r12,
-// store the resulting registers at r11, then return control to
-// the caller Task.
-void __attribute__(( naked )) run_legacy()
-{
-  asm ( "svc %[swi]"
-    "\n  stm r11!, { r0-r5 }"   // Match with ^^^
-    "\n  mrs r0, cpsr"
-    "\n  str r0, [r11]"
-    "\n  ldr r0, [r11, #4]"
-    "\n  svc %[relinquish]"
-        :
-        : [swi] "i" (Xbit | OSTask_CallLegacySWI)
-        , [relinquish] "i" (Xbit | OSTask_RelinquishControl) );
-}
-
-// Use the legacy code until re-implemented GSTrans etc.
-// Note: This works because the SWIs are all <= 0x40, there needs to be
-// a separate queue for numbers outside that range.
-void __attribute__(( noinline, noreturn )) c_task( uint32_t handle, uint32_t queue )
-{
-  queued_task task;
-  error_block *error = 0;
-
-  svc_registers copy;
-
-  struct results *results = rma_allocate( sizeof ( struct results ) );
-  results->caller = handle;
-
-  WriteS( "Commands: Environment Task" ); NewLine;
-  for (;;) {
-    task = Task_QueueWait( queue );
-    assert( task.error == 0 );
-
-    svc_registers regs;
-    Task_GetRegisters( task.task_handle, &regs );
-    copy = regs;
-    copy.r[9] = 0x11111111;
-    copy.r[10] = 0x99999999;
-
-    if (task.swi == OP( OS_GSInit )) {
-      // Allocate space, GSTrans into it, create a pipe over the data
-      // GSRead then simply reads a byte at a time from the pipe
-      // Later.
-    }
-    // Run the legacy SWI in the queued task, then release it to continue
-    copy.lr = (uint32_t) run_legacy;
-    copy.r[11] = (uint32_t) results;
-    copy.r[12] = Xbit | task.swi;
-    error = Task_RunThisForMe( task.task_handle, &copy );
-    regs.r[0] = results->regs[0];
-    regs.r[1] = results->regs[1];
-    regs.r[2] = results->regs[2];
-    regs.r[3] = results->regs[3];
-    regs.r[4] = results->regs[4];
-    regs.r[5] = results->regs[5];
-    // Copy just the flags, not the mode, etc.
-    regs.spsr = (regs.spsr & ~0xf0000000) | (results->psr & 0xf0000000);
-
-    WriteS( "Delegated SWI at " ); WriteNum( regs.lr ); NewLine;
-    switch (task.swi) {
-    case OP( OS_ReadVarVal ):
-      WriteS( "OS_ReadVarVal" ); NewLine; Write0( copy.r[0] ); NewLine;
-      break;
-    case OP( OS_SetVarVal ):
-      WriteS( "OS_SetVarVal" ); NewLine; Write0( copy.r[0] ); NewLine;
-      break;
-    case OP( OS_EvaluateExpression ):
-      WriteS( "OS_EvaluateExpression" ); NewLine;
-      break;  
-    case OP( OS_CLI ):
-      WriteS( "OS_CLI" ); NewLine;
-      break;
-    case OP( OS_GSTrans ):
-      WriteS( "OS_GSTrans" ); NewLine;
-      break;
-    case OP( OS_GSInit ):
-      WriteS( "OS_GSInit" ); NewLine;
-      break;
-    case OP( OS_SubstituteArgs ):
-      WriteS( "OS_SubstituteArgs" ); NewLine;
-      break;
-    case OP( OS_SubstituteArgs32 ):
-      WriteS( "OS_SubstituteArgs32" ); NewLine;
-      break;
-    default: assert( false );
-    }
-
-    error = Task_ReleaseTask( task.task_handle, &regs );
-  } 
+  c_environment_vars_task( handle, queue );
 
   __builtin_unreachable();
 }
 
-void __attribute__(( naked, noreturn )) environment_vars_task( uint32_t handle, uint32_t queue )
+static uint32_t make_command_queue()
 {
-  register uint32_t top asm( "r0" ) = 0x9000;
-
-  asm volatile ( "svc %[swi]"
-    "\n  mov sp, r0" // New top, should be the above constant
-    :
-    : [swi] "i" (OSTask_AppMemoryTop)
-    , "r" (top) );
-
-  c_task( handle, queue );
+  queue_result result = Task_QueueCreate();
+  return result.handle;
 }
 
-static inline uint32_t commands_queue()
+void initialise_commands_queue()
 {
-  if (shared.kernel.commands_queue == 0) {
-    if (mpsafe_initialise( &shared.kernel.commands_queue, new_queue )) {
-      register uint32_t handle asm( "r0" );
-
+  if (0 == shared.kernel.commands_queue) {
+    if (mpsafe_initialise( &shared.kernel.commands_queue, make_command_queue )) {
       register void *task asm( "r0" ) = environment_vars_task;
       register uint32_t sp asm( "r1" ) = 0;
       register uint32_t queue asm( "r2" ) = shared.kernel.commands_queue;
+
+      register uint32_t handle asm( "r0" );
+
       asm volatile ( "svc %[swi]"  // volatile because we don't use the output value
                    : "=r" (handle)
                    : [swi] "i" (OSTask_CreateTaskSeparate | Xbit)
@@ -186,25 +51,55 @@ static inline uint32_t commands_queue()
                    , "r" (queue)
                    : "lr", "cc" );
     }
+    else {
+      uint32_t volatile *p = &shared.kernel.commands_queue;
+      while (*p == 0) {}
+    }
   }
-
-  return shared.kernel.commands_queue;
 }
 
 #define DELEGATED( SWI, Q ) bool do_##SWI( svc_registers *regs ) { \
-  error_block *error = queue_Task( regs, Q, Task_now(), SWI ); \
+  assert( 0 != regs->lr ); \
+  error_block *error = queue_running_Task( regs, Q, SWI ); \
   if (error != 0) regs->r[0] = (uint32_t) error; \
   return error == 0; \
 }
 
-DELEGATED( OS_ReadVarVal, commands_queue() )
-DELEGATED( OS_SetVarVal, commands_queue() )
-//DELEGATED( OS_CLI, commands_queue() )
-DELEGATED( OS_EvaluateExpression, commands_queue() )
-DELEGATED( OS_GSInit, commands_queue() )
-DELEGATED( OS_GSTrans, commands_queue() )
-DELEGATED( OS_SubstituteArgs, commands_queue() )
-DELEGATED( OS_SubstituteArgs32, commands_queue() )
+DELEGATED( OS_ReadVarVal, shared.kernel.commands_queue )
+DELEGATED( OS_SetVarVal, shared.kernel.commands_queue )
+//DELEGATED( OS_CLI, shared.kernel.commands_queue )
+DELEGATED( OS_EvaluateExpression, shared.kernel.commands_queue )
+DELEGATED( OS_GSInit, shared.kernel.commands_queue )
+DELEGATED( OS_GSTrans, shared.kernel.commands_queue )
+DELEGATED( OS_SubstituteArgs, shared.kernel.commands_queue )
+DELEGATED( OS_SubstituteArgs32, shared.kernel.commands_queue )
 
 // OS_GSRead reads characters from the pipe created by GSInit
+
+bool do_OS_GSRead( svc_registers *regs )
+{
+  uint32_t pipe = regs->r[0];
+  uint32_t index = regs->r[2];
+
+  if (regs->r[2] == 0xffffffff) return false; // Error already in r0
+
+  // This is quite inefficient, but rarely used
+  // Note: the GSInit puts the resultant string into the pipe, PLUS
+  // the final terminator (copied from the input string)
+  PipeSpace space = PipeOp_WaitForData( pipe, 0 );
+
+  regs->r[1] = ((char*) space.location)[index];
+  regs->r[2] ++;
+
+  if (space.available - 1 == index) {
+    regs->spsr |= CF;
+    assert( regs->r[1] == '\n' || regs->r[1] == '\r' || regs->r[1] == ' ' || regs->r[1] == 0 );
+    PipeOp_NotListening( pipe ); // Free up pipe.
+    // TODO call PipeNotListening or PipeNoMoreData on all pipes associated with a slot on exit. (Not here!)
+  }
+  else
+    regs->spsr &= ~CF;
+
+  return true;
+}
 

@@ -81,7 +81,7 @@ struct __attribute__(( packed, aligned( 4 ) )) Task {
   Task *prev; // Tasks not in a list will be a list of 1.
 };
 
-struct __attribute__(( packed, aligned( 8 ) )) os_queue {
+struct __attribute__(( packed, aligned( 4 ) )) os_queue {
   Task *queue;
   Task *handlers;
 };
@@ -145,6 +145,59 @@ static inline uint32_t handle_from_task( Task *task )
 {
   return (uint32_t) task;
 }
+
+static inline bool is_in_rma( uint32_t p )
+{
+  // FIXME: Max 16MiB RMA, should check current size
+  extern uint32_t rma_base;
+  uint32_t base = (uint32_t) &rma_base;
+  uint32_t size = 0x1000000; // 16MiB FIXME: check actual size (from where?)
+  return (p >= base && p - size < base);
+}
+
+static inline bool is_in_rom( uint32_t p )
+{
+  extern uint32_t va_base;
+  extern uint32_t rom_size;
+  uint32_t base = (uint32_t) &va_base;
+  uint32_t size = (uint32_t) &rom_size;
+  return (p >= base && p - size < base);
+}
+
+static inline bool is_in_tasks_area( uint32_t p )
+{
+  extern Task tasks[];
+  uint32_t base = (uint32_t) &tasks;
+  uint32_t size = 0x01000000;
+  return (p >= base && p - size < base);
+}
+
+static inline bool is_in_task_slots_area( uint32_t p )
+{
+  extern TaskSlot task_slots[];
+  uint32_t base = (uint32_t) &task_slots;
+  uint32_t size = 0x01000000;
+  return (p >= base && p - size < base);
+}
+
+static inline bool is_in_pipes_area( uint32_t p )
+{
+  extern uint32_t pipes_base;
+  extern uint32_t pipes_top;
+  uint32_t base = (uint32_t) &pipes_base;
+  uint32_t top = (uint32_t) &pipes_top;
+  return (p >= base && p < top);
+}
+
+static inline bool is_in_app_area( uint32_t p )
+{
+  extern uint32_t app_memory_base;
+  extern int app_memory_limit;
+  uint32_t base = (uint32_t) &app_memory_base;
+  uint32_t top = (uint32_t) &app_memory_limit;
+  return (p >= base && p < top);
+}
+
 
 // This routine must be called on the old value before
 // changing workspace.task_slot.running in response to

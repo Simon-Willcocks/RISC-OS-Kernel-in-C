@@ -27,7 +27,7 @@ static char *pipe_space( int len )
   assert( pipe != 0 );
 
   if (0 == workspace.kernel.debug_space.location) {
-    workspace.kernel.debug_space.location = debug_pipe_sender_va();
+    workspace.kernel.debug_space.location = set_and_map_debug_pipe();
     workspace.kernel.debug_space.available = 4096;
   }
 

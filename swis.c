@@ -327,11 +327,6 @@ static bool do_OS_ReadUnsigned( svc_registers *regs )
   return true;
 }
 
-// Notes about GSTrans and family
-// The final GSRead, which returns with C set, returns a copy
-// of the terminator (0, 10, 13). GSTrans includes the terminator
-// in the buffer, but returns the length of the string before it.
-
 static inline bool gs_space_is_terminator( uint32_t flags )
 {
   return (0 != (flags & (1 << 29)));
@@ -355,143 +350,6 @@ static inline int riscos_strlen( char const *s )
     result++;
   }
   return result;
-}
-
-#if 0
-bool do_OS_GSTrans( svc_registers *regs )
-{
-  bool result;
-
-  NewLine;
-  WriteS( "GSTrans (in) \"" ); WriteN( (char*) regs->r[0], riscos_strlen( (char*) regs->r[0] ) ); WriteS( "\"\n" );
-  WriteNum( regs->r[0] ); Space; WriteNum( regs->lr ); NewLine;
-
-  {
-    svc_registers gsregs = { .spsr = 0 };
-    gsregs.r[0] = regs->r[0];
-    gsregs.r[2] = regs->r[2] & 0xe0000000;
-
-    char *buffer = (char*) regs->r[1];
-    uint32_t max = regs->r[2] & ~0xe0000000;
-    uint32_t index = 0;
-    char *string = (char*) regs->r[0];
-    char *end = string;
-
-    while (!terminator( *end, gsregs.r[2] )) {
-      end++;
-    }
-    end++;
-
-    result = run_risos_code_implementing_swi( &gsregs, OS_GSInit );
-
-    if (result) {
-      gsregs.spsr &= ~CF;
-      while (result && 0 == (gsregs.spsr & CF) && index < max) {
-        result = run_risos_code_implementing_swi( &gsregs, OS_GSRead );
-        buffer[index++] = gsregs.r[1];
-      }
-
-      if (index == max) regs->spsr |= CF; else regs->spsr &= ~CF;
-    }
-
-    if (result) {
-      regs->r[0] = (uint32_t) end;
-      regs->r[1] = (uint32_t) buffer;
-      regs->r[2] = index-1; // R1+R2 -> terminator in buffer
-    }
-    else {
-      regs->r[0] = gsregs.r[0]; // Error block
-    }
-  }
-
-  if (result) {
-    WriteS( "GSTrans (out) " ); WriteNum( regs->r[2] ); WriteS( " \"" );
-    if (regs->r[1] != 0) {
-      WriteN( (char*) regs->r[1], regs->r[2] );
-    } else {
-      WriteS( "NULL" );
-    }
-    WriteS( "\"\n" );
-  }
-  else {
-    WriteS( "GSTrans failed \"" );
-    error_block *err = (void*) regs->r[0];
-    Write0( err->desc );
-    WriteS( "\"\n" );
-  }
-
-  return result;
-}
-#endif
-
-static bool do_OS_GSInit( svc_registers *regs )
-{
-  regs->spsr &= ~CF;
-  const char *string = (void*) regs->r[0];
-
-  uint32_t flags = regs->r[2];
-  while (!terminator( *string, flags ) && *string == ' ') {
-    string++;
-  }
-
-  char *buffer = rma_allocate( 4096 ); // Freed by the final GSRead, not if it's not reached, though.
-
-  // Can't call the default GSTrans here, because all it does is call GSInit/Read
-
-  svc_registers transregs = { .lr = 0, .spsr = 0 };
-  transregs.r[0] = (uint32_t) string;
-  transregs.r[1] = (uint32_t) buffer;
-  transregs.r[2] = 4096  | (regs->r[2] & 0xe0000000);
-
-  bool result = do_OS_GSTrans( &transregs );
-  uint32_t terminator_offset = transregs.r[2];
-
-  // assert( terminator( buffer[terminator_offset], (regs->r[2] & 0xe0000000) ) );
-
-  // TODO shrink buffer to result size, freeing memory
-
-  // The values in r0 and r2 are opaque, this implementation puts 
-  // the address of the buffer or an error block in r0, the
-  // size of the result in the top half word of r2, leaving the bottom
-  // half word for the bytes read so far, or 0xffffffff if there was an
-  // error.
-  if (result) {
-    regs->r[0] = (uint32_t) buffer;
-    regs->r[1] = *string;
-    regs->r[2] = terminator_offset << 16; // offset 0 (see do_OS_GSRead)
-  }
-  else {
-    rma_free( buffer );
-    regs->r[0] = transregs.r[0];
-    regs->r[2] = 0xffffffff; // Error reported when GSRead called
-  }
-
-  return true;
-}
-
-static bool do_OS_GSRead( svc_registers *regs )
-{
-  char const *translated = (void*) regs->r[0];
-
-  if (regs->r[2] == 0xffffffff) return false; // Error already in r0
-
-  uint32_t index = regs->r[2] & 0xffff;
-  uint32_t terminator_offset = regs->r[2] >> 16;
-  regs->r[1] = translated[index];
-  regs->r[2] ++;
-
-  if (index == terminator_offset) {
-    regs->spsr |= CF;
-    rma_free( translated );
-    // Note: if the output isn't fully read, there will be a memory leak.
-    // This could be mitigated if each slot gets a heap for GSTrans, released
-    // when the program ends.
-  }
-  else {
-    regs->spsr &= ~CF;
-  }
-
-  return true;
 }
 
 //static bool do_OS_BinaryToDecimal( svc_registers *regs ) { Write0( __func__ ); NewLine; return Kernel_Error_UnimplementedSWI( regs ); }
@@ -2824,6 +2682,7 @@ if (copy.r[0] != regs->r[0]) asm ( "bkpt 77" );
     WriteNum( *(uint32_t*) regs->r[0] ); Space;
     Write0( (char *)(regs->r[0] + 4 ) ); NewLine;
     WriteNum( regs->lr );
+    return execute_swi( regs, OS_GenerateError );
   }
 
   switch (number & ~Xbit) {

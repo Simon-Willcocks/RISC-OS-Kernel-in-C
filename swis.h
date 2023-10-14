@@ -13,20 +13,16 @@
  * limitations under the License.
  */
 
-// Copy of the registers stored for an SVC instruction; doesn't include
-// the user stack pointer, or link registers, which will be preserved
-// automatically (except if the SVC performs a task switch).
-typedef struct __attribute__(( packed )) svc_registers {
-  uint32_t r[13];
-  uint32_t lr;
-  uint32_t spsr;
-} svc_registers;
+#ifndef SWIS_H
+#define SWIS_H
 
 #include "include/kernel_swis.h"
 
 // OS SWIs implemented or used other than in swis.c:
 
 bool do_OS_GSTrans( svc_registers *regs );
+bool do_OS_GSInit( svc_registers *regs );
+bool do_OS_GSRead( svc_registers *regs );
 bool do_OS_EvaluateExpression( svc_registers *regs );
 bool do_OS_SubstituteArgs32( svc_registers *regs );
 
@@ -113,13 +109,6 @@ bool do_OS_RestoreCursors( svc_registers *regs );
 bool do_OS_Plot( svc_registers *regs );
 
 // swis/varvals.c
-enum VarTypes { VarType_String = 0,
-                VarType_Number,
-                VarType_Macro,
-                VarType_Expanded,
-                VarType_LiteralString,
-                VarType_Code = 16 };
-
 bool do_OS_ReadVarVal( svc_registers *regs );
 bool do_OS_SetVarVal( svc_registers *regs );
 
@@ -202,3 +191,5 @@ bool run_risos_code_implementing_swi( svc_registers *regs, uint32_t svc );
 // Provided by swis.c, for use by TaskSlot only.
 // regs contains the state of the registers at the moment of the call.
 void execute_swi( svc_registers *regs, uint32_t number );
+
+#endif

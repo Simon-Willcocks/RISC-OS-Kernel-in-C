@@ -3587,7 +3587,7 @@ static void setup_OS_vectors()
   }
 }
 
-static void __attribute__(( naked, noreturn )) idle_thread()
+static void __attribute__(( naked, noreturn )) idle_thread( uint32_t handle )
 {
   const int reset = 10;
   uint32_t count = reset;
@@ -3630,6 +3630,8 @@ static void __attribute__(( naked, noreturn )) idle_thread()
 
 extern void __attribute__(( noreturn )) UsrBoot();
 
+extern void initialise_commands_queue();
+
 #ifndef NO_DEBUG_OUTPUT
 #include "include/pipeop.h"
 #endif
@@ -3649,15 +3651,18 @@ void PreUsrBoot()
     workspace.kernel.debug_pipe = PipeOp_CreateForTransfer( 4096 );
     // Guaranteed to work: except it's a blocking call and this is in svc mode
     // workspace.kernel.debug_space = PipeOp_WaitForSpace( workspace.kernel.debug_pipe, 2048 );
-    PipeOp_PassingOff( workspace.kernel.debug_pipe, 0 ); // The receiver task doesn't exist yet
+    PipeOp_SetReceiver( workspace.kernel.debug_pipe, 0 ); // The receiver task doesn't exist yet
+    PipeOp_SetSender( workspace.kernel.debug_pipe, 0 ); // Every task can be a sender
     assert( workspace.kernel.debug_pipe != 0 );
 #endif
   }
+
+  initialise_commands_queue();
 }
 
 static uint32_t start_idle_task()
 {
-  return Task_CreateTask1( idle_thread, 0, workspace.core_number ).handle;
+  return Task_CreateTask1( (taskfn) idle_thread, 0, workspace.core_number ).handle;
 }
 
 void Boot()
@@ -3675,9 +3680,6 @@ void Boot()
   WriteS( "&shared.task_slot.legacy_stack_owner = " ); WriteNum( &shared.task_slot.legacy_stack_owner ); NewLine;
 
   // No App memory initially
-
-  // The HAL will have ensured that no extraneous interrupts are occuring,
-  // so we can reset the SVC stack, enable interrupts and drop to USR mode.
 
   // Allocate small stack for UsrBoot to use.
   static uint32_t const root_stack_size = 1024;

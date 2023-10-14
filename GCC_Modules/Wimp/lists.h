@@ -1,4 +1,4 @@
-/* Copyright 2022 Simon Willcocks
+/* Copyright 2023 Simon Willcocks
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,18 +13,4 @@
  * limitations under the License.
  */
 
-typedef unsigned long long uint64_t;
-typedef unsigned        uint32_t;
-typedef int             int32_t;
-typedef unsigned short  uint16_t;
-typedef short           int16_t;
-typedef unsigned char   uint8_t;
-typedef signed char     int8_t;
-typedef unsigned        size_t;
-typedef unsigned        bool;
-#define true  (0 == 0)
-#define false (0 != 0)
-
-#define number_of( arr ) (sizeof( arr ) / sizeof( arr[0] ))
-#define offset_of( T, E ) ((uint32_t) &((T*)0)->E)
 

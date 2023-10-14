@@ -15,12 +15,18 @@
 
 #include "common.h"
 
-static inline os_pipe *pipe_from_handle( uint32_t handle )
+#ifndef NOT_DEBUGGING
+static inline 
+#endif
+os_pipe *pipe_from_handle( uint32_t handle )
 {
   return (os_pipe *) handle;
 }
 
-static inline uint32_t handle_from_pipe( os_pipe *pipe )
+#ifndef NOT_DEBUGGING
+static inline 
+#endif
+uint32_t handle_from_pipe( os_pipe *pipe )
 {
   return (uint32_t) pipe;
 }
@@ -55,157 +61,168 @@ bool this_is_debug_receiver()
   return running == pipe->receiver;
 }
 
-static bool in_range( uint32_t value, uint32_t base, uint32_t size )
+#ifndef NOT_DEBUGGING
+static inline
+#endif
+bool in_range( uint32_t value, uint32_t base, uint32_t size )
 {
   return (value >= base && value < (base + size));
 }
 
-uint32_t debug_pipe_sender_va()
+// The debug pipe sender side gets mapped into core-specific memory
+// on startup. All others get mapped into slot-specific virtual
+// memory and inserted into the translation tables on data aborts.
+uint32_t set_and_map_debug_pipe()
 {
   extern uint32_t debug_pipe; // Ensure the size and the linker script match
   os_pipe *pipe = (void*) workspace.kernel.debug_pipe;
   uint32_t va = (uint32_t) &debug_pipe;
-  if (pipe->sender_va != 0) {
-    assert( pipe->sender_va == va );
-    return pipe->sender_va;
+
+  if (pipe->sender_va == 0) {
+    // This is the core's debug pipe, and it hasn't been mapped yet.
+    pipe->sender_va = va;
+
+    MMU_map_at( (void*) va, pipe->physical, pipe->max_block_size );
+    MMU_map_at( (void*) (va + pipe->max_block_size), pipe->physical, pipe->max_block_size );
   }
-  pipe->sender_va = va;
-asm ( "udf #2" );
-  MMU_map_at( (void*) va, pipe->physical, pipe->max_block_size );
-  MMU_map_at( (void*) (va + pipe->max_block_size), pipe->physical, pipe->max_block_size );
+
+  assert( pipe->sender_va == va );
+  assert( pipe->sender_va != 0 );
+
   return va;
 }
 
-// TODO: Get rid of this, the receiver isn't really a special case
-static uint32_t debug_pipe_receiver_va()
-{
-  extern uint32_t debug_pipe; // Ensure the size and the linker script match
-  os_pipe *pipe = (void*) workspace.kernel.debug_pipe;
-  uint32_t va = 2 * pipe->max_block_size + (uint32_t) &debug_pipe;
-  // FIXME: map read-only
-  MMU_map_at( (void*) va, pipe->physical, pipe->max_block_size );
-  MMU_map_at( (void*) (va + pipe->max_block_size), pipe->physical, pipe->max_block_size );
-  return va;
-}
-
-static uint32_t local_sender_va( TaskSlot *slot, os_pipe *pipe )
-{
-#if 0
-WriteS( "local_sender_va " ); WriteNum( pipe->sender );
-if (pipe->sender != 0) {
-  WriteNum( pipe->sender->slot ); WriteNum( slot );
-}
-NewLine;
-#endif
-  if ((uint32_t) pipe == workspace.kernel.debug_pipe) {
-    return debug_pipe_sender_va();
-  }
-  asm ( "bkpt 64" );
-  if (pipe->sender == 0 || pipe->sender->slot != slot) return 0;
-  return pipe->sender_va;
-}
-
-static uint32_t local_receiver_va( TaskSlot *slot, os_pipe *pipe )
-{
-  if ((uint32_t) pipe == workspace.kernel.debug_pipe) {
-    return debug_pipe_receiver_va();
-  }
-  asm ( "bkpt 64" );
-  if (pipe->receiver == 0 || pipe->receiver->slot != slot) return 0;
-  return pipe->receiver_va;
-}
-
-physical_memory_block Pipe_physical_address( TaskSlot *slot, uint32_t va )
+physical_memory_block Pipe_physical_address( Task *running, uint32_t va )
 {
   // Note to self: parameters are actually &result, slot, va, in r0, r1, r2.
-
-  // Slot is locked.
-  physical_memory_block result = { 0, 0, 0 }; // Fail
-
-  // FIXME This implementation is trivial and will break almost immediately!
-  // Allocates the pipe virtual memory at the top of the first MiB of memory.
-  // Only works with 4KiB pages, something smaller (and larger) might be useful.
-
-  // It will do for proof of concept, though.
-  // (I would recommend allocating virtual addresses in the top GiB, since
-  // all tasks using pipes will be aware they have a bit more than 64M to play
-  // with.)
+  // Slot is locked on entry.
 
   // One list of pipes shared between all slots and cores. To be fixed? TODO
+  // Probably not, all cores should be able to access either end of a pipe.
 
   bool reclaimed = claim_lock( &shared.kernel.pipes_lock );
 
   os_pipe *this_pipe = shared.kernel.pipes;
+  bool found = false;
+  uint32_t physical = 0;
+  uint32_t virtual = 0;
+  uint32_t size = 0;
 
-  while (this_pipe != 0 && result.size == 0) {
-    uint32_t local_va;
-    local_va = local_sender_va( slot, this_pipe );
-    if (local_va != 0 && in_range( va, local_va, 2 * this_pipe->max_block_size)) {
-      result.size = this_pipe->max_block_size;
-      result.physical_base = this_pipe->physical;
-      result.virtual_base = local_va;
-      if (!in_range( va, local_va, this_pipe->max_block_size)) {
-        result.virtual_base += this_pipe->max_block_size;
+  while (this_pipe != 0 && !found) {
+    bool double_mapped = this_pipe->allocated_mem == 0;
+    size = this_pipe->max_block_size;
+    if (this_pipe->sender == running) {
+      if (va >= this_pipe->sender_va
+       && va < this_pipe->sender_va + this_pipe->max_block_size) {
+        if (!double_mapped) {
+          size = (1 + ((this_pipe->sender_va + size) >> 12) - (this_pipe->sender_va >> 12)) << 12;
+        }
+        if (size < 4096) size = 4096; // FIXME, may span two pages (not more) (not urgent, would just result in two aborts) probably.
+        assert( this_pipe->physical != 0 );
+        virtual = this_pipe->sender_va & ~0xfff;
+        physical = this_pipe->physical;
+        found = true;
+      }
+      assert( !double_mapped || (this_pipe->sender_va & 0xfff) == 0 );
+      if (!found && double_mapped // Not provided by an application
+       && va >= this_pipe->sender_va + this_pipe->max_block_size
+       && va < this_pipe->sender_va + 2 * this_pipe->max_block_size) {
+        virtual = this_pipe->sender_va + this_pipe->max_block_size;
+        physical = this_pipe->physical;
+        found = true;
       }
     }
-    local_va = local_receiver_va( slot, this_pipe );
-    if (local_va != 0 && in_range( va, local_va, 2 * this_pipe->max_block_size)) {
-      // TODO Map read-only
-      result.size = this_pipe->max_block_size;
-      result.physical_base = this_pipe->physical;
-      result.virtual_base = local_va;
-      if (!in_range( va, local_va, this_pipe->max_block_size)) {
-        result.virtual_base += this_pipe->max_block_size;
+    if (this_pipe->receiver == running) {
+      // TODO Mark memory read-only!
+      if (va >= this_pipe->receiver_va
+       && va < this_pipe->receiver_va + this_pipe->max_block_size) {
+        if (!double_mapped) {
+          size = (1 + ((this_pipe->receiver_va + size) >> 12) - (this_pipe->receiver_va >> 12)) << 12;
+        }
+        assert( this_pipe->physical != 0 );
+        virtual = this_pipe->receiver_va & ~0xfff;
+        physical = this_pipe->physical;
+        found = true;
+      }
+      assert( !double_mapped || (this_pipe->receiver_va & 0xfff) == 0 );
+      if (!found && double_mapped // Not provided by an application
+       && va >= this_pipe->receiver_va + this_pipe->max_block_size
+       && va < this_pipe->receiver_va + 2 * this_pipe->max_block_size) {
+        virtual = this_pipe->receiver_va + this_pipe->max_block_size;
+        physical = this_pipe->physical;
+        found = true;
       }
     }
+
     this_pipe = this_pipe->next;
   }
 
   if (!reclaimed) release_lock( &shared.kernel.pipes_lock );
 
+  if (!found) size = 0;
+
+  assert( (virtual != 0) == (physical != 0) );
+
 #ifdef DEBUG__PIPEOP
   Write0( __func__ );
-  WriteS( " " ); WriteNum( result.virtual_base );
-  WriteS( " " ); WriteNum( result.physical_base );
-  WriteS( " " ); WriteNum( result.size );  NewLine;
+  WriteS( " " ); WriteNum( memory_block_virtual_base( result ) );
+  WriteS( " " ); WriteNum( memory_block_physical_base( result ) );
+  WriteS( " " ); WriteNum( memory_block_size( result ) );  NewLine;
 #endif
 
-  return result;
+  return make_physical_memory_block( virtual, physical, size );
 }
 
-static bool PipeOp_NotYourPipe( svc_registers *regs )
+#ifndef NOT_DEBUGGING
+static inline
+#endif
+bool PipeOp_NotYourPipe( svc_registers *regs )
 {
   static error_block error = { 0x888, "Pipe not owned by this task" };
   regs->r[0] = (uint32_t) &error;
   return false;
 }
 
-static bool PipeOp_InvalidPipe( svc_registers *regs )
+#ifndef NOT_DEBUGGING
+static inline
+#endif
+bool PipeOp_InvalidPipe( svc_registers *regs )
 {
   static error_block error = { 0x888, "Invalid Pipe handle" };
   regs->r[0] = (uint32_t) &error;
   return false;
 }
 
-static bool PipeOp_CreationError( svc_registers *regs )
+#ifndef NOT_DEBUGGING
+static inline
+#endif
+bool PipeOp_CreationError( svc_registers *regs )
 {
   static error_block error = { 0x888, "Pipe creation error" };
   regs->r[0] = (uint32_t) &error;
   return false;
 }
 
-static bool PipeOp_CreationProblem( svc_registers *regs )
+#ifndef NOT_DEBUGGING
+static inline
+#endif
+bool PipeOp_CreationProblem( svc_registers *regs )
 {
   static error_block error = { 0x888, "Pipe creation problem" };
   regs->r[0] = (uint32_t) &error;
   return false;
 }
 
-static bool PipeCreate( svc_registers *regs )
+#ifndef NOT_DEBUGGING
+static inline
+#endif
+bool PipeCreate( svc_registers *regs )
 {
   uint32_t max_block_size = regs->r[1];
   uint32_t max_data = regs->r[2];
   uint32_t allocated_mem = regs->r[3];
+
+  Task *running = workspace.task_slot.running;
 
   if (max_data != 0) {
     if (max_block_size > max_data) {
@@ -213,10 +230,7 @@ static bool PipeCreate( svc_registers *regs )
     }
 
     // FIXME
-    return Kernel_Error_UnimplementedSWI( regs );
-  }
-  else if (max_block_size == 0) {
-    return PipeOp_CreationError( regs );
+    //return Kernel_Error_UnimplementedSWI( regs );
   }
 
   os_pipe *pipe = rma_allocate( sizeof( os_pipe ) );
@@ -227,13 +241,43 @@ static bool PipeCreate( svc_registers *regs )
 
   // At the moment, the running task is the only one that knows about it.
   // If it goes away, the resource should be cleaned up.
-  pipe->sender = pipe->receiver = workspace.task_slot.running;
+  pipe->sender = pipe->receiver = running;
   pipe->sender_va = pipe->receiver_va = 0;
 
   pipe->max_block_size = max_block_size;
   pipe->max_data = max_data;
   pipe->allocated_mem = allocated_mem;
-  pipe->physical = Kernel_allocate_pages( 4096, 4096 );
+  if (allocated_mem == 0) {
+    assert( (max_block_size & 0xfff) == 0 ); // Needs proper checking...
+    // FIXME bigger!
+    pipe->physical = Kernel_allocate_pages( max_block_size, 4096 );
+  }
+  else {
+    physical_memory_block block = Kernel_physical_address( allocated_mem );
+    if (memory_block_size( block ) == 0) {
+      // Not a slot specific part of memory
+      // How about ROM?
+      extern uint32_t va_base;
+      extern uint32_t rom_size;
+      uint32_t base = (uint32_t) &va_base;
+      uint32_t size = (uint32_t) &rom_size;
+      if (allocated_mem >= base
+       && allocated_mem < base + size) {
+        // FIXME URGENTLY! Where is it located, really?
+        block = make_physical_memory_block( base, 0, size );
+      }
+    }
+    assert( memory_block_size( block ) != 0 );
+
+    uint32_t offset = allocated_mem - memory_block_virtual_base( block );
+    assert( allocated_mem > memory_block_virtual_base( block ) ); // Otherwise the memory is not in that block!
+    pipe->physical = offset + memory_block_physical_base( block );
+    if (offset + max_block_size > memory_block_size( block )) {
+      // FIXME: This is a memory leak of the pipe in the RMA
+      assert( 0 );
+      return PipeOp_CreationError( regs );
+    }
+  }
   // Now debug output uses PipeOp, PipeOp can't do debug output
   // WriteS( "Physical memory: " ); WriteNum( pipe->physical ); NewLine;
 
@@ -242,8 +286,8 @@ static bool PipeCreate( svc_registers *regs )
   pipe->sender_waiting_for = 0;
   pipe->receiver_waiting_for = 0;
 
-  pipe->write_index = allocated_mem & 0xfff;
-  pipe->read_index = allocated_mem & 0xfff;
+  pipe->write_index = 0; // allocated_mem & 0xfff;
+  pipe->read_index = 0; // allocated_mem & 0xfff;
 
   bool reclaimed = claim_lock( &shared.kernel.pipes_lock );
 
@@ -257,34 +301,115 @@ static bool PipeCreate( svc_registers *regs )
   return true;
 }
 
-extern uint32_t pipes_top;
-
-static uint32_t allocate_virtual_address( TaskSlot *slot, os_pipe *pipe )
+static uint32_t __attribute__(( noinline )) pipe_map_size( os_pipe *pipe )
 {
-  // Proof of concept locates pipes at the top of the first megabyte of
-  // virtual RAM
-  // This is, of course, ridiculous.
-  // Fix that in rool.script and data abort handler
-  // Doesn't cope with removing pipes FIXME
+  bool double_mapped = pipe->allocated_mem == 0;
+  uint32_t map_size = pipe->max_block_size;
 
-  asm ( "bkpt 64" );
-
-  uint32_t va = (uint32_t) &pipes_top;
-
-  os_pipe *this_pipe = shared.kernel.pipes;
-
-  while (this_pipe != 0) {
-    uint32_t local_va;
-    local_va = local_sender_va( slot, this_pipe );
-    if (local_va != 0 && local_va < va) va = local_va;
-    local_va = local_receiver_va( slot, this_pipe );
-    if (local_va != 0 && local_va < va) va = local_va;
-    this_pipe = this_pipe->next;
+  if (double_mapped) {
+    map_size = map_size * 2;
+  }
+  else {
+    // Need to map whole area into pipes area
+    uint32_t base_page = pipe->allocated_mem & ~0xfff;
+    uint32_t above_last = (pipe->allocated_mem + pipe->max_block_size + 0xfff) & ~0xfff;
+    map_size = above_last - base_page;
   }
 
-  // WriteS( "Allocated pipe VA " ); WriteNum( va - 2 * pipe->max_block_size ); NewLine;
+  return map_size;
+}
 
-  return va - 2 * pipe->max_block_size;
+#ifndef NOT_DEBUGGING
+static inline
+#endif
+bool insert_pipe_in_gap( TaskSlot *slot, os_pipe *pipe, bool sender )
+{
+  // FIXME: Needs re-working for multi-MiB pipes
+  // FIXME: Maybe re-work allocated_mem to have slot, va, so pipes can span memory blocks
+  // Localised information. See rool.script. Shared with mmu.c.
+  extern uint32_t pipes_top;
+  extern uint32_t pipes_base;
+
+  uint32_t top = (uint32_t) &pipes_top;
+  uint32_t bottom = (uint32_t) &pipes_base;
+
+  uint32_t size = pipe_map_size( pipe );
+
+#ifdef DEBUG__PIPES
+  WriteS( "Pipe " ); WriteNum( pipe ); Space; WriteNum( slot ); Space; WriteNum( size ); NewLine;
+#endif
+  os_pipe *this_pipe = shared.kernel.pipes;
+
+  uint32_t possible_result;
+
+  while (this_pipe != 0) {
+    possible_result = top - size;
+
+    if (possible_result < bottom) return false;
+
+    // Now, see if any other pipes overlap with that and try again if they do.
+    bool overlaps = false;
+
+    uint32_t map_size = pipe_map_size( this_pipe );
+
+#ifdef DEBUG__PIPES
+  WriteS( "Pipe? " ); WriteNum( this_pipe ); Space; WriteNum( top ); Space; WriteNum( this_pipe->sender_va ); Space; WriteNum( this_pipe->receiver_va ); Space; WriteNum( map_size ); NewLine;
+#endif
+    if (this_pipe->sender != 0
+     && this_pipe->sender->slot == slot
+     && this_pipe->sender_va != 0
+     && (this_pipe->sender_va < top
+      && this_pipe->sender_va + map_size > possible_result)) {
+
+      top = this_pipe->sender_va & ~0xfff;
+      overlaps = true;
+    }
+    else if (this_pipe->receiver != 0
+     && this_pipe->receiver->slot == slot
+     && this_pipe->receiver_va != 0
+     && (this_pipe->receiver_va < top
+      && this_pipe->receiver_va + map_size > possible_result)) {
+
+      top = this_pipe->receiver_va & ~0xfff;
+      overlaps = true;
+    }
+
+    if (overlaps) {
+      this_pipe = shared.kernel.pipes;
+    }
+    else
+      this_pipe = this_pipe->next;
+  }
+
+  possible_result |= (pipe->allocated_mem & 0xfff);
+  if (sender) 
+    pipe->sender_va = possible_result;
+  else
+    pipe->receiver_va = possible_result;
+
+  return true;
+}
+
+static void set_sender_va( TaskSlot *slot, os_pipe *pipe )
+{
+  if (pipe->physical == 0) asm ( "bkpt 64" );
+
+  assert( workspace.kernel.debug_pipe != pipe );
+
+  if (!insert_pipe_in_gap( slot, pipe, true )) {
+    // FIXME report error!
+    assert( false );
+  }
+}
+
+static void set_receiver_va( TaskSlot *slot, os_pipe *pipe )
+{
+  if (pipe->physical == 0) asm ( "bkpt 64" );
+
+  if (!insert_pipe_in_gap( slot, pipe, false )) {
+    // FIXME report error!
+    assert( false );
+  }
 }
 
 static uint32_t data_in_pipe( os_pipe *pipe )
@@ -299,12 +424,20 @@ static uint32_t space_in_pipe( os_pipe *pipe )
 
 static uint32_t read_location( os_pipe *pipe, TaskSlot *slot )
 {
-  return pipe->receiver_va + (pipe->read_index % pipe->max_block_size);
+  bool double_mapped = pipe->allocated_mem == 0;
+  if (double_mapped)
+    return pipe->receiver_va + (pipe->read_index % pipe->max_block_size);
+  else
+    return pipe->receiver_va + pipe->read_index;
 }
 
 static uint32_t write_location( os_pipe *pipe, TaskSlot *slot )
 {
-  return pipe->sender_va + (pipe->write_index % pipe->max_block_size);
+  bool double_mapped = pipe->allocated_mem == 0;
+  if (double_mapped)
+    return pipe->sender_va + (pipe->write_index % pipe->max_block_size);
+  else
+    return pipe->sender_va + pipe->write_index;
 }
 
 #ifdef NOT_DEBUGGING
@@ -319,23 +452,25 @@ bool PipeWaitForSpace( svc_registers *regs, os_pipe *pipe )
   Task *next = running->next;
   TaskSlot *slot = running->slot;
 
+  bool is_normal_pipe = ((uint32_t) pipe == workspace.kernel.debug_pipe);
+
   if (pipe->sender != running
    && pipe->sender != 0
-   && (uint32_t) pipe != workspace.kernel.debug_pipe) {
+   && is_normal_pipe) {
     return PipeOp_NotYourPipe( regs );
   }
 
   bool reclaimed = claim_lock( &shared.kernel.pipes_lock );
 
-  if (pipe->sender == 0) {
+  if (is_normal_pipe && pipe->sender == 0) {
     pipe->sender = running;
   }
 
   if (pipe->sender_va == 0) {
     if ((uint32_t) pipe == workspace.kernel.debug_pipe)
-      pipe->sender_va = debug_pipe_sender_va();
+      set_and_map_debug_pipe();
     else
-      pipe->sender_va = allocate_virtual_address( slot, pipe );
+      set_sender_va( slot, pipe );
   }
 
   uint32_t available = space_in_pipe( pipe );
@@ -378,8 +513,6 @@ bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
 
   Task *running = workspace.task_slot.running;
   TaskSlot *slot = running->slot;
-
-  assert( running != ((os_pipe*) workspace.kernel.debug_pipe)->receiver );
 
   if (pipe->sender != running
    && (uint32_t) pipe != workspace.kernel.debug_pipe) {
@@ -455,7 +588,7 @@ bool PipeSpaceFilled( svc_registers *regs, os_pipe *pipe )
 #ifdef NOT_DEBUGGING
 static inline
 #endif
-bool PipePassingOver( svc_registers *regs, os_pipe *pipe )
+bool PipeSetSender( svc_registers *regs, os_pipe *pipe )
 {
   pipe->sender = task_from_handle( regs->r[1] );
   pipe->sender_va = 0; // FIXME unmap and free the virtual area for re-use
@@ -479,6 +612,11 @@ static inline
 bool PipeNoMoreData( svc_registers *regs, os_pipe *pipe )
 {
   // Write0( __func__ ); NewLine;
+  // This should mark the pipe as uninteresting from the sender's end
+  // If it's also uninteresting from the receiver's end, delete it
+  // If the receiver is waiting for data, wake it up, even if it's waiting
+  // for more data than available.
+return true; 
   return Kernel_Error_UnimplementedSWI( regs );
 }
 
@@ -494,7 +632,7 @@ bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
   Task *next = running->next;
   TaskSlot *slot = running->slot;
 
-  // debug_pipe is not a special case, here, only one task can receive from it.
+  // debug_pipe is not a special case, here; only one task can receive from it.
   if (pipe->receiver != running
    && pipe->receiver != 0) {
     return PipeOp_NotYourPipe( regs );
@@ -509,10 +647,8 @@ bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
   assert( pipe->receiver == running );
 
   if (pipe->receiver_va == 0) {
-    if ((uint32_t) pipe == workspace.kernel.debug_pipe)
-      pipe->receiver_va = debug_pipe_receiver_va( slot, pipe );
-    else
-      pipe->receiver_va = allocate_virtual_address( slot, pipe );
+    if (pipe->max_block_size != 0 || pipe->max_data != 0)
+      set_receiver_va( slot, pipe );
   }
 
   uint32_t available = data_in_pipe( pipe );
@@ -521,7 +657,8 @@ bool PipeWaitForData( svc_registers *regs, os_pipe *pipe )
     regs->r[1] = available;
     regs->r[2] = read_location( pipe, slot );
 
-    asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME flush less (by ASID of the sender?)
+    // asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME flush less (by ASID of the sender?)
+    clean_cache_to_PoC();
     assert( (regs->spsr & VF) == 0 );
   }
   else {
@@ -587,7 +724,8 @@ bool PipeDataConsumed( svc_registers *regs, os_pipe *pipe )
       // WriteS( "Space finally available: " ); WriteNum( pipe->sender_waiting_for ); WriteS( ", remaining: " ); WriteNum( space_in_pipe( pipe ) ); WriteS( ", at " ); WriteNum( write_location( pipe, slot ) ); NewLine;
 #endif
 
-      asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME Invalidate cache for updated area, only if sender on a different core
+      // asm ( "svc 0xff" : : : "lr" ); // Flush whole cache FIXME Invalidate cache for updated area, only if sender on a different core
+      clean_cache_to_PoC();
       pipe->sender_waiting_for = 0;
 
       sender->regs.r[1] = space_in_pipe( pipe );
@@ -613,7 +751,7 @@ assert( 0x2a2a2a2a != regs->r[2] );
 #ifdef NOT_DEBUGGING
 static inline
 #endif
-bool PipePassingOff( svc_registers *regs, os_pipe *pipe )
+bool PipeSetReceiver( svc_registers *regs, os_pipe *pipe )
 {
   pipe->receiver = task_from_handle( regs->r[1] );
   pipe->receiver_va = 0; // FIXME unmap and free the virtual area for re-use
@@ -629,6 +767,9 @@ static inline
 bool PipeNotListening( svc_registers *regs, os_pipe *pipe )
 {
   // Write0( __func__ ); NewLine;
+  // This should mark the pipe as uninteresting from the receiver's end
+  // If it's also uninteresting from the sender's end, delete it
+return true; 
   return Kernel_Error_UnimplementedSWI( regs );
 }
 
@@ -697,8 +838,8 @@ bool do_PipeOp( svc_registers *regs, uint32_t op )
 
 
 
-    PassingOver - about to ask another task to send its data to this pipe (r2 = 0 or new task)
-    PassingOff - about to ask another task to handle the data from this pipe (r2 = 0 or new task)
+    SetSender - about to ask another task to send its data to this pipe (r2 = 0 or new task)
+    SetReceiver - about to ask another task to handle the data from this pipe (r2 = 0 or new task)
   */
 
 /* Create a pipe, pass it to another thread to read or write, while you do the other.
@@ -766,12 +907,12 @@ bool do_PipeOp( svc_registers *regs, uint32_t op )
   case OP( OSTask_PipeCreate ): return PipeCreate( regs );
   case OP( OSTask_PipeWaitForSpace ): return PipeWaitForSpace( regs, pipe );
   case OP( OSTask_PipeSpaceFilled ): return PipeSpaceFilled( regs, pipe );
-  case OP( OSTask_PipePassingOver ): return PipePassingOver( regs, pipe );
+  case OP( OSTask_PipeSetSender ): return PipeSetSender( regs, pipe );
   case OP( OSTask_PipeUnreadData ): return PipeUnreadData( regs, pipe );
   case OP( OSTask_PipeNoMoreData ): return PipeNoMoreData( regs, pipe );
   case OP( OSTask_PipeWaitForData ): return PipeWaitForData( regs, pipe );
   case OP( OSTask_PipeDataConsumed ): return PipeDataConsumed( regs, pipe );
-  case OP( OSTask_PipePassingOff ): return PipePassingOff( regs, pipe );
+  case OP( OSTask_PipeSetReceiver ): return PipeSetReceiver( regs, pipe );
   case OP( OSTask_PipeNotListening ): return PipeNotListening( regs, pipe );
   case OP( OSTask_PipeWaitUntilEmpty ): return Kernel_Error_UnknownSWI( regs ); // TODO
   }
